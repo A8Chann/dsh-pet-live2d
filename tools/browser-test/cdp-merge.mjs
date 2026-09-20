@@ -2,8 +2,8 @@
 //
 // The engine's expression manager holds exactly ONE expression
 // (expressionManager.currentExpression), so pinning several used to reach the
-// model as only the last one. The host now serves the union as a synthetic
-// .exp3.json and the browser registers it as one extra definition.
+// model as only the last one. The controller now writes the union of their
+// parameters itself, at the seam the engine's own expression pass uses.
 //
 // WHY THIS ASSERTS ON PARAMETERS, NOT PIXELS
 // Two earlier versions of this driver compared canvas hashes and both were
@@ -19,7 +19,7 @@ import { spawn } from 'node:child_process'
 import { rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { browserPath, PROFILES, BASE } from './paths.mjs'
-import { waitReady } from './ready.mjs'
+import { waitReady, openPanel } from './ready.mjs'
 
 const EDGE = browserPath()
 const PORT = 9385
@@ -36,19 +36,14 @@ for (let i = 0; i < 120 && page === undefined; i++) {
 }
 const ws = new WebSocket(page.webSocketDebuggerUrl)
 await new Promise((res, rej) => { ws.onopen = res; ws.onerror = rej })
-let nextId = 0; const pending = new Map(); const net = []
-ws.onmessage = (e) => {
+let nextId = 0; const pending = new Map(); ws.onmessage = (e) => {
   const m = JSON.parse(e.data)
   if (m.id !== undefined) { const s = pending.get(m.id); if (s) { pending.delete(m.id); s(m) } return }
-  if (m.method === 'Network.responseReceived') {
-    const u = m.params.response.url
-    if (u.includes('/merge')) net.push(m.params.response.status + ' ' + decodeURIComponent(u.replace(/^https?:\/\/[^/]+/, '')))
-  }
 }
 const send = (a, p = {}) => new Promise(r => { const id = ++nextId; pending.set(id, r); ws.send(JSON.stringify({ id, method: a, params: p })) })
 const ev = async (e) => (await send('Runtime.evaluate', { expression: e, awaitPromise: true, returnByValue: true })).result?.result?.value
 
-await send('Runtime.enable'); await send('Page.enable'); await send('Network.enable')
+await send('Runtime.enable'); await send('Page.enable')
 await send('Page.navigate', { url: BASE + '/?variant=DBG' })
 for (let i = 0; i < 240; i++) { await sleep(400); if (await ev('document.title') === 'done') break }
 await waitReady(ev)
@@ -101,43 +96,70 @@ const sticker = await apply(['猫猫贴纸'])
 check('猫猫贴纸 writes only its own switch',
   at(sticker, 'ParamCheek83') === 1 && at(sticker, 'ParamCheek70') === 0, JSON.stringify(sticker))
 
-// The host route is the part of the multi-slot work that is finished, so assert
-// it directly rather than through the engine.
-const union = async (names) => {
-  const url = BASE + '/api/live2d-pet/merge?pet=ds-whale-girl&' + names.map((n) => 'e=' + encodeURIComponent(n)).join('&')
-  const body = await ev('fetch(' + JSON.stringify(url) + ')'
-    + '.then((r) => r.json())'
-    + '.then((j) => JSON.stringify(j.Parameters.map((p) => p.id)))')
-  return JSON.parse(body ?? 'null')
-}
-const pairIds = await union(['圆眼镜', '猫猫贴纸'])
-check('the host union carries both switches',
-  Array.isArray(pairIds) && pairIds.includes('ParamCheek70') && pairIds.includes('ParamCheek83'),
-  JSON.stringify(pairIds))
-const trioIds = await union(['圆眼镜', '猫猫贴纸', '深色桌布'])
-check('the host union carries three switches',
-  Array.isArray(trioIds) && trioIds.length === 3, JSON.stringify(trioIds))
-// A name the pet does not declare must not be merged in.
-const bogusUrl = BASE + '/api/live2d-pet/merge?pet=ds-whale-girl&e=__nope__'
-const bogus = await ev('fetch(' + JSON.stringify(bogusUrl) + ')'
-  + '.then((r) => String(r.status))')
-check('an unknown expression is rejected', bogus === '404', 'status=' + bogus)
-const bogusPet = await ev('fetch(' + JSON.stringify(BASE + '/api/live2d-pet/merge?pet=__nope__&e=x') + ')'
-  + '.then((r) => String(r.status))')
-check('an unknown pet is rejected', bogusPet === '404', 'status=' + bogusPet)
+// --- the 装扮 tab, driven the way a user drives it -------------------------
+// Start from a known state: the parameter checks above left a pin behind.
+await ev('window.__dshLive2dPet.setExpressions([])')
+await sleep(900)
+await openPanel(ev)
+await sleep(700)
+await ev('(()=>{const bs=Array.from(document.querySelectorAll("[data-dsh-live2d-pet] [data-panel] [data-tabs] button"));'
+  + ' const b=bs.find((x)=>x.textContent.indexOf("装扮")===0); if(!b) return false; b.click(); return true})()')
+await sleep(700)
+const slotCount = await ev('document.querySelectorAll("[data-dsh-live2d-pet] [data-panel] [data-slot]").length')
+check('the 装扮 tab lists every slot', slotCount === 7, 'slots=' + slotCount)
 
-// KNOWN GAP, reported not asserted: registering that union as an extra engine
-// expression definition does not hold — the fade starts and collapses, so the
-// plugin still falls back to last-wins and several slots cannot be worn at once.
+/** Click a chip in the panel by its slot id and visible label. */
+const pick = async (slotId, label) => {
+  await ev('(()=>{const g=document.querySelector(' + JSON.stringify('[data-dsh-live2d-pet] [data-panel] [data-slot="' + slotId + '"]')
+    + '); if(!g) return false;'
+    + ' const b=Array.from(g.querySelectorAll("[data-chips] button")).find((x)=>x.textContent===' + JSON.stringify(label) + ');'
+    + ' if(!b) return false; b.click(); return true})()')
+  // Poll until the switches stop moving, same as apply() above.
+  let last = null
+  let stable = 0
+  for (let i = 0; i < 32; i += 1) {
+    await sleep(250)
+    const now = await frame()
+    if (now === null) continue
+    if (last !== null && now.every((v, at) => v === last[at])) stable += 1
+    else stable = 0
+    last = now
+    if (stable >= 3) break
+  }
+  return last
+}
+const uiGlasses = await pick('glasses', '圆眼镜')
+check('picking 圆眼镜 in the panel turns its switch on', at(uiGlasses, 'ParamCheek70') === 1, JSON.stringify(uiGlasses))
+const uiBoth = await pick('sticker', '猫猫')
+check('then picking 猫猫 keeps the glasses on',
+  at(uiBoth, 'ParamCheek70') === 1 && at(uiBoth, 'ParamCheek83') === 1, JSON.stringify(uiBoth))
+const uiOff = await pick('glasses', '无')
+check('and clearing one slot leaves the other alone',
+  at(uiOff, 'ParamCheek70') === 0 && at(uiOff, 'ParamCheek83') === 1, JSON.stringify(uiOff))
+await pick('sticker', '无')
+await ev('window.__dshLive2dPet.setExpressions([])')
+await sleep(800)
+
+// The whole point: both switches on in the SAME frame.
+//
+// The engine's manager cannot do this — it holds one expression — so the
+// controller writes the union itself, at the same seam (right after the engine
+// restores its post-motion values) and with the same Add arithmetic.
 const pair = await apply(['圆眼镜', '猫猫贴纸'])
-console.log('  NOTE  multi-slot rendering still unsupported (expected: both 1)   ' + JSON.stringify(pair))
+check('two slots reach the model at once',
+  at(pair, 'ParamCheek70') === 1 && at(pair, 'ParamCheek83') === 1, JSON.stringify(pair))
+
+const trio = await apply(['圆眼镜', '猫猫贴纸', '深色桌布'])
+check('three slots reach the model at once',
+  at(trio, 'ParamCheek70') === 1 && at(trio, 'ParamCheek83') === 1 && at(trio, 'cc2') === 1, JSON.stringify(trio))
+
+// Dropping back to one slot must not leave the others behind.
+const only = await apply(['圆眼镜'])
+check('dropping a slot turns its switch back off',
+  at(only, 'ParamCheek70') === 1 && at(only, 'ParamCheek83') === 0, JSON.stringify(only))
 
 const back = await apply([])
 check('clearing turns them all back off', WATCH.every((n) => at(back, n) === 0), JSON.stringify(back))
-
-check('the host served the merged expression', net.some((n) => n.startsWith('200')), JSON.stringify(net))
-// Excludes the two __nope__ probes above, which are deliberately 404.
-check('no failed merge request', !net.some((n) => !n.startsWith('200') && !n.includes('__nope__')), JSON.stringify(net))
 
 const bad = results.filter(r => !r.ok)
 console.log((bad.length === 0 ? 'OK' : 'FAILED') + '  ' + (results.length - bad.length) + '/' + results.length + ' checks passed')

@@ -125,6 +125,42 @@ export function modelClosure(model3) {
   return out
 }
 
+/**
+ * Validate a pet's declared dress-up slots.
+ *
+ * Anything malformed is dropped rather than passed on: the browser half renders
+ * these straight into buttons, so a slot without an id, or an option without an
+ * expression, would produce a dead control. An empty result simply means the pet
+ * has no dress-up panel, which is the right outcome for a model that needs none.
+ */
+function normaliseSlots(raw) {
+  if (!Array.isArray(raw)) return []
+  const out = []
+  for (const slot of raw) {
+    if (typeof slot !== 'object' || slot === null) continue
+    const id = typeof slot.id === 'string' ? slot.id.trim() : ''
+    if (id === '') continue
+    const options = []
+    for (const option of Array.isArray(slot.options) ? slot.options : []) {
+      if (typeof option !== 'object' || option === null) continue
+      const expression = typeof option.expression === 'string' ? option.expression.trim() : ''
+      if (expression === '') continue
+      options.push({
+        label: typeof option.label === 'string' && option.label !== '' ? option.label : expression,
+        expression,
+      })
+    }
+    if (options.length === 0) continue
+    out.push({
+      id,
+      label: typeof slot.label === 'string' && slot.label !== '' ? slot.label : id,
+      none: typeof slot.none === 'string' && slot.none !== '' ? slot.none : '无',
+      options,
+    })
+  }
+  return out
+}
+
 /** Scan one pet directory into a catalog entry, or undefined when unusable. */
 export function scanPet(dir, id) {
   const manifestFile = join(dir, 'pet.json')
@@ -264,6 +300,11 @@ export function scanPet(dir, id) {
     // up the mouth afterwards" on its own, so the pet says it here.
     motionOptions: typeof block.motionOptions === 'object' && block.motionOptions !== null ? block.motionOptions : {},
     expressionsByPhase: typeof block.expressions === 'object' && block.expressions !== null ? block.expressions : {},
+    // Mutually exclusive dress-up slots. Several of the model's expressions are
+    // switches for the same thing (three pairs of glasses, three stickers), so
+    // the pet declares which may not be worn together; the browser half turns
+    // that into a one-choice-per-slot panel.
+    expressionSlots: normaliseSlots(block.expressionSlots),
     translate: {
       x: typeof block.translate?.x === 'number' ? block.translate.x : 0,
       y: typeof block.translate?.y === 'number' ? block.translate.y : 0,
@@ -415,84 +456,11 @@ function catalogRoute() {
           translate: pet.translate,
           motionsByPhase: pet.motionsByPhase,
           expressionsByPhase: pet.expressionsByPhase,
+          expressionSlots: pet.expressionSlots,
           motionOptions: pet.motionOptions,
           motions: pet.motions,
           expressions: pet.expressions,
         })),
-      })
-    },
-  }
-}
-
-/**
- * The merged-expression route (GET /api/live2d-pet/merge?pet=<id>&e=<name>&e=...).
- *
- * The engine's expression manager holds exactly ONE expression, so a dress-up
- * panel that wants glasses AND cat ears AND a dark tablecloth at once has
- * nothing to play them with. This route builds the union as a single synthetic
- * .exp3.json on the fly, and the browser half registers it as one extra
- * expression definition — one expression to the engine, several effects on
- * screen.
- *
- * It is served from the host rather than built in the browser because the
- * engine resolves a definition's File against the model's URL with
- * `new URL(file, modelUrl)`: a root-relative path lands back on this server,
- * while the blob: URL an in-page merge would need falls through that resolver's
- * absolute-URL test and gets rewritten into a relative path that cannot load.
- *
- * Only names that the pet itself declares are accepted, so no request can reach
- * outside the scanned catalog.
- */
-function mergeRoute() {
-  return {
-    kind: 'exact',
-    path: API + '/merge',
-    handler: (request, response) => {
-      if (!loopbackOnly(request)) {
-        response.writeHead(403)
-        response.end()
-        return
-      }
-      if (request.method !== 'GET' && request.method !== 'HEAD') {
-        response.writeHead(405, { allow: 'GET, HEAD' })
-        response.end()
-        return
-      }
-      let params
-      try {
-        params = new URL(request.url ?? '/', 'http://pet.local').searchParams
-      } catch {
-        sendJson(response, 400, { ok: false, error: 'bad query' })
-        return
-      }
-      const petId = params.get('pet') ?? ''
-      const pet = buildCatalog().find((entry) => entry.id === petId)
-      if (pet === undefined) {
-        sendJson(response, 404, { ok: false, error: 'unknown pet' })
-        return
-      }
-      const byName = new Map(pet.expressions.map((entry) => [entry.name, entry]))
-      // Later names win for a shared parameter, so an explicit choice overrides
-      // rather than accumulating.
-      const merged = new Map()
-      let used = 0
-      for (const name of params.getAll('e').slice(0, 32)) {
-        const entry = byName.get(name)
-        if (entry === undefined) continue
-        used += 1
-        for (const parameter of entry.params ?? []) merged.set(parameter.id, parameter)
-      }
-      if (used === 0 || merged.size === 0) {
-        sendJson(response, 404, { ok: false, error: 'no known expressions' })
-        return
-      }
-      sendJson(response, 200, {
-        Type: 'Live2D Expression',
-        // Short fades: the client swaps the combination whenever a slot
-        // changes, and a full second of blending reads as lag.
-        FadeInTime: 0.2,
-        FadeOutTime: 0.2,
-        Parameters: Array.from(merged.values()),
       })
     },
   }
@@ -826,7 +794,7 @@ function eventsRoute(hub) {
 
 /** The complete route table this plugin owns. */
 export function buildRoutes(hub) {
-  return [catalogRoute(), assetRoute(), runtimeRoute(), mergeRoute(), eventsRoute(hub)]
+  return [catalogRoute(), assetRoute(), runtimeRoute(), eventsRoute(hub)]
 }
 
 export function apply(ctx) {

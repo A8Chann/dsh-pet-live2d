@@ -323,6 +323,72 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
     };
 
     /**
+     * The parameter writes contributed by the pinned expressions.
+     *
+     * Each entry is { id, value, blend } straight from that expression's own
+     * .exp3.json, layered on top of whatever the motion system wrote — which is
+     * exactly what those expressions' "Add" blend means.
+     */
+    let expressionLayers = [];
+    /** The core model whose saveParameters hook is installed. */
+    let hookedCore = null;
+
+    /**
+     * Apply the pinned expressions' parameters.
+     *
+     * Expressions blend on top of the motion output, so the write has to land
+     * at the exact seam the engine's own expression pass uses — which is AFTER
+     * saveParameters(), not after loadParameters().
+     *
+     * The frame runs: loadParameters() (undo last frame's expression) ->
+     * motions write -> saveParameters() (snapshot the pose the motions produced)
+     * -> expressions write on top -> deformers. Writing after loadParameters
+     * instead puts the value INSIDE the saved snapshot, so it becomes part of
+     * the baseline: the next frame restores it and adds another copy on top,
+     * and it can never be taken back off. That is exactly the "switches stay on
+     * forever" failure.
+     */
+    const applyExpressionLayers = (core) => {
+      if (expressionLayers.length === 0) return;
+      try {
+        const values = core._model.parameters.values;
+        for (const layer of expressionLayers) {
+          const at = parameterIndex(core, layer.id);
+          if (at < 0) continue;
+          const current = values[at];
+          if (layer.blend === "Multiply") values[at] = current * layer.value;
+          else if (layer.blend === "Overwrite") values[at] = layer.value;
+          else values[at] = current + layer.value;
+        }
+      } catch {
+        /* a torn-down model: nothing to write */
+      }
+    };
+
+    /**
+     * Install the per-frame expression pass.
+     *
+     * This is what makes several dress-up slots possible at all: the engine's
+     * expression manager holds exactly ONE expression, so asking it to layer
+     * would render only the last pin. Writing the union ourselves has no such
+     * limit, and it is the same arithmetic the engine would have done.
+     */
+    const installCoreHook = (core) => {
+      if (core === null || core === undefined || core === hookedCore) return;
+      try {
+        if (typeof core.saveParameters !== "function") return;
+        const base = core.saveParameters.bind(core);
+        core.saveParameters = () => {
+          base();
+          applyExpressionLayers(core);
+        };
+        hookedCore = core;
+      } catch {
+        /* an engine that will not let us wrap it: pins simply do nothing */
+      }
+    };
+
+    /**
      * Put a motion's parameters back where they were before it ran.
      *
      * The engine only ever WRITES the parameters a motion curves; it never
@@ -638,6 +704,9 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
         // Locate the head once, from the model's own geometry; it is stored in
         // model space so it survives every later resize and drag.
         headBox = measureHead(nextModel);
+        // Expressions are written by this controller, not the engine, so the
+        // per-frame pass has to be armed on the freshly loaded core.
+        installCoreHook(coreModel());
         token += 1;
         clearTimer();
         try {
@@ -667,12 +736,25 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
         window.clearTimeout(sustainTimer);
         sustainTimer = 0;
         phaseMotionFor = () => undefined;
+        expressionLayers = [];
+        hookedCore = null;
         headBox = null;
         hitMask = null;
         hitBox = null;
       },
       playIdle,
       playOnce,
+      /**
+       * Replace the pinned expressions' parameter writes.
+       *
+       * The component owns the catalog and the pin set, so it hands down fully
+       * resolved layers; the controller only applies them.
+       */
+      setExpressionLayers(layers) {
+        expressionLayers = Array.isArray(layers) ? layers : [];
+      },
+      /** Diagnostic: how many parameter writes the pinned set contributes. */
+      expressionLayerCount: () => expressionLayers.length,
       /** Install the phase -> group resolver the sustain loop needs. */
       setPhaseResolver(fn) {
         phaseMotionFor = typeof fn === "function" ? fn : () => undefined;
@@ -1696,24 +1778,19 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       pinnedRef.current = next;
       const model = modelRef.current;
       if (model === null) return;
-      const manager = model.internalModel?.motionManager?.expressionManager;
-      const names = Object.keys(next);
-      if (names.length === 0) {
-        manager?.resetExpression?.();
-        return;
-      }
-      // The engine holds exactly ONE expression (expressionManager
-      // .currentExpression), so the last pin wins.
+      // The engine's own expression pass is deliberately NOT used, in either
+      // the single or the multi case.
       //
-      // KNOWN LIMITATION: several slots cannot be worn at once. The host route
-      // that serves their union works and is tested (see cdp-merge), but
-      // registering it as an extra engine definition does NOT hold: the fade
-      // visibly starts and then collapses back to zero, so a two-slot
-      // selection rendered NOTHING — strictly worse than last-wins, which at
-      // least shows one of them. The wiring is therefore left out until the
-      // engine side is understood; the route stays because it is correct and
-      // is what that work will need.
-      void model.expression(names[names.length - 1]);
+      // Its manager holds exactly ONE expression, so pinning several would
+      // render only the last. Worse, an earlier attempt to hand it a synthetic
+      // merged definition made the fade start and then collapse, rendering
+      // nothing at all. Writing the parameters ourselves has neither problem,
+      // and it is the same arithmetic: every expression in this model blends
+      // with "Add" on top of the motion output.
+      //
+      // Clear the engine's expression anyway, so a pin applied before this
+      // change (or by another code path) cannot keep writing its own values.
+      model.internalModel?.motionManager?.expressionManager?.resetExpression?.();
     }, []);
     applyExpressionsRef.current = applyExpressions;
 
@@ -1757,6 +1834,23 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       const next = Object.assign({}, pinnedRef.current, { [expressionName]: true });
       applyExpressions(next);
       armExpressionClear();
+    }, [applyExpressions, armExpressionClear]);
+
+    /**
+     * Choose an option within one dress-up slot.
+     *
+     * Every other slot keeps its choice — that is the whole point of the slots,
+     * and it works because the controller layers the parameter writes instead
+     * of asking the engine (which holds a single expression) to switch.
+     * The 'none' option clears just this slot.
+     */
+    const chooseSlotOption = useCallback((slot, option) => {
+      const next = Object.assign({}, pinnedRef.current);
+      for (const candidate of slot.options) delete next[candidate.expression];
+      if (option !== null) next[option.expression] = true;
+      applyExpressions(next);
+      if (Object.keys(next).length > 0) armExpressionClear();
+      else window.clearTimeout(expressionTimer.current);
     }, [applyExpressions, armExpressionClear]);
 
     const resetAll = useCallback(() => {
@@ -2092,6 +2186,37 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       overlay = h("div", { "data-hint": "", style: { opacity: .65 } }, "加载模型…");
     }
 
+    /**
+     * Turn the pinned expression set into parameter writes.
+     *
+     * Every expression carries its own .exp3.json parameters in the catalog, so
+     * a pin becomes a flat list of { id, value, blend }, applied by the
+     * controller on every frame. Because they layer on top of the motion
+     * output, several can be active at once — which is what a dress-up panel
+     * needs and what the engine's single-current-expression manager could never
+     * do.
+     */
+    useEffect(() => {
+      const byName = new Map((pet?.expressions ?? []).map((entry) => [entry.name, entry]));
+      const layers = [];
+      const seen = new Map();
+      for (const name of Object.keys(pinned)) {
+        if (pinned[name] !== true) continue;
+        for (const parameter of byName.get(name)?.params ?? []) {
+          // Last pin wins for a shared parameter, so a later choice overrides
+          // an earlier one rather than accumulating.
+          const at = seen.get(parameter.id);
+          if (at === undefined) {
+            seen.set(parameter.id, layers.length);
+            layers.push(parameter);
+          } else {
+            layers[at] = parameter;
+          }
+        }
+      }
+      motion.current.setExpressionLayers(layers);
+    }, [pinned, pet]);
+
     const panel = panelOpen && pet !== undefined
       ? h("div", { "data-panel": "" },
           h("header", null,
@@ -2111,8 +2236,35 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
           h("div", { "data-tabs": "" },
             h("button", { type: "button", ...(tab === "motions" ? { "data-on": "" } : {}), onClick: () => setTab("motions") }, "动作 " + pet.motions.length),
             h("button", { type: "button", ...(tab === "expressions" ? { "data-on": "" } : {}), onClick: () => setTab("expressions") }, "表情 " + pet.expressions.length),
+            (pet.expressionSlots ?? []).length > 0
+              ? h("button", { type: "button", ...(tab === "slots" ? { "data-on": "" } : {}), onClick: () => setTab("slots") }, "装扮 " + pet.expressionSlots.length)
+              : null,
           ),
-          h("div", { "data-body": "" }, tab === "motions"
+          h("div", { "data-body": "" }, tab === "slots"
+            // Dress-up slots: one choice each, and choices in different slots
+            // coexist (glasses AND cat ears AND a dark tablecloth).
+            ? (pet.expressionSlots ?? []).map((slot) => {
+                const active = slot.options.find((option) => pinned[option.expression] === true);
+                return h("div", { "data-group": "", key: slot.id, "data-slot": slot.id },
+                  h("span", null, slot.label),
+                  h("div", { "data-chips": "" },
+                    h("button", {
+                      type: "button",
+                      key: "__none",
+                      ...(active === undefined ? { "data-on": "" } : {}),
+                      onClick: () => chooseSlotOption(slot, null),
+                    }, slot.none),
+                    slot.options.map((option) => h("button", {
+                      type: "button",
+                      key: option.expression,
+                      ...(pinned[option.expression] === true ? { "data-on": "" } : {}),
+                      "data-slot-option": option.expression,
+                      onClick: () => chooseSlotOption(slot, option),
+                    }, option.label)),
+                  ),
+                );
+              })
+            : tab === "motions"
             ? pet.motions.map((entry) => h("div", { "data-group": "", key: entry.group },
                 h("span", null, entry.label),
                 h("div", { "data-chips": "" },
