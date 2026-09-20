@@ -133,6 +133,33 @@ export function modelClosure(model3) {
  * expression, would produce a dead control. An empty result simply means the pet
  * has no dress-up panel, which is the right outcome for a model that needs none.
  */
+/**
+ * Validate a procedural sweep.
+ *
+ * A sweep drives model parameters from a generated curve instead of from a
+ * baked motion. Only the channels the pet actually names are kept, so a typo in
+ * one axis cannot silently produce a stationary hand.
+ */
+function normaliseSweep(raw) {
+  if (typeof raw !== 'object' || raw === null) return null
+  const axes = {}
+  for (const key of ['x', 'y', 'z', 'rz']) {
+    if (typeof raw[key] === 'string' && raw[key].trim() !== '') axes[key] = raw[key].trim()
+  }
+  if (Object.keys(axes).length === 0) return null
+  const num = (value, fallback) => (typeof value === 'number' && Number.isFinite(value) ? value : fallback)
+  return {
+    ...axes,
+    ampX: num(raw.ampX, 18),
+    ampY: num(raw.ampY, 8),
+    ampZ: num(raw.ampZ, 5),
+    // One writing stroke, in milliseconds: left to right, then back.
+    strokeMs: num(raw.strokeMs, 1400),
+    // How long the "pen" takes to work its way down the page and start over.
+    lineMs: num(raw.lineMs, 11000),
+  }
+}
+
 function normaliseSlots(raw) {
   if (!Array.isArray(raw)) return []
   const out = []
@@ -169,7 +196,20 @@ function normaliseSlots(raw) {
           requires.push(name.trim())
         }
       }
-      if (expressions.length === 0 && motion === null) continue
+      // Slots this option must RESET. 写本本 is a right-hand action that needs the
+      // left hand empty first, and "empty" is another slot's choice, so the
+      // option has to be able to clear it.
+      const clears = []
+      for (const id of Array.isArray(option.clears) ? option.clears : []) {
+        if (typeof id === 'string' && id.trim() !== '' && !clears.includes(id.trim())) clears.push(id.trim())
+      }
+      // A SWEEP is an animation this plugin generates, for parameters the model
+      // left unanimated. This model ships 点菜手X/Y/Z (pointX/pointY/pointY2) with
+      // a ±30 range and NOTHING driving them — the author meant the hand to
+      // follow the mouse and never wired it up. Writing a curve per frame turns
+      // them into a hand that actually writes on the tablet.
+      const sweep = normaliseSweep(option.sweep)
+      if (expressions.length === 0 && motion === null && sweep === null) continue
       options.push({
         label: typeof option.label === 'string' && option.label !== ''
           ? option.label
@@ -177,6 +217,8 @@ function normaliseSlots(raw) {
         expressions,
         ...(motion === null ? {} : { motion }),
         ...(requires.length === 0 ? {} : { requires }),
+        ...(clears.length === 0 ? {} : { clears }),
+        ...(sweep === null ? {} : { sweep }),
       })
     }
     if (options.length === 0) continue

@@ -348,10 +348,42 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
      * and it can never be taken back off. That is exactly the "switches stay on
      * forever" failure.
      */
+    /**
+     * The procedural animation the pinned slot option asks for, if any.
+     *
+     * This model ships 点菜手X / 点菜手Y / 点菜手Z (pointX / pointY / pointY2) with a
+     * ±30 range and NOTHING in the model ever writes them — the author intended
+     * the hand to follow the pointer and never finished it. Driving them here
+     * gives the pet a hand that actually moves across the tablet, which is what
+     * the "a tool is running" state needed.
+     */
+    let sweepSpec = null;
+
     const applyExpressionLayers = (core) => {
-      if (expressionLayers.length === 0) return;
+      if (expressionLayers.length === 0 && sweepSpec === null) return;
       try {
         const values = core._model.parameters.values;
+        if (sweepSpec !== null) {
+          const spec = sweepSpec;
+          const at = (id) => (id === undefined ? -1 : parameterIndex(core, id));
+          // Add to whatever the pose already wrote rather than replacing it, so
+          // the hand still rides the body's own motion.
+          const add = (id, delta) => {
+            const i = at(id);
+            if (i >= 0) values[i] += delta;
+          };
+          const now = (typeof performance !== "undefined" ? performance.now() : Date.now());
+          // One stroke sweeps left -> right, then the pen lifts and returns.
+          const stroke = (now % spec.strokeMs) / spec.strokeMs;
+          // The "page" advances slowly, so successive lines sit lower down.
+          const line = (now % spec.lineMs) / spec.lineMs;
+          add(spec.x, spec.ampX * (2 * stroke - 1));
+          add(spec.y, spec.ampY * (1 - 2 * line));
+          // A small wobble so a stroke is not a perfectly straight ruler line,
+          // and a steady pressure so the pen is visibly touching the tablet.
+          add(spec.rz, spec.ampZ * Math.sin(now / 90));
+          add(spec.z, 0.6);
+        }
         for (const layer of expressionLayers) {
           const at = parameterIndex(core, layer.id);
           if (at < 0) continue;
@@ -741,6 +773,7 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
         sustainTimer = 0;
         phaseMotionFor = () => undefined;
         expressionLayers = [];
+        sweepSpec = null;
         hookedCore = null;
         headBox = null;
         hitMask = null;
@@ -756,6 +789,10 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
        */
       setExpressionLayers(layers) {
         expressionLayers = Array.isArray(layers) ? layers : [];
+      },
+      /** Install (or clear) the procedural sweep the pinned option asks for. */
+      setSweep(spec) {
+        sweepSpec = spec === undefined || spec === null ? null : spec;
       },
       /** Diagnostic: how many parameter writes the pinned set contributes. */
       expressionLayerCount: () => expressionLayers.length,
@@ -1440,6 +1477,15 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
      * parked the phone forever after any fidget.
      */
     const slotMotionRef = useRef(null);
+    /**
+     * Procedural sweeps, layered like the pins: what the user's slots ask for,
+     * and what a live session phase asks for (the phase wins while it lasts).
+     */
+    const userSweepRef = useRef(null);
+    const phaseSweepRef = useRef(null);
+    const applySweep = useCallback(() => {
+      motion.current.setSweep(phaseSweepRef.current ?? userSweepRef.current);
+    }, []);
     /** Commit both layers; the phase wins while it lasts. */
     const commitPinsRef = useRef(() => {});
     /** Late-bound handle to applyExpressions, which is declared further down. */
@@ -1937,10 +1983,26 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
         // because this code touched the slot.
         for (const name of option.requires ?? []) next[name] = true;
       }
+      // A 'clears' option needs other slots emptied first (写本本 wants the left
+      // hand free), so drop their expressions before applying this one.
+      if (option !== null) {
+        for (const slotId of option.clears ?? []) {
+          const target = (pet?.expressionSlots ?? []).find((s) => s.id === slotId);
+          for (const candidate of target?.options ?? []) {
+            for (const name of candidate.expressions) delete next[name];
+          }
+          for (const name of target?.options ?? []) {
+            for (const name of candidate.requires ?? []) delete next[name];
+          }
+        }
+      }
       applyExpressions(next);
       // A motion attached to a slot plays and PARKS on its last frame, so the
       // chosen look stays put instead of dropping back to the idle loop.
       slotMotionRef.current = option !== null && typeof option.motion === "string" ? option.motion : null;
+      if (option === null || option.sweep === undefined) userSweepRef.current = null;
+      else userSweepRef.current = option.sweep;
+      applySweep();
       if (slotMotionRef.current !== null) {
         motion.current.playOnce(slotMotionRef.current, 0, { kind: "slot", hold: true, persist: true });
       } else if (option === null) {
@@ -2000,6 +2062,16 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
           }
         }
         phasePinsRef.current = pins;
+        // A phase may also need a generated animation (the tool phase writes).
+        let sweep = null;
+        if (look !== undefined) {
+          for (const [slotId, label] of Object.entries(look)) {
+            const option = slotById.get(slotId)?.options.find((o) => o.label === label);
+            if (option?.sweep !== undefined) sweep = option.sweep;
+          }
+        }
+        phaseSweepRef.current = sweep;
+        applySweep();
         commitPinsRef.current();
         const group = phaseMotionRef.current[phase];
         const sustained = PHASE_SUSTAIN.indexOf(phase) !== -1;
@@ -2057,6 +2129,8 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
         source.close();
         phaseRef.current = "idle";
         phasePinsRef.current = {};
+        phaseSweepRef.current = null;
+        applySweep();
         commitPinsRef.current();
         // A dropped stream must not leave the pet sustaining a phase forever.
         motion.current.setSustain(null);

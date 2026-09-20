@@ -49,11 +49,25 @@ await waitReady(ev)
 const results = []
 const check = (label, ok, detail) => { results.push({ label, ok }); console.log((ok ? '  PASS ' : '  FAIL ') + label + (detail ? '   ' + detail : '')) }
 
-const WATCH = ["ParamCheek71","ParamCheek16","jingyu","ParamCheek70","ParamCheek83"]
-const PROBE = "(() => {\n  const c = window.__PET_DBG.core\n  const names = [\"ParamCheek71\",\"ParamCheek16\",\"jingyu\",\"ParamCheek70\",\"ParamCheek83\"]\n  const ids = Array.from(c._model.parameters.ids)\n  window.__at = names.map((n) => ids.indexOf(n))\n  window.__last = null\n  const base = c.update.bind(c)\n  c.update = () => {\n    base()\n    window.__last = window.__at.map((i) => (i < 0 ? null : Number(c._model.parameters.values[i].toFixed(2))))\n  }\n  return true\n})()"
+const WATCH = ['ParamCheek71', 'ParamCheek16', 'jingyu', 'ParamCheek70', 'ParamCheek83', 'pointX', 'pointY', 'pointZ']
+const PROBE = [
+  '(() => {',
+  '  const c = window.__PET_DBG.core',
+  '  const names = ' + JSON.stringify(WATCH),
+  '  const ids = Array.from(c._model.parameters.ids)',
+  '  window.__at = names.map((n) => ids.indexOf(n))',
+  '  window.__last = null',
+  '  const base = c.update.bind(c)',
+  '  c.update = () => {',
+  '    base()',
+  '    window.__last = window.__at.map((i) => (i < 0 ? null : Number(c._model.parameters.values[i].toFixed(2))))',
+  '  }',
+  '  return true',
+  '})()',
+].join('\n')
 check('parameter probe installed', (await ev(PROBE)) === true)
 const frame = async () => JSON.parse(await ev('JSON.stringify(window.__last)') ?? 'null')
-const at = (values, name) => (values === null ? null : values[WATCH.indexOf(name)])
+const at = (values, name) => values[WATCH.indexOf(name)]
 
 await openPanel(ev)
 await sleep(700)
@@ -83,6 +97,31 @@ for (const [label, param] of [["墨镜","ParamCheek71"],["星星眼","ParamCheek
   await ev('window.__dshLive2dPet.setExpressions([])')
   await sleep(600)
 }
+
+// A hand that writes on the tablet. The model has NO animation for this — the
+// author left 点菜手X/Y at their defaults — so the plugin generates the curve.
+// Assert on the parameters, not on pixels: the sweep is a moving target and a
+// screenshot cannot tell "writing" from "breathing".
+await ev('window.__dshLive2dPet.setExpressions([])')
+await sleep(600)
+await ev('(()=>{const g=document.querySelector(\'[data-dsh-live2d-pet] [data-panel] [data-slot="rhand"]\');'
+  + ' const b=Array.from(g.querySelectorAll("[data-chips] button")).find((x)=>x.textContent==="写本本");'
+  + ' if(!b) return false; b.click(); return true})()')
+const xs = []
+let pressed = null
+for (let i = 0; i < 16; i += 1) {
+  await sleep(320)
+  const now = await frame()
+  if (now === null) continue
+  xs.push(at(now, 'pointX'))
+  pressed = at(now, 'pointZ')
+}
+const spread = Math.max(...xs) - Math.min(...xs)
+check('写本本 presses the pen down', pressed === 1, 'pointZ=' + pressed)
+check('写本本 sweeps the hand across the tablet', spread > 8,
+  'pointX range=' + spread.toFixed(2) + ' samples=' + JSON.stringify(xs.slice(0, 6)))
+await ev('window.__dshLive2dPet.setExpressions([])')
+await sleep(600)
 
 check('no failed plugin request', !reqs.some((r) => !r.startsWith('200')),
   JSON.stringify(reqs.filter((r) => !r.startsWith('200')).slice(0, 5)))

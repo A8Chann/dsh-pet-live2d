@@ -215,6 +215,26 @@
             "requires": [
               "蛋包饭"
             ]
+          },
+          {
+            "label": "写本本",
+            "expressions": [
+              "点菜按下"
+            ],
+            "clears": [
+              "lhand"
+            ],
+            "sweep": {
+              "x": "pointX",
+              "y": "pointY",
+              "rz": "pointY2",
+              "z": "pointZ",
+              "ampX": 16,
+              "ampY": 7,
+              "ampZ": 4,
+              "strokeMs": 1500,
+              "lineMs": 12000
+            }
           }
         ]
       },
@@ -442,7 +462,7 @@
       },
       "tool": {
         "whale": "放桌上",
-        "lhand": "画笔",
+        "rhand": "写本本",
         "symbol": "流汗"
       },
       "waiting": {
