@@ -2,7 +2,7 @@
 //
 // Starts the harness server, runs every contract driver in SUITE, prints a
 // PASS/FAIL table, and always tears the server down again.
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { rmSync } from 'node:fs'
 import { HERE, BASE, PROFILES } from './paths.mjs'
@@ -45,6 +45,17 @@ const purgeProfiles = () => {
   try { rmSync(PROFILES, { recursive: true, force: true }) } catch { /* best effort */ }
 }
 purgeProfiles()
+
+// Rebuild the DBG variant from the current client source.
+//
+// It is a copy, so it silently goes stale whenever client.js changes — once
+// that made cdp-motion fail against a variant that predated a fix. Rebuilding
+// here means a suite run can never test yesterday's code.
+const variant = spawnSync(process.execPath, [new URL('./make-variant.mjs', import.meta.url).pathname.replace(/^\//, '')], { encoding: 'utf8' })
+if (variant.status !== 0) {
+  console.error('make-variant failed:\n' + (variant.stderr || variant.stdout || ''))
+  process.exit(1)
+}
 
 const only = process.argv.slice(2)
 const results = []

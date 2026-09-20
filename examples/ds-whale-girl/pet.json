@@ -51,7 +51,134 @@
       "SelfieQuick": {
         "prepend": "OpenCase"
       }
-    }
+    },
+    "expressionSlots": [
+      {
+        "id": "glasses",
+        "label": "眼镜",
+        "none": "无",
+        "options": [
+          {
+            "label": "圆眼镜",
+            "expression": "圆眼镜"
+          },
+          {
+            "label": "方眼镜",
+            "expression": "方眼镜"
+          },
+          {
+            "label": "椭圆眼镜",
+            "expression": "椭圆眼镜"
+          },
+          {
+            "label": "墨镜",
+            "expression": "墨镜"
+          }
+        ]
+      },
+      {
+        "id": "sticker",
+        "label": "贴纸",
+        "none": "无",
+        "options": [
+          {
+            "label": "猫猫",
+            "expression": "猫猫贴纸"
+          },
+          {
+            "label": "兔兔",
+            "expression": "兔兔贴纸"
+          },
+          {
+            "label": "蝴蝶结",
+            "expression": "蝴蝶结贴纸"
+          }
+        ]
+      },
+      {
+        "id": "hair",
+        "label": "发饰",
+        "none": "戴着",
+        "options": [
+          {
+            "label": "摘掉发箍",
+            "expression": "头箍"
+          },
+          {
+            "label": "单边马尾",
+            "expression": "单边马尾"
+          }
+        ]
+      },
+      {
+        "id": "cloth",
+        "label": "桌布",
+        "none": "不用",
+        "options": [
+          {
+            "label": "深色",
+            "expression": "深色桌布"
+          }
+        ]
+      },
+      {
+        "id": "claw",
+        "label": "魔爪",
+        "none": "无",
+        "options": [
+          {
+            "label": "粉魔爪",
+            "expression": "桌面粉魔爪"
+          },
+          {
+            "label": "白魔爪",
+            "expression": "魔爪换色"
+          }
+        ]
+      },
+      {
+        "id": "desk",
+        "label": "桌面摆设",
+        "none": "无",
+        "options": [
+          {
+            "label": "头顶鲸",
+            "expression": "头顶鲸"
+          },
+          {
+            "label": "放桌上",
+            "expression": "鲸鱼放桌上"
+          }
+        ]
+      },
+      {
+        "id": "hands",
+        "label": "手部",
+        "none": "无",
+        "options": [
+          {
+            "label": "双手比耶",
+            "expression": "双手比耶"
+          },
+          {
+            "label": "喵喵手",
+            "expression": "喵喵手"
+          },
+          {
+            "label": "画笔",
+            "expression": "画笔"
+          },
+          {
+            "label": "橡皮",
+            "expression": "橡皮"
+          },
+          {
+            "label": "蛋包饭",
+            "expression": "蛋包饭"
+          }
+        ]
+      }
+    ]
   },
   "remarks": {
     "pet": [

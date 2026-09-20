@@ -212,7 +212,41 @@ export function scanPet(dir, id) {
       const expressionName = typeof reference.Name === 'string' && reference.Name !== '' ? reference.Name : reference.File
       if (typeof expressionName !== 'string') continue
       const meta = labelFor('expressions', expressionName)
-      expressions.push({ name: expressionName, label: meta?.label ?? expressionName, category: meta?.category ?? 'other' })
+      // Ship each expression's own parameter writes.
+      //
+      // The engine's expression pipeline loads the file correctly (44
+      // definitions, the right parameter count, weight 1) but never actually
+      // moves a parameter, so nothing it plays is visible. The browser half
+      // therefore applies these values itself through the same parameter
+      // machinery it already uses for motions — which also gives the UI the
+      // per-expression data it needs to work out which effects conflict.
+      const file = safeRel(reference.File)
+      const params = []
+      if (file !== undefined) {
+        let parsed
+        try {
+          parsed = readJson(join(dir, file))
+        } catch {
+          parsed = undefined
+        }
+        if (Array.isArray(parsed?.Parameters)) {
+          for (const parameter of parsed.Parameters) {
+            if (typeof parameter?.Id !== 'string' || parameter.Id === '') continue
+            const value = Number(parameter.Value)
+            if (!Number.isFinite(value)) continue
+            const blend = parameter.Blend === 'Multiply' ? 'Multiply'
+              : parameter.Blend === 'Overwrite' ? 'Overwrite' : 'Add'
+            params.push({ id: parameter.Id, value, blend })
+          }
+        }
+      }
+      expressions.push({
+        name: expressionName,
+        label: meta?.label ?? expressionName,
+        category: meta?.category ?? 'other',
+        file: file ?? '',
+        params,
+      })
     }
   }
 

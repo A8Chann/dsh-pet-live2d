@@ -1314,11 +1314,20 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
     // without reaching through React internals.
     if (typeof window !== "undefined") window.__dshLive2dPet = motion.current;
     const pinnedRef = useRef({});
+    /** Late-bound handle to applyExpressions, which is declared further down. */
+    const applyExpressionsRef = useRef(() => {});
     // The pinned-expression set lives in the component, not the controller, so
     // expose it on the same diagnostic seam; otherwise a test can only see it
     // through the panel's chips, which do not exist while the panel is closed.
     if (typeof window !== "undefined") {
       window.__dshLive2dPet.expressions = () => Object.keys(pinnedRef.current);
+      // Programmatic pin set, for diagnostics and the regression suite. It goes
+      // through the same funnel as the panel, so slot rules apply identically.
+      window.__dshLive2dPet.setExpressions = (names) => {
+        const next = {};
+        for (const name of names || []) next[name] = true;
+        applyExpressionsRef.current(next);
+      };
     }
     const [motionGroup, setMotionGroup] = useState("");
 
@@ -1687,11 +1696,15 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       pinnedRef.current = next;
       const model = modelRef.current;
       if (model === null) return;
-      const manager = model.internalModel?.expressionManager;
+      // The engine's expression manager owns the face. It applies ONE
+      // expression at a time and fades it in over about a second, so the last
+      // pin wins — which is exactly the semantics a dress-up slot wants.
+      const manager = model.internalModel?.motionManager?.expressionManager;
       const names = Object.keys(next);
       if (names.length === 0) manager?.resetExpression?.();
       else void model.expression(names[names.length - 1]);
     }, []);
+    applyExpressionsRef.current = applyExpressions;
 
     /**
      * Arm the auto-clear for a MANUALLY chosen expression.
