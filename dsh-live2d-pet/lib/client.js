@@ -1705,12 +1705,14 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       // The engine holds exactly ONE expression (expressionManager
       // .currentExpression), so the last pin wins.
       //
-      // NOTE: combining several is not solved yet. Writing the union of their
-      // parameters straight into the core model was tried and does not render
-      // for this model's switch parameters, and handing the engine a synthetic
-      // definition backed by a blob URL was inconclusive. Until one of those
-      // works, a dress-up slot selection supersedes the previous one, and the
-      // panel says so rather than showing several selected and rendering one.
+      // KNOWN LIMITATION: several slots cannot be worn at once. The host route
+      // that serves their union works and is tested (see cdp-merge), but
+      // registering it as an extra engine definition does NOT hold: the fade
+      // visibly starts and then collapses back to zero, so a two-slot
+      // selection rendered NOTHING — strictly worse than last-wins, which at
+      // least shows one of them. The wiring is therefore left out until the
+      // engine side is understood; the route stays because it is correct and
+      // is what that work will need.
       void model.expression(names[names.length - 1]);
     }, []);
     applyExpressionsRef.current = applyExpressions;

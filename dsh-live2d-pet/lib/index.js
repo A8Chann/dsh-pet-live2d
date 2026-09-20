@@ -424,6 +424,80 @@ function catalogRoute() {
   }
 }
 
+/**
+ * The merged-expression route (GET /api/live2d-pet/merge?pet=<id>&e=<name>&e=...).
+ *
+ * The engine's expression manager holds exactly ONE expression, so a dress-up
+ * panel that wants glasses AND cat ears AND a dark tablecloth at once has
+ * nothing to play them with. This route builds the union as a single synthetic
+ * .exp3.json on the fly, and the browser half registers it as one extra
+ * expression definition — one expression to the engine, several effects on
+ * screen.
+ *
+ * It is served from the host rather than built in the browser because the
+ * engine resolves a definition's File against the model's URL with
+ * `new URL(file, modelUrl)`: a root-relative path lands back on this server,
+ * while the blob: URL an in-page merge would need falls through that resolver's
+ * absolute-URL test and gets rewritten into a relative path that cannot load.
+ *
+ * Only names that the pet itself declares are accepted, so no request can reach
+ * outside the scanned catalog.
+ */
+function mergeRoute() {
+  return {
+    kind: 'exact',
+    path: API + '/merge',
+    handler: (request, response) => {
+      if (!loopbackOnly(request)) {
+        response.writeHead(403)
+        response.end()
+        return
+      }
+      if (request.method !== 'GET' && request.method !== 'HEAD') {
+        response.writeHead(405, { allow: 'GET, HEAD' })
+        response.end()
+        return
+      }
+      let params
+      try {
+        params = new URL(request.url ?? '/', 'http://pet.local').searchParams
+      } catch {
+        sendJson(response, 400, { ok: false, error: 'bad query' })
+        return
+      }
+      const petId = params.get('pet') ?? ''
+      const pet = buildCatalog().find((entry) => entry.id === petId)
+      if (pet === undefined) {
+        sendJson(response, 404, { ok: false, error: 'unknown pet' })
+        return
+      }
+      const byName = new Map(pet.expressions.map((entry) => [entry.name, entry]))
+      // Later names win for a shared parameter, so an explicit choice overrides
+      // rather than accumulating.
+      const merged = new Map()
+      let used = 0
+      for (const name of params.getAll('e').slice(0, 32)) {
+        const entry = byName.get(name)
+        if (entry === undefined) continue
+        used += 1
+        for (const parameter of entry.params ?? []) merged.set(parameter.id, parameter)
+      }
+      if (used === 0 || merged.size === 0) {
+        sendJson(response, 404, { ok: false, error: 'no known expressions' })
+        return
+      }
+      sendJson(response, 200, {
+        Type: 'Live2D Expression',
+        // Short fades: the client swaps the combination whenever a slot
+        // changes, and a full second of blending reads as lag.
+        FadeInTime: 0.2,
+        FadeOutTime: 0.2,
+        Parameters: Array.from(merged.values()),
+      })
+    },
+  }
+}
+
 /** The model reference-closure route (GET /api/live2d-pet/asset/<id>/<path>). */
 function assetRoute() {
   return {
@@ -752,7 +826,7 @@ function eventsRoute(hub) {
 
 /** The complete route table this plugin owns. */
 export function buildRoutes(hub) {
-  return [catalogRoute(), assetRoute(), runtimeRoute(), eventsRoute(hub)]
+  return [catalogRoute(), assetRoute(), runtimeRoute(), mergeRoute(), eventsRoute(hub)]
 }
 
 export function apply(ctx) {
