@@ -4,7 +4,8 @@
 // PASS/FAIL table, and always tears the server down again.
 import { spawn } from 'node:child_process'
 import { setTimeout as sleep } from 'node:timers/promises'
-import { HERE, BASE } from './paths.mjs'
+import { rmSync } from 'node:fs'
+import { HERE, BASE, PROFILES } from './paths.mjs'
 
 /** filename -> what user-visible contract it proves. */
 export const SUITE = {
@@ -33,6 +34,14 @@ async function waitForServer() {
   return false
 }
 
+// Every driver creates a disposable Edge profile (~50-80 MB). They are removed
+// on exit, but a crashed or interrupted run leaves them behind, so sweep both
+// before and after.
+const purgeProfiles = () => {
+  try { rmSync(PROFILES, { recursive: true, force: true }) } catch { /* best effort */ }
+}
+purgeProfiles()
+
 const only = process.argv.slice(2)
 const results = []
 try {
@@ -54,6 +63,7 @@ try {
   }
 } finally {
   server.kill()
+  purgeProfiles()
 }
 
 const failed = results.filter((r) => !r.ok)
