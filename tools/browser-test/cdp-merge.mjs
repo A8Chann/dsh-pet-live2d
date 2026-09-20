@@ -53,8 +53,22 @@ const check = (label, ok, detail) => { results.push({ label, ok }); console.log(
 
 // Sample the parameters at the END of a frame, where the engine's own
 // expression pass has already written them and nothing has restored them yet.
-const WATCH = ["ParamCheek70","ParamCheek83","cc2","maoshou"]
-const PROBE = "(() => {\n  const c = window.__PET_DBG.core\n  const names = [\"ParamCheek70\",\"ParamCheek83\",\"cc2\",\"maoshou\"]\n  const ids = Array.from(c._model.parameters.ids)\n  window.__at = names.map((n) => ids.indexOf(n))\n  window.__last = null\n  const base = c.update.bind(c)\n  c.update = () => {\n    base()\n    window.__last = window.__at.map((i) => (i < 0 ? null : Number(c._model.parameters.values[i].toFixed(2))))\n  }\n  return true\n})()"
+const WATCH = ["ParamCheek70", "ParamCheek83", "cc2", "maoshou", "mozhua", "mozhua2"]
+const PROBE = [
+  '(() => {',
+  '  const c = window.__PET_DBG.core',
+  '  const names = ' + JSON.stringify(WATCH),
+  '  const ids = Array.from(c._model.parameters.ids)',
+  '  window.__at = names.map((n) => ids.indexOf(n))',
+  '  window.__last = null',
+  '  const base = c.update.bind(c)',
+  '  c.update = () => {',
+  '    base()',
+  '    window.__last = window.__at.map((i) => (i < 0 ? null : Number(c._model.parameters.values[i].toFixed(2))))',
+  '  }',
+  '  return true',
+  '})()',
+].join('\n')
 check('parameter probe installed', (await ev(PROBE)) === true)
 
 /** Read the parameters as the engine wrote them in the most recent frame. */
@@ -106,7 +120,7 @@ await ev('(()=>{const bs=Array.from(document.querySelectorAll("[data-dsh-live2d-
   + ' const b=bs.find((x)=>x.textContent.indexOf("装扮")===0); if(!b) return false; b.click(); return true})()')
 await sleep(700)
 const slotCount = await ev('document.querySelectorAll("[data-dsh-live2d-pet] [data-panel] [data-slot]").length')
-check('the 装扮 tab lists every slot', slotCount === 7, 'slots=' + slotCount)
+check('the 装扮 tab lists every slot', slotCount === 14, 'slots=' + slotCount)
 
 /** Click a chip in the panel by its slot id and visible label. */
 const pick = async (slotId, label) => {
@@ -133,6 +147,19 @@ check('picking 圆眼镜 in the panel turns its switch on', at(uiGlasses, 'Param
 const uiBoth = await pick('sticker', '猫猫')
 check('then picking 猫猫 keeps the glasses on',
   at(uiBoth, 'ParamCheek70') === 1 && at(uiBoth, 'ParamCheek83') === 1, JSON.stringify(uiBoth))
+// 白魔爪 is 魔爪换色 layered on 桌面粉魔爪: the recolour alone renders nothing
+// because there is no claw to recolour, so the option must carry BOTH and the
+// slot must be told to compare all of them.
+const pink = await pick('claw', '粉魔爪')
+check('粉魔爪 turns the claw on, uncoloured',
+  at(pink, 'mozhua') === 1 && at(pink, 'mozhua2') === 0, JSON.stringify(pink))
+const white = await pick('claw', '白魔爪')
+check('白魔爪 turns the claw on AND recolours it',
+  at(white, 'mozhua') === 1 && at(white, 'mozhua2') === 1, JSON.stringify(white))
+const clawsOff = await pick('claw', '无')
+check('clearing the claw slot drops both',
+  at(clawsOff, 'mozhua') === 0 && at(clawsOff, 'mozhua2') === 0, JSON.stringify(clawsOff))
+
 const uiOff = await pick('glasses', '无')
 check('and clearing one slot leaves the other alone',
   at(uiOff, 'ParamCheek70') === 0 && at(uiOff, 'ParamCheek83') === 1, JSON.stringify(uiOff))

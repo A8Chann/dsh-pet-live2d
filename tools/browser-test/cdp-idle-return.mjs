@@ -77,22 +77,33 @@ const until = async (fn, ms = 20000) => {
   }
 }
 
-// --- a manually pinned expression clears by itself -------------------------
+// --- a panel choice PERSISTS ------------------------------------------------
+//
+// This block used to assert the opposite, because a manually pinned expression
+// expired after EXPRESSION_HOLD_MS. That is the wrong contract for a dress-up
+// panel: an outfit the user picked from the panel is a deliberate choice, and
+// having it evaporate a few seconds later reads as a bug. The auto-clear is now
+// reserved for what it was meant for — a reaction or a session phase must not
+// leave the pet stuck — and that is checked by the phase block below.
 await openPanel(ev)
 await sleep(700)
-// The panel opens on the 动作 tab; the expressions live behind the 表情 tab.
-await ev('[...document.querySelectorAll("[data-dsh-live2d-pet] [data-tabs] button")].find(b => b.textContent.includes("表情")).click()')
-await sleep(500)
-const chips = await ev('document.querySelectorAll("[data-dsh-live2d-pet] [data-panel] [data-chips] button").length')
-check('the 表情 tab lists chips', chips > 1, 'chips=' + chips)
-await ev('document.querySelector("[data-dsh-live2d-pet] [data-panel] [data-chips] button").click()')
-await sleep(800)
-check('picking an expression pins it', (await exprCount()) > 0, 'expressions=' + await ev('JSON.stringify(window.__dshLive2dPet.expressions())'))
-// Close the panel so nothing re-pins while we watch the timer run out.
-await closePanel(ev)
-check('the pinned expression clears itself (12s)', await until(async () => (await exprCount()) === 0, 20000),
+// The panel opens on the 动作 tab; every effect is behind the merged 装扮 tab.
+await ev('(()=>{const bs=Array.from(document.querySelectorAll("[data-dsh-live2d-pet] [data-tabs] button"));'
+  + ' const b=bs.find((x)=>x.textContent.indexOf("装扮")===0); if(b) b.click(); return !!b})()')
+await sleep(600)
+const slots = await ev('document.querySelectorAll("[data-dsh-live2d-pet] [data-panel] [data-slot]").length')
+check('the 装扮 tab lists every slot', slots === 14, 'slots=' + slots)
+await ev('(()=>{const g=document.querySelector(\'[data-dsh-live2d-pet] [data-panel] [data-slot="glasses"]\');'
+  + ' const b=Array.from(g.querySelectorAll("[data-chips] button")).find((x)=>x.textContent==="圆眼镜");'
+  + ' if(!b) return false; b.click(); return true})()')
+await sleep(900)
+check('picking a slot option pins it', (await exprCount()) > 0,
   'expressions=' + await ev('JSON.stringify(window.__dshLive2dPet.expressions())'))
-check('and the pet is back on the idle loop', await until(async () => (await motion()) === 'idle', 25000), 'data-motion=' + await motion())
+await closePanel(ev)
+// Well past EXPRESSION_HOLD_MS: the outfit must still be on.
+await sleep(14000)
+check('the panel choice is still there 14s later', (await exprCount()) > 0,
+  'expressions=' + await ev('JSON.stringify(window.__dshLive2dPet.expressions())'))
 
 // --- a held pose is not permanent either -----------------------------------
 // 掏出手机 is declared hold:true, so it parks in its final frame; the watchdog

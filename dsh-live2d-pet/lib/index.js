@@ -143,11 +143,23 @@ function normaliseSlots(raw) {
     const options = []
     for (const option of Array.isArray(slot.options) ? slot.options : []) {
       if (typeof option !== 'object' || option === null) continue
-      const expression = typeof option.expression === 'string' ? option.expression.trim() : ''
-      if (expression === '') continue
+      // An option may need SEVERAL expressions: this model's 白魔爪 is
+      // 魔爪换色 layered on 桌面粉魔爪, and the recolour alone renders nothing
+      // because there is no claw to recolour. Accept either shape so a pet can
+      // write the common single case without an array.
+      const raw = Array.isArray(option.expressions)
+        ? option.expressions
+        : (typeof option.expression === 'string' ? [option.expression] : [])
+      const expressions = []
+      for (const name of raw) {
+        if (typeof name !== 'string') continue
+        const trimmed = name.trim()
+        if (trimmed !== '' && !expressions.includes(trimmed)) expressions.push(trimmed)
+      }
+      if (expressions.length === 0) continue
       options.push({
-        label: typeof option.label === 'string' && option.label !== '' ? option.label : expression,
-        expression,
+        label: typeof option.label === 'string' && option.label !== '' ? option.label : expressions[0],
+        expressions,
       })
     }
     if (options.length === 0) continue

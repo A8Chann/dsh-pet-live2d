@@ -83,7 +83,7 @@ const server = createServer(async (req, res) => {
     return
   }
   if (pathname === '/plugins/dsh-live2d-pet/client.js') {
-    res.writeHead(200, { 'content-type': 'application/javascript' })
+    res.writeHead(200, { 'content-type': 'application/javascript', 'cache-control': 'no-store' })
     res.end(readFileSync(join(PLUGIN, 'lib', 'client.js')))
     return
   }
@@ -93,6 +93,36 @@ const server = createServer(async (req, res) => {
     return
   }
   if (pathname.startsWith('/variants/')) {
+    // The DBG variant is generated HERE, from the live client source, on every
+    // request.
+    //
+    // It used to be a file on disk rebuilt by the suite runner, which meant any
+    // driver run directly (or before the runner got to it) loaded a copy from
+    // whenever it was last generated — and silently tested yesterday's code.
+    // That trap has now cost two debugging sessions; generating it removes the
+    // possibility rather than documenting it.
+    if (pathname === '/variants/client-DBG.js') {
+      const ANCHOR = '        model = loaded;\n        modelRef.current = loaded;'
+      const HOOK = [
+        '',
+        '        if (typeof window !== "undefined") {',
+        '          window.__PET_DBG = {',
+        '            app,',
+        '            get model() { return app.stage.children.find((c) => c.internalModel !== undefined) ?? null; },',
+        '            get core() { const m = app.stage.children.find((c) => c.internalModel !== undefined); return m ? m.internalModel.coreModel : null; },',
+        '          };',
+        '        }',
+      ].join('\n')
+      const source = readFileSync(join(PLUGIN, 'lib', 'client.js'), 'utf8')
+      if (!source.includes(ANCHOR)) {
+        res.writeHead(500, { 'content-type': 'text/plain' })
+        res.end('client.js: variant anchor not found')
+        return
+      }
+      res.writeHead(200, { 'content-type': 'application/javascript', 'cache-control': 'no-store' })
+      res.end(source.replace(ANCHOR, ANCHOR + HOOK))
+      return
+    }
     const file = join(HERE, pathname.slice(1))
     if (!existsSync(file)) { res.writeHead(404); res.end('missing ' + file); return }
     res.writeHead(200, { 'content-type': 'application/javascript' })

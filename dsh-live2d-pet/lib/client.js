@@ -1811,24 +1811,12 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       }, EXPRESSION_HOLD_MS);
     }, [applyExpressions]);
 
-    // One funnel for expression changes: state, the pinned mirror the
-    // controller re-layers after each motion start, and the live model all
-    // move together.
-    const toggleExpression = useCallback((expressionName) => {
-      const next = Object.assign({}, pinnedRef.current);
-      if (next[expressionName] === true) delete next[expressionName];
-      else next[expressionName] = true;
-      applyExpressions(next);
-      if (Object.keys(next).length > 0) armExpressionClear();
-      else window.clearTimeout(expressionTimer.current);
-    }, [applyExpressions, armExpressionClear]);
-
     /**
      * Show an expression for a moment without toggling it.
      *
-     * Used by reactions (a head pat blushes): unlike `toggleExpression`, which
-     * is the panel's on/off switch, this always turns the face ON and lets the
-     * auto-clear timer take it away again.
+     * Used by reactions (a head pat blushes). The panel does not toggle
+     * expressions any more — every effect is a slot choice that persists — so
+     * this is the only path that shows a face and hands it back on a timer.
      */
     const flashExpression = useCallback((expressionName) => {
       const next = Object.assign({}, pinnedRef.current, { [expressionName]: true });
@@ -1846,12 +1834,19 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
      */
     const chooseSlotOption = useCallback((slot, option) => {
       const next = Object.assign({}, pinnedRef.current);
-      for (const candidate of slot.options) delete next[candidate.expression];
-      if (option !== null) next[option.expression] = true;
+      for (const candidate of slot.options) {
+        for (const name of candidate.expressions) delete next[name];
+      }
+      if (option !== null) {
+        for (const name of option.expressions) next[name] = true;
+      }
       applyExpressions(next);
-      if (Object.keys(next).length > 0) armExpressionClear();
-      else window.clearTimeout(expressionTimer.current);
-    }, [applyExpressions, armExpressionClear]);
+      // A dress-up choice PERSISTS. The auto-clear exists so a reaction or a
+      // session phase cannot leave the pet stuck, but an outfit is an explicit
+      // choice the user reverses from this panel (or with 归位), and expiring it
+      // after a few seconds would make the panel feel broken.
+      window.clearTimeout(expressionTimer.current);
+    }, [applyExpressions]);
 
     const resetAll = useCallback(() => {
       window.clearTimeout(expressionTimer.current);
@@ -2154,7 +2149,7 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
         window.removeEventListener("pointerup", onUp);
         window.removeEventListener("pointercancel", onUp);
       };
-    }, [toggleExpression, say]);
+    }, [flashExpression, say]);
 
     // ---- persistence ---------------------------------------------------
     useEffect(() => { saveStored({ size }); }, [size]);
@@ -2235,16 +2230,19 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
           ),
           h("div", { "data-tabs": "" },
             h("button", { type: "button", ...(tab === "motions" ? { "data-on": "" } : {}), onClick: () => setTab("motions") }, "动作 " + pet.motions.length),
-            h("button", { type: "button", ...(tab === "expressions" ? { "data-on": "" } : {}), onClick: () => setTab("expressions") }, "表情 " + pet.expressions.length),
-            (pet.expressionSlots ?? []).length > 0
-              ? h("button", { type: "button", ...(tab === "slots" ? { "data-on": "" } : {}), onClick: () => setTab("slots") }, "装扮 " + pet.expressionSlots.length)
-              : null,
+            // 表情 and 装扮 are one menu now: all 44 expressions are slots
+            // (glasses, stickers, hair, cloth, claws, desk, hands, then eyes,
+            // mood, mouth, symbols, ambience, blush, desk actions).
+            h("button", { type: "button", ...(tab === "slots" ? { "data-on": "" } : {}), onClick: () => setTab("slots") }, "装扮 " + (pet.expressionSlots ?? []).length),
           ),
           h("div", { "data-body": "" }, tab === "slots"
             // Dress-up slots: one choice each, and choices in different slots
             // coexist (glasses AND cat ears AND a dark tablecloth).
             ? (pet.expressionSlots ?? []).map((slot) => {
-                const active = slot.options.find((option) => pinned[option.expression] === true);
+                // An option is active when every expression it carries is pinned:
+                // 白魔爪 needs the claw AND its recolour, so checking only the
+                // first would light it up for 粉魔爪 too.
+                const active = slot.options.find((option) => option.expressions.every((name) => pinned[name] === true));
                 return h("div", { "data-group": "", key: slot.id, "data-slot": slot.id },
                   h("span", null, slot.label),
                   h("div", { "data-chips": "" },
@@ -2256,9 +2254,9 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
                     }, slot.none),
                     slot.options.map((option) => h("button", {
                       type: "button",
-                      key: option.expression,
-                      ...(pinned[option.expression] === true ? { "data-on": "" } : {}),
-                      "data-slot-option": option.expression,
+                      key: option.label,
+                      ...(option.expressions.every((name) => pinned[name] === true) ? { "data-on": "" } : {}),
+                      "data-slot-option": option.label,
                       onClick: () => chooseSlotOption(slot, option),
                     }, option.label)),
                   ),
@@ -2277,17 +2275,7 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
                   }, entry.count > 1 ? "第 " + (index + 1) + " 段" : "播放")),
                 ),
               ))
-            : groupExpressions(pet.expressions).map((bucket) => h("div", { "data-group": "", key: bucket.category },
-                h("span", null, bucket.label),
-                h("div", { "data-chips": "" },
-                  bucket.items.map((entry) => h("button", {
-                    key: entry.name,
-                    type: "button",
-                    ...(pinned[entry.name] === true ? { "data-on": "" } : {}),
-                    onClick: () => toggleExpression(entry.name),
-                  }, entry.label)),
-                ),
-              )),
+            : null,
           ),
           h("div", { "data-hintrow": "" }, "在宠物身上点右键打开这里 · Esc 或点空白处关闭"),
           h("footer", null,
@@ -2338,28 +2326,7 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
     );
   }
 
-  const CATEGORY_LABELS = {
-    emotion: "情绪",
-    accessory: "配件",
-    prop: "道具",
-    action: "动作",
-    other: "其他",
-  };
 
-  /** Bucket expressions by category, preserving catalog order. */
-  function groupExpressions(expressions) {
-    const buckets = [];
-    const index = new Map();
-    for (const entry of expressions) {
-      const category = entry.category ?? "other";
-      if (!index.has(category)) {
-        index.set(category, buckets.length);
-        buckets.push({ category, label: CATEGORY_LABELS[category] ?? category, items: [] });
-      }
-      buckets[index.get(category)].items.push(entry);
-    }
-    return buckets;
-  }
 
   /** Positioning lives on the pet's own root div, so it works whether it is
    * reached through the React container or not. */

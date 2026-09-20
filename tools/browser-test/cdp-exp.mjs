@@ -1,4 +1,4 @@
-// Expression panel: every chip must actually reach the model.
+// The merged 装扮 menu: every slot option must actually reach the model.
 //
 // This driver used to hash the canvas before and after a click and print
 // whether it changed, then exit 0 unconditionally — so it asserted nothing, and
@@ -57,10 +57,13 @@ const at = (values, name) => (values === null ? null : values[WATCH.indexOf(name
 
 await openPanel(ev)
 await sleep(700)
-await ev('(()=>{const t=document.querySelectorAll("[data-dsh-live2d-pet] [data-panel] [data-tabs] button")[1]; if(t) t.click(); return 1})()')
+await ev('(()=>{const bs=Array.from(document.querySelectorAll("[data-dsh-live2d-pet] [data-panel] [data-tabs] button"));'
+  + ' const b=bs.find((x)=>x.textContent.indexOf("装扮")===0); if(!b) return false; b.click(); return true})()')
 await sleep(700)
-const chips = await ev('document.querySelectorAll("[data-dsh-live2d-pet] [data-panel] [data-chips] button").length')
-check('the 表情 tab renders every chip', chips === 44, 'chips=' + chips)
+// 表情 and 装扮 are one menu now: 14 slots, each with its options plus a
+// "none" button.
+const slots = await ev('document.querySelectorAll("[data-dsh-live2d-pet] [data-panel] [data-slot]").length')
+check('the merged menu renders every slot', slots === 14, 'slots=' + slots)
 
 // Each chip must move the parameter its own .exp3.json declares.
 for (const [label, param] of [["墨镜","ParamCheek71"],["星星眼","ParamCheek16"],["头顶鲸","jingyu"]]) {
@@ -73,7 +76,10 @@ for (const [label, param] of [["墨镜","ParamCheek71"],["星星眼","ParamCheek
     if (now !== null && at(now, param) === 1) { seen = now; break }
     seen = now
   }
-  check('clicking ' + label + ' sets ' + param, at(seen, param) === 1, JSON.stringify(seen))
+  const pin = JSON.parse(await ev('JSON.stringify(window.__dshLive2dPet.expressions())') ?? 'null')
+  const layers = await ev('window.__dshLive2dPet.expressionLayerCount()')
+  check('clicking ' + label + ' sets ' + param, at(seen, param) === 1,
+    JSON.stringify(seen) + '  pinned=' + JSON.stringify(pin) + ' layers=' + layers)
   await ev('window.__dshLive2dPet.setExpressions([])')
   await sleep(600)
 }

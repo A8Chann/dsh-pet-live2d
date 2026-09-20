@@ -12,7 +12,7 @@
 //   node run-suite.mjs mask head       # only drivers whose name contains these
 //   node run-suite.mjs --jobs 1        # serial, for debugging the suite itself
 //   node run-suite.mjs --jobs 6        # more parallelism on a big machine
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { rmSync } from 'node:fs'
 import { cpus } from 'node:os'
@@ -28,13 +28,13 @@ export const SUITE = {
   'cdp-dpr.mjs': 'DPR 渲染倍率（放大清晰）',
   'cdp-sharp.mjs': '2x 超采样下限（缩小不虚）',
   'cdp-motion.mjs': '动作语义：嘴还原 / 喷水 / 定格 / 前置动作',
-  'cdp-exp.mjs': '表情面板：44 项可点且真的生效',
+  'cdp-exp.mjs': '装扮菜单：每个槽位选项都真的写进模型',
   'cdp-handoff2.mjs': '定格姿势能被会话相位接管',
   'cdp-host-events.mjs': '真实 DSH 事件接线（tools/*）+ 相位持续播放',
   'cdp-head.mjs': '点头部才重锤出击；摸鱼不碰重锤/喷水',
   'cdp-idle-return.mjs': '动作/表情到点自动回到初始待机',
   'cdp-passthrough.mjs': '只有角色可拖动，透明处事件穿透',
-  'cdp-merge.mjs': '多槽位叠加：眼镜+贴纸+桌布同时生效',
+  'cdp-merge.mjs': '装扮菜单：多槽位叠加、跨槽保留、白魔爪双层',
 }
 
 const argv = process.argv.slice(2)
@@ -85,17 +85,6 @@ const purgeProfiles = () => {
   try { rmSync(PROFILES, { recursive: true, force: true }) } catch { /* best effort */ }
 }
 purgeProfiles()
-
-// Rebuild the DBG variant from the current client source.
-//
-// It is a copy, so it silently goes stale whenever client.js changes — once
-// that made cdp-motion fail against a variant that predated a fix. Rebuilding
-// here means a suite run can never test yesterday's code.
-const variant = spawnSync(process.execPath, [new URL('./make-variant.mjs', import.meta.url).pathname.replace(/^\//, '')], { encoding: 'utf8' })
-if (variant.status !== 0) {
-  console.error('make-variant failed:\n' + (variant.stderr || variant.stdout || ''))
-  process.exit(1)
-}
 
 /**
  * Run one driver against its OWN harness server.
