@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process'
 import { rmSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { browserPath, PROFILES, BASE, SHOTS } from './paths.mjs'
-import { waitReady } from './ready.mjs'
+import { waitReady, openPanel, closePanel } from './ready.mjs'
 import { join } from 'node:path'
 
 const EDGE = browserPath()
@@ -55,7 +55,7 @@ out.canvas = JSON.parse(await canvasInfo())
 const before = JSON.parse(await rect())
 const snaps = []
 for (let i = 0; i < 4; i++) {
-  await ev('(()=>{const b=document.querySelector("[data-dsh-live2d-pet] [data-bar] button");if(b)b.click();return true})()')
+  await openPanel(ev)
   await sleep(450)
   const c = JSON.parse(await canvasInfo())
   snaps.push(c.backing.join('x') + '|' + c.css.join('x'))
@@ -69,7 +69,7 @@ await shot('panel')
 
 // make sure the panel is closed for later steps
 if ((await ev('document.querySelectorAll("[data-dsh-live2d-pet] [data-panel]").length')) > 0) {
-  await ev('(()=>{const b=document.querySelector("[data-dsh-live2d-pet] [data-bar] button");if(b)b.click();return true})()')
+  await closePanel(ev)
   await sleep(400)
 }
 

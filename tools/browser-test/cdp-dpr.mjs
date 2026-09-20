@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { rmSync } from 'node:fs'
 import { browserPath, PROFILES, BASE } from './paths.mjs'
-import { waitReady } from './ready.mjs'
+import { waitReady, openPanel, panelFooter } from './ready.mjs'
 import { join } from 'node:path'
 const EDGE = browserPath()
 const PORT = 9364
@@ -33,9 +33,8 @@ out.dpr = await ev('window.devicePixelRatio')
 out.at160 = JSON.parse(await ev('JSON.stringify((()=>{const c=document.querySelector("[data-dsh-live2d-pet] canvas");const r=c.getBoundingClientRect();return {css:[Math.round(r.width),Math.round(r.height)],backing:[c.width,c.height]}})())'))
 // Grow the pet and re-measure: the backing store must scale with it.
 await ev(`(() => {
-  const bs = Array.from(document.querySelectorAll('[data-dsh-live2d-pet] [data-bar] button'));
-  const plus = bs[bs.length - 1];
-  for (let i = 0; i < 5; i++) plus.click();
+  await openPanel(ev)
+  for (let i = 0; i < 5; i++) await panelFooter(ev, "＋")
   return true;
 })()`)
 await sleep(1800)

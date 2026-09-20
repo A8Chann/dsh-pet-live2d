@@ -131,6 +131,15 @@ try {
   const total = pending.length
   console.log('running ' + total + ' drivers across ' + Math.min(JOBS, total) + ' workers\n')
 
+  if (pending.length === 0) {
+    // Nothing matched. Without this the pool below never settles: it only
+    // resolves from a driver's completion callback, and with no drivers there
+    // is none — so a typo'd filter hung the runner instead of failing fast.
+    console.error('no driver matches: ' + only.join(', '))
+    console.error('available: ' + Object.keys(SUITE).join(', '))
+    process.exit(1)
+  }
+
   let running = 0
   // A monotonic slot per driver, NOT the live worker count: that count is
   // reused as drivers finish, so two concurrent drivers would land on the same

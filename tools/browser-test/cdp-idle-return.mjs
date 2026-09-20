@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process'
 import { rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { browserPath, PROFILES, BASE } from './paths.mjs'
-import { waitReady } from './ready.mjs'
+import { waitReady, openPanel, closePanel } from './ready.mjs'
 
 const EDGE = browserPath()
 const PORT = 9381
@@ -78,7 +78,7 @@ const until = async (fn, ms = 20000) => {
 }
 
 // --- a manually pinned expression clears by itself -------------------------
-await ev('document.querySelector("[data-dsh-live2d-pet] [data-bar] button").click()')
+await openPanel(ev)
 await sleep(700)
 // The panel opens on the 动作 tab; the expressions live behind the 表情 tab.
 await ev('[...document.querySelectorAll("[data-dsh-live2d-pet] [data-tabs] button")].find(b => b.textContent.includes("表情")).click()')
@@ -89,7 +89,7 @@ await ev('document.querySelector("[data-dsh-live2d-pet] [data-panel] [data-chips
 await sleep(800)
 check('picking an expression pins it', (await exprCount()) > 0, 'expressions=' + await ev('JSON.stringify(window.__dshLive2dPet.expressions())'))
 // Close the panel so nothing re-pins while we watch the timer run out.
-await ev('document.querySelector("[data-dsh-live2d-pet] [data-bar] button").click()')
+await closePanel(ev)
 check('the pinned expression clears itself (12s)', await until(async () => (await exprCount()) === 0, 20000),
   'expressions=' + await ev('JSON.stringify(window.__dshLive2dPet.expressions())'))
 check('and the pet is back on the idle loop', await until(async () => (await motion()) === 'idle', 25000), 'data-motion=' + await motion())

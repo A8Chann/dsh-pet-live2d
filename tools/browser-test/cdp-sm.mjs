@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process'
 import { writeFileSync, rmSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { browserPath, PROFILES, SHOTS, BASE } from './paths.mjs'
-import { waitReady } from './ready.mjs'
+import { waitReady, openPanel, panelFooter } from './ready.mjs'
 import { join } from 'node:path'
 
 const EDGE = browserPath()
@@ -59,7 +59,7 @@ out.tapReleased = out.tapSettled === 'idle'
 out.stillAnimating = (await hash()) !== frameEarly
 
 // B. same motion twice in a row (needs stopAllMotions to replay)
-await ev('(()=>{const b=document.querySelector("[data-dsh-live2d-pet] [data-bar] button");if(b)b.click();return true})()')
+await openPanel(ev)
 await sleep(500)
 const clickChip = (i) => ev('(()=>{const bs=Array.from(document.querySelectorAll("[data-dsh-live2d-pet] [data-panel] [data-chips] button"));bs[' + i + '].click();return true})()')
 await clickChip(1); await sleep(400); out.replay1 = await state()
@@ -75,7 +75,7 @@ out.rapidReleased = out.afterRapid === 'idle'
 
 // D. panel idle button returns to rest
 await clickChip(3); await sleep(500); out.panelPlay = await state()
-await ev('(()=>{const bs=Array.from(document.querySelectorAll("[data-dsh-live2d-pet] [data-bar] button"));bs[1].click();return true})()')
+await panelFooter(ev, "归位")
 await sleep(500); out.afterReset = await state()
 await shot('final')
 

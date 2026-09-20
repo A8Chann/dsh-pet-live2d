@@ -975,19 +975,17 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
     // Until the silhouette is known the whole box stays live, so the pet is
     // never inert; it degrades to the pre-mask behaviour instead of nothing.
     ROOT_SEL + " [data-stage][data-nomask]{pointer-events:auto;cursor:grab}",
-    ROOT_SEL + " [data-bar]{position:absolute;left:50%;transform:translateX(-50%);bottom:-2px;display:flex;gap:2px;padding:3px 6px;border-radius:999px;background:rgba(20,26,40,.74);backdrop-filter:blur(8px);opacity:0;transition:opacity .15s ease;pointer-events:none;white-space:nowrap}",
-    // Driven by [data-hover] rather than :hover: the root is pointer-events:none
-    // so it never matches :hover, and the proxy that does match is only the
-    // character's silhouette — the bar would vanish as soon as the pointer
-    // travelled from the pet down to the buttons.
-    ROOT_SEL + "[data-hover] [data-bar],[data-bar][data-open]{opacity:1;pointer-events:auto}",
-    ROOT_SEL + " [data-bar] button{border:0;background:transparent;color:#dbe4f5;font:500 11px/1.7 inherit;padding:2px 7px;border-radius:999px;cursor:pointer}",
-    ROOT_SEL + " [data-bar] button:hover{background:rgba(255,255,255,.18)}",
     ROOT_SEL + " [data-bubble]{position:absolute;left:50%;bottom:100%;transform:translateX(-50%);margin-bottom:6px;max-width:min(240px,60vw);width:max-content;padding:7px 11px;border-radius:12px;background:linear-gradient(160deg,rgba(38,52,84,.95),rgba(21,28,46,.95));border:1px solid rgba(120,170,255,.3);box-shadow:0 8px 24px rgba(0,0,0,.35);color:#e8eefc;font:400 12px/1.5 inherit;white-space:pre-wrap;pointer-events:none}",
     // Sits outside the pet's box entirely, so it must re-arm itself.
     ROOT_SEL + " [data-panel]{position:absolute;right:calc(100% + 10px);bottom:0;width:270px;max-height:min(440px,72vh);display:flex;flex-direction:column;border-radius:14px;overflow:hidden;background:rgba(22,29,46,.95);backdrop-filter:blur(14px);border:1px solid rgba(120,170,255,.24);box-shadow:0 14px 40px rgba(0,0,0,.44);color:#e8eefc;font:400 12px/1.5 inherit;pointer-events:auto}",
     ROOT_SEL + " [data-panel] header{display:flex;align-items:center;gap:6px;padding:9px 11px;border-bottom:1px solid rgba(120,170,255,.14);font-weight:600}",
     ROOT_SEL + " [data-panel] header select{flex:1;min-width:0;background:rgba(255,255,255,.08);color:inherit;border:1px solid rgba(120,170,255,.24);border-radius:7px;padding:4px 6px;font:inherit}",
+    ROOT_SEL + " [data-panel] header [data-title]{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
+    ROOT_SEL + " [data-panel] header [data-close]{margin-left:auto;flex:none;width:22px;height:22px;padding:0;line-height:1;border:0;border-radius:6px;background:transparent;color:#9fb0cf;font:400 15px/1 inherit;cursor:pointer}",
+    ROOT_SEL + " [data-panel] header [data-close]:hover{background:rgba(255,255,255,.14);color:#eaf1ff}",
+    // The panel is the whole UI now, so it also owns the hint that tells you
+    // how to get rid of it.
+    ROOT_SEL + " [data-panel] [data-hintrow]{padding:0 10px 7px;color:#7f90ad;font-size:10px;line-height:1.5}",
     ROOT_SEL + " [data-panel] [data-tabs]{display:flex;gap:2px;padding:6px 8px 0}",
     ROOT_SEL + " [data-panel] [data-tabs] button{flex:1;border:0;background:transparent;color:#9fb0cf;font:600 11px/2 inherit;border-radius:7px;cursor:pointer}",
     ROOT_SEL + " [data-panel] [data-tabs] button[data-on]{background:rgba(120,170,255,.2);color:#eaf1ff}",
@@ -1000,6 +998,7 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
     ROOT_SEL + " [data-panel] [data-chips] button[data-on]{background:rgba(120,170,255,.34);border-color:rgba(160,200,255,.55)}",
     ROOT_SEL + " [data-panel] footer{display:flex;align-items:center;gap:8px;padding:7px 10px;border-top:1px solid rgba(120,170,255,.14);color:#9fb0cf;font-size:11px}",
     ROOT_SEL + " [data-panel] footer input[type=range]{flex:1;min-width:0}",
+    ROOT_SEL + " [data-panel] footer [data-sizelabel]{min-width:42px;text-align:right;font-variant-numeric:tabular-nums}",
     ROOT_SEL + " [data-panel] footer button{border:0;background:transparent;color:#9fb0cf;font:inherit;cursor:pointer}",
     ROOT_SEL + " [data-hint]{position:absolute;inset:0;display:grid;place-items:center;padding:12px;text-align:center;color:#c3cee6;font-size:12px;line-height:1.6}",
     ROOT_SEL + " [data-hint] code{display:block;margin-top:5px;font-size:11px;opacity:.85;word-break:break-all}",
@@ -1301,6 +1300,7 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
     const stageRef = useRef(null);
     const appRef = useRef(null);
     const modelRef = useRef(null);
+    const rootRef = useRef(null);
     const sizeRef = useRef(null);
     const posRef = useRef(null);
     const bubbleTimer = useRef(0);
@@ -1696,13 +1696,22 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       pinnedRef.current = next;
       const model = modelRef.current;
       if (model === null) return;
-      // The engine's expression manager owns the face. It applies ONE
-      // expression at a time and fades it in over about a second, so the last
-      // pin wins — which is exactly the semantics a dress-up slot wants.
       const manager = model.internalModel?.motionManager?.expressionManager;
       const names = Object.keys(next);
-      if (names.length === 0) manager?.resetExpression?.();
-      else void model.expression(names[names.length - 1]);
+      if (names.length === 0) {
+        manager?.resetExpression?.();
+        return;
+      }
+      // The engine holds exactly ONE expression (expressionManager
+      // .currentExpression), so the last pin wins.
+      //
+      // NOTE: combining several is not solved yet. Writing the union of their
+      // parameters straight into the core model was tried and does not render
+      // for this model's switch parameters, and handing the engine a synthetic
+      // definition backed by a blob URL was inconclusive. Until one of those
+      // works, a dress-up slot selection supersedes the previous one, and the
+      // panel says so rather than showing several selected and rendering one.
+      void model.expression(names[names.length - 1]);
     }, []);
     applyExpressionsRef.current = applyExpressions;
 
@@ -1902,24 +1911,6 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
      * hidden and the stage keeps its old full-box behaviour.
      */
     const [maskPath, setMaskPath] = useState("");
-    /**
-     * Whether the pointer is on the pet (or its chrome).
-     *
-     * The root is pointer-events:none so the page behind stays clickable, which
-     * also means :hover never matches it — the toolbar's reveal is driven from
-     * here instead. Kept true while the pointer is also over the toolbar or the
-     * panel, so moving down to a button does not make the bar vanish.
-     */
-    const [hovering, setHovering] = useState(false);
-    const hoverDepth = useRef(0);
-    const enterChrome = useCallback(() => {
-      hoverDepth.current += 1;
-      setHovering(true);
-    }, []);
-    const leaveChrome = useCallback(() => {
-      hoverDepth.current = Math.max(0, hoverDepth.current - 1);
-      if (hoverDepth.current === 0) setHovering(false);
-    }, []);
     const pendingPhase = useRef(null);
     // Published by the stream effect so the (earlier-declared) subscription can
     // flush a deferred phase; a ref avoids a declaration-order dependency.
@@ -1955,6 +1946,46 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       if (stage === null) return false;
       const rect = stage.getBoundingClientRect();
       return motion.current.hitsHead(clientX - rect.left, clientY - rect.top);
+    }, []);
+
+    /**
+     * Right-click on the pet opens the whole control panel.
+     *
+     * The pet has no always-visible chrome any more: a toolbar that appeared on
+     * hover sat on top of the character and covered her, and hover is also the
+     * one gesture a click-through overlay cannot express well. A context menu
+     * is deliberate, and the browser's own menu is suppressed so the gesture
+     * means only one thing.
+     */
+    /**
+     * Close the panel on Escape or on a click outside the pet.
+     *
+     * Clicks that land on the pet or the panel are ignored, so using the panel
+     * never dismisses it. The pet's root is pointer-events:none, so a click on
+     * a transparent corner targets the page behind and does count as outside —
+     * which is the behaviour you want.
+     */
+    useEffect(() => {
+      if (!panelOpen) return undefined;
+      const onKey = (event) => {
+        if (event.key === "Escape") setPanelOpen(false);
+      };
+      const onDown = (event) => {
+        const root = rootRef.current;
+        if (root !== null && event.target instanceof Node && root.contains(event.target)) return;
+        setPanelOpen(false);
+      };
+      window.addEventListener("keydown", onKey);
+      window.addEventListener("pointerdown", onDown, true);
+      return () => {
+        window.removeEventListener("keydown", onKey);
+        window.removeEventListener("pointerdown", onDown, true);
+      };
+    }, [panelOpen]);
+
+    const onContextMenu = useCallback((event) => {
+      event.preventDefault();
+      setPanelOpen(true);
     }, []);
 
     const onPointerDown = useCallback((event) => {
@@ -2067,7 +2098,13 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
                   value: pet.id,
                   onChange: (event) => setPetId(event.target.value),
                 }, catalog.pets.map((entry) => h("option", { key: entry.id, value: entry.id }, entry.displayName)))
-              : h("span", null, pet.displayName),
+              : h("span", { "data-title": "" }, pet.displayName),
+            h("button", {
+              type: "button",
+              "data-close": "",
+              title: "关闭（Esc）",
+              onClick: () => setPanelOpen(false),
+            }, "×"),
           ),
           h("div", { "data-tabs": "" },
             h("button", { type: "button", ...(tab === "motions" ? { "data-on": "" } : {}), onClick: () => setTab("motions") }, "动作 " + pet.motions.length),
@@ -2098,12 +2135,16 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
                 ),
               )),
           ),
+          h("div", { "data-hintrow": "" }, "在宠物身上点右键打开这里 · Esc 或点空白处关闭"),
           h("footer", null,
-            h("span", null, size + "px"),
+            h("button", { type: "button", title: "缩小", onClick: () => setSize((current) => Math.max(MIN_SIZE, current - 40)) }, "－"),
             h("input", {
               type: "range", min: MIN_SIZE, max: MAX_SIZE, step: 20, value: size,
+              title: size + "px",
               onChange: (event) => setSize(Number(event.target.value)),
             }),
+            h("button", { type: "button", title: "放大", onClick: () => setSize((current) => Math.min(MAX_SIZE, current + 40)) }, "＋"),
+            h("span", { "data-sizelabel": "" }, size + "px"),
             h("button", { type: "button", onClick: resetAll }, "归位"),
           ),
         )
@@ -2111,7 +2152,7 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
 
     return h("div", {
       [PET_ATTR]: "",
-      ...(hovering ? { "data-hover": "" } : {}),
+      ref: rootRef,
       style: rootStyle(size, pos),
       // Observability: the committed action of the motion state machine
       // ('idle' while resting) and the current gaze target, so the pet's
@@ -2128,30 +2169,17 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
         ...(maskPath === "" ? { "data-nomask": "" } : {}),
         ...(dragging ? { "data-dragging": "" } : {}),
         // The fallback path: with no mask the stage itself starts the drag.
-        ...(maskPath === "" ? { onPointerDown } : {}),
+        ...(maskPath === "" ? { onPointerDown, onContextMenu } : {}),
       },
         // Only the silhouette is interactive; everything else in the square
         // canvas stays click-through to the page behind (requirement #5).
         h("div", {
           "data-hit": "",
           ...(maskPath === "" ? { "data-off": "" } : { style: { clipPath: "path('" + maskPath + "')", WebkitClipPath: "path('" + maskPath + "')" } }),
-          ...(maskPath === "" ? {} : { onPointerDown }),
-          onPointerEnter: enterChrome,
-          onPointerLeave: leaveChrome,
+          ...(maskPath === "" ? {} : { onPointerDown, onContextMenu }),
         }),
       ),
       bubble === null ? null : h("div", { "data-bubble": "" }, bubble),
-      h("div", {
-        "data-bar": "",
-        ...(panelOpen ? { "data-open": "" } : {}),
-        onPointerEnter: enterChrome,
-        onPointerLeave: leaveChrome,
-      },
-        h("button", { type: "button", onClick: () => setPanelOpen((open) => !open) }, panelOpen ? "收起" : "面板"),
-        h("button", { type: "button", onClick: resetAll }, "归位"),
-        h("button", { type: "button", onClick: () => setSize((current) => Math.max(MIN_SIZE, current - 40)) }, "－"),
-        h("button", { type: "button", onClick: () => setSize((current) => Math.min(MAX_SIZE, current + 40)) }, "＋"),
-      ),
       panel,
     );
   }

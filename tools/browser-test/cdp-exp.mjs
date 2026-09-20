@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process'
 import { rmSync } from 'node:fs'
 import { createHash as ch } from 'node:crypto'
 import { browserPath, PROFILES, BASE } from './paths.mjs'
-import { waitReady } from './ready.mjs'
+import { waitReady, openPanel } from './ready.mjs'
 import { join } from 'node:path'
 const EDGE = browserPath()
 const PORT = 9447
@@ -33,7 +33,7 @@ const out = {}
 out.expressionRequestsAtBoot = reqs.slice(0, 12)
 out.bootFailures = reqs.filter(r => !r.startsWith('2')).length
 // 2. open the panel, switch to the expressions tab
-await ev('(()=>{const b=document.querySelector("[data-dsh-live2d-pet] [data-bar] button"); if(b) b.click(); return 1})()')
+await openPanel(ev)
 await sleep(600)
 await ev('(()=>{const t=document.querySelectorAll("[data-dsh-live2d-pet] [data-panel] [data-tabs] button")[1]; if(t) t.click(); return 1})()')
 await sleep(600)

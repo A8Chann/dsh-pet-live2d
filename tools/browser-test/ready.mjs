@@ -24,3 +24,34 @@ export async function waitReady(ev, timeoutMs = 30000) {
     await new Promise((r) => setTimeout(r, 100))
   }
 }
+
+/**
+ * Open the control panel the way a user does: right-click the pet.
+ *
+ * The pet has no toolbar any more — a hover-revealed bar covered the character
+ * and hover is a poor fit for a click-through overlay — so every driver that
+ * needs the panel uses this instead of clicking a button that no longer exists.
+ */
+export async function openPanel(ev) {
+  return ev('(() => {'
+    + ' const h = document.querySelector("[data-dsh-live2d-pet] [data-hit]")'
+    + '   || document.querySelector("[data-dsh-live2d-pet] [data-stage]");'
+    + ' if (!h) return false;'
+    + ' h.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));'
+    + ' return true })()')
+}
+
+/** Close the panel through its own close button. */
+export async function closePanel(ev) {
+  return ev('(() => {'
+    + ' const b = document.querySelector("[data-dsh-live2d-pet] [data-panel] [data-close]");'
+    + ' if (!b) return false; b.click(); return true })()')
+}
+
+/** Click a control in the panel footer by its visible label. */
+export async function panelFooter(ev, label) {
+  return ev('(() => {'
+    + ' const bs = Array.from(document.querySelectorAll("[data-dsh-live2d-pet] [data-panel] footer button"));'
+    + ' const b = bs.find((x) => x.textContent === ' + JSON.stringify(label) + ');'
+    + ' if (!b) return false; b.click(); return true })()')
+}
