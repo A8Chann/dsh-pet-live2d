@@ -5,9 +5,11 @@
 
 自带 **DS鲸鱼娘**（8 组动作 + 44 个表情/道具），开箱即用。
 
-> **模型授权**：DS鲸鱼娘 由 B站@氵六青（[11272072](https://space.bilibili.com/11272072)）制作，
-> **无偿分享**，已获作者转载授权。允许商用直播、自印物料；**禁止盗用与出售**。
-> 模型版权归原作者，与本仓库的 MIT 插件许可无关。详见[许可](#许可)。
+> **许可分两类**：**代码 MIT，美术资源 CC BY-NC-SA 4.0**。
+> 鲸鱼娘角色形象原作是 **上善无形** 的原创 OC「溟月」，**ZipZipPipe** 做了 DeepSeek 女仆二创，
+> **氵六青** 做了本仓库所用的 Live2D 模型。氵六青已授权本项目转载开源，
+> 但**这不解除基础版权** —— **非商业（NC）与相同方式共享（SA）依然有效**。
+> 详见 [NOTICE.md](NOTICE.md)。
 
 ![桌宠](dsh-live2d-pet/docs/preview.png)
 
@@ -127,8 +129,20 @@ node cdp-motion.mjs
 
 ## 许可
 
-- 插件代码：**MIT** — 见 [`dsh-live2d-pet/LICENSE`](dsh-live2d-pet/LICENSE)
-- 内置 `pixi.js` / `untitled-pixi-live2d-engine`：MIT
-- DS鲸鱼娘模型：版权归 **B站@氵六青**，**无偿分享**，已获作者转载授权。
-  允许商用直播、自印物料；**禁止盗用与出售**。
+**两类内容，两套许可** —— 完整说明见 [**NOTICE.md**](NOTICE.md)。
+
+| 内容 | 许可 |
+|---|---|
+| 插件代码、`tools/` | **MIT** — 见 [`LICENSE`](LICENSE) |
+| `pixi.js` / `untitled-pixi-live2d-engine` | MIT（打包进 `lib/live2d-vendor.js`） |
+| `examples/`、`model-packs/` 里的模型与贴图 | **CC BY-NC-SA 4.0** — 署名 · **非商业** · 相同方式共享 |
+
+| 版权所有人 | 内容 |
+|---|---|
+| **上善无形** | 鲸鱼娘角色形象原作，原创 OC「溟月」 |
+| **ZipZipPipe** | DeepSeek 女仆鲸鱼娘二次设计 |
+| **氵六青** | 本仓库所用 Live2D 模型 |
+
+⚠️ **可以**分享、改编；**必须**署名、**不得商用**、改编后须以同一协议分发。
+商业使用需**分别**取得上述所有人的授权 —— 氵六青同意转载**不等于**可以商用。
 - Live2D Cubism Core：专有软件，需自行获取，不在本仓库内。

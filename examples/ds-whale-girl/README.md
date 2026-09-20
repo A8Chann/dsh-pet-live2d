@@ -5,8 +5,8 @@ DSh 桌宠（`@linxin666/dsh-pet`）的 Live2D 宠物包。
 - 渲染器：`live2d`（Cubism 3/4）
 - 动作组：Idle / Hammer / BubbleGum / SprayWater / OpenCase / Selfie / SelfieQuick / Ketchup
 - 表情：44 个（情绪 20 / 配件 9 / 道具 15）
-- 允许：商用直播、自印物料；**禁止任何形式的盗用与出售**
-- 模型制作：B站 @氵六青（11272072）· 交流群 645169617
+- 许可：**CC BY-NC-SA 4.0**（署名 · **非商业** · 相同方式共享）—— 见本目录 `LICENSE`
+- 版权链：**上善无形**（角色原作「溟月」）→ **ZipZipPipe**（DeepSeek 女仆二创）→ **氵六青**（本模型，交流群 645169617）
 
 ## 装扮槽位（状态切换分类）
 

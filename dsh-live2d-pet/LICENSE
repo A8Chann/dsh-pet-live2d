@@ -28,14 +28,29 @@ Third-party components bundled into lib/live2d-vendor.js:
   untitled-pixi-live2d-engine   MIT
 
 The DS鲸鱼娘 model bundled in ../examples/ds-whale-girl (and its source pack in
-../model-packs) is NOT covered by the MIT license above. It is the work of
-B站@氵六青 (https://space.bilibili.com/11272072) and is redistributed here with
-the author's permission under the original free-share terms:
+../model-packs) is NOT covered by the MIT license above, and must not be used
+as if it were. It is licensed CC BY-NC-SA 4.0:
 
-  - free to share; livestreaming and personal printing allowed
-  - resale or for-profit redistribution is prohibited
-  - do not claim authorship
+    attribution required - NON-COMMERCIAL only - share-alike
+    https://creativecommons.org/licenses/by-nc-sa/4.0/deed.zh
+
+Rights holders, in the chain the character passed through:
+
+    上善无形     original character, the OC 溟月
+                 https://www.pixiv.net/users/62155430
+    ZipZipPipe   the DeepSeek maid redesign
+                 https://www.pixiv.net/users/18604994
+    氵六青       this Live2D model (rigging, motions, expressions)
+                 https://space.bilibili.com/11272072
+
+氵六青 authorised redistribution and open-sourcing of this model here. That
+permission does NOT lift the base terms: the character itself was published by
+上善无形 and ZipZipPipe under CC BY-NC-SA 4.0, so the non-commercial and
+share-alike conditions still apply. Commercial use needs permission from EACH
+rights holder, not just one.
 
 Live2D Cubism Core (live2dcubismcore.min.js) is proprietary and is NOT
 included in this repository. It must be obtained from Live2D Inc. and placed
 in the pet runtime directory by the user. See README.
+
+Full attribution: ../NOTICE.md

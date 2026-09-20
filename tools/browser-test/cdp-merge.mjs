@@ -81,32 +81,29 @@ const frame = async () => JSON.parse(await ev('JSON.stringify(window.__last)'))
  * its fade. Poll instead, and treat a value that has reached its target (or
  * stopped moving for a while) as settled.
  */
-const apply = async (names) => {
+const apply = async (names, expect) => {
   await ev('window.__dshLive2dPet.setExpressions(' + JSON.stringify(names) + ')')
   let last = null
-  let stable = 0
-  for (let i = 0; i < 40; i += 1) {
+  const wanted = Object.entries(expect ?? {})
+  for (let i = 0; i < 48; i += 1) {
     await sleep(250)
     const now = await frame()
     if (now === null) continue
-    if (last !== null && now.every((v, at) => v === last[at])) stable += 1
-    else stable = 0
     last = now
-    // Settled once nothing has moved for ~0.75s.
-    if (stable >= 3) break
+    if (wanted.every(([name, value]) => at(now, name) === value)) return now
   }
   return last
 }
 const at = (values, name) => values[WATCH.indexOf(name)]
 
-const empty = await apply([])
+const empty = await apply([], { ParamCheek70: 0, ParamCheek83: 0, cc2: 0 })
 check('with nothing pinned every switch is off', WATCH.every((n) => at(empty, n) === 0), JSON.stringify(empty))
 
-const glasses = await apply(['圆眼镜'])
+const glasses = await apply(['圆眼镜'], { ParamCheek70: 1 })
 check('圆眼镜 writes only its own switch',
   at(glasses, 'ParamCheek70') === 1 && at(glasses, 'ParamCheek83') === 0, JSON.stringify(glasses))
 
-const sticker = await apply(['猫猫贴纸'])
+const sticker = await apply(['猫猫贴纸'], { ParamCheek83: 1, ParamCheek70: 0 })
 check('猫猫贴纸 writes only its own switch',
   at(sticker, 'ParamCheek83') === 1 && at(sticker, 'ParamCheek70') === 0, JSON.stringify(sticker))
 
@@ -123,47 +120,44 @@ const slotCount = await ev('document.querySelectorAll("[data-dsh-live2d-pet] [da
 check('the 装扮 tab lists every slot', slotCount === 16, 'slots=' + slotCount)
 
 /** Click a chip in the panel by its slot id and visible label. */
-const pick = async (slotId, label) => {
+const pick = async (slotId, label, expect) => {
   await ev('(()=>{const g=document.querySelector(' + JSON.stringify('[data-dsh-live2d-pet] [data-panel] [data-slot="' + slotId + '"]')
     + '); if(!g) return false;'
     + ' const b=Array.from(g.querySelectorAll("[data-chips] button")).find((x)=>x.textContent===' + JSON.stringify(label) + ');'
     + ' if(!b) return false; b.click(); return true})()')
-  // Poll until the switches stop moving, same as apply() above.
   let last = null
-  let stable = 0
-  for (let i = 0; i < 32; i += 1) {
+  const wanted = Object.entries(expect ?? {})
+  for (let i = 0; i < 48; i += 1) {
     await sleep(250)
     const now = await frame()
     if (now === null) continue
-    if (last !== null && now.every((v, at) => v === last[at])) stable += 1
-    else stable = 0
     last = now
-    if (stable >= 3) break
+    if (wanted.every(([name, value]) => at(now, name) === value)) return now
   }
   return last
 }
-const uiGlasses = await pick('glasses', '圆眼镜')
+const uiGlasses = await pick('glasses', '圆眼镜', { ParamCheek70: 1 })
 check('picking 圆眼镜 in the panel turns its switch on', at(uiGlasses, 'ParamCheek70') === 1, JSON.stringify(uiGlasses))
-const uiBoth = await pick('sticker', '猫猫')
+const uiBoth = await pick('sticker', '猫猫', { ParamCheek70: 1, ParamCheek83: 1 })
 check('then picking 猫猫 keeps the glasses on',
   at(uiBoth, 'ParamCheek70') === 1 && at(uiBoth, 'ParamCheek83') === 1, JSON.stringify(uiBoth))
 // 白魔爪 is 魔爪换色 layered on 桌面粉魔爪: the recolour alone renders nothing
 // because there is no claw to recolour, so the option must carry BOTH and the
 // slot must be told to compare all of them.
-const pink = await pick('claw', '粉魔爪')
+const pink = await pick('claw', '粉魔爪', { mozhua: 1, mozhua2: 0 })
 check('粉魔爪 turns the claw on, uncoloured',
   at(pink, 'mozhua') === 1 && at(pink, 'mozhua2') === 0, JSON.stringify(pink))
-const white = await pick('claw', '白魔爪')
+const white = await pick('claw', '白魔爪', { mozhua: 1, mozhua2: 1 })
 check('白魔爪 turns the claw on AND recolours it',
   at(white, 'mozhua') === 1 && at(white, 'mozhua2') === 1, JSON.stringify(white))
-const clawsOff = await pick('claw', '无')
+const clawsOff = await pick('claw', '无', { mozhua: 0, mozhua2: 0 })
 check('clearing the claw slot drops both',
   at(clawsOff, 'mozhua') === 0 && at(clawsOff, 'mozhua2') === 0, JSON.stringify(clawsOff))
 
-const uiOff = await pick('glasses', '无')
+const uiOff = await pick('glasses', '无', { ParamCheek70: 0, ParamCheek83: 1 })
 check('and clearing one slot leaves the other alone',
   at(uiOff, 'ParamCheek70') === 0 && at(uiOff, 'ParamCheek83') === 1, JSON.stringify(uiOff))
-await pick('sticker', '无')
+await pick('sticker', '无', { ParamCheek83: 0 })
 await ev('window.__dshLive2dPet.setExpressions([])')
 await sleep(800)
 
@@ -172,20 +166,22 @@ await sleep(800)
 // The engine's manager cannot do this — it holds one expression — so the
 // controller writes the union itself, at the same seam (right after the engine
 // restores its post-motion values) and with the same Add arithmetic.
-const pair = await apply(['圆眼镜', '猫猫贴纸'])
+const pair = await apply(['圆眼镜', '猫猫贴纸'], { ParamCheek70: 1, ParamCheek83: 1 })
 check('two slots reach the model at once',
   at(pair, 'ParamCheek70') === 1 && at(pair, 'ParamCheek83') === 1, JSON.stringify(pair))
 
-const trio = await apply(['圆眼镜', '猫猫贴纸', '深色桌布'])
+const trio = await apply(['圆眼镜', '猫猫贴纸', '深色桌布'], { ParamCheek70: 1, ParamCheek83: 1, cc2: 1 })
 check('three slots reach the model at once',
-  at(trio, 'ParamCheek70') === 1 && at(trio, 'ParamCheek83') === 1 && at(trio, 'cc2') === 1, JSON.stringify(trio))
+  at(trio, 'ParamCheek70') === 1 && at(trio, 'ParamCheek83') === 1 && at(trio, 'cc2') === 1,
+  JSON.stringify(trio) + '  pinned=' + await ev('JSON.stringify(window.__dshLive2dPet.expressions())')
+  + ' layers=' + await ev('window.__dshLive2dPet.expressionLayerCount()'))
 
 // Dropping back to one slot must not leave the others behind.
-const only = await apply(['圆眼镜'])
+const only = await apply(['圆眼镜'], { ParamCheek70: 1, ParamCheek83: 0 })
 check('dropping a slot turns its switch back off',
   at(only, 'ParamCheek70') === 1 && at(only, 'ParamCheek83') === 0, JSON.stringify(only))
 
-const back = await apply([])
+const back = await apply([], { ParamCheek70: 0, ParamCheek83: 0, cc2: 0 })
 check('clearing turns them all back off', WATCH.every((n) => at(back, n) === 0), JSON.stringify(back))
 
 const bad = results.filter(r => !r.ok)

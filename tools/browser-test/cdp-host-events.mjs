@@ -80,8 +80,11 @@ check('the sustained pet still reports kind=phase', (await ev('window.__dshLive2
 // not flap the phase and restart the animation.
 const post = await api('/__emit?event=tools/post-execute&name=read')
 check('tools/post-execute does not revert instantly', post.phase === 'tool', 'phase=' + post.phase)
-await sleep(2000)
-check('the tool phase steps down once tools stop', (await attr('data-phase')) === 'thinking', 'data-phase=' + await attr('data-phase'))
+// Polled, not slept: the revert is a 1200ms debounce plus an SSE hop, and under
+// a loaded parallel suite both stretch. A fixed sleep raced it and reported a
+// real behaviour as a failure.
+const steppedDown = await until(async () => (await attr('data-phase')) === 'thinking', 10000)
+check('the tool phase steps down once tools stop', steppedDown, 'data-phase=' + await attr('data-phase'))
 await sleep(1500)
 check('pet stops sustaining once the tool returns', (await ev('window.__dshLive2dPet.sustained()')) === null,
   'sustained=' + await ev('window.__dshLive2dPet.sustained()'))

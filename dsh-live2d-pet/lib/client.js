@@ -1431,6 +1431,15 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
      */
     const userPinsRef = useRef({});
     const phasePinsRef = useRef({});
+    /**
+     * The motion the user's CURRENT slot selection owns, if any.
+     *
+     * Tracked explicitly rather than inferred from the pin set: a motion-only
+     * option (掏出手机) has no expressions, so "all of its expressions are
+     * pinned" is vacuously true for it and it would match every time — which
+     * parked the phone forever after any fidget.
+     */
+    const slotMotionRef = useRef(null);
     /** Commit both layers; the phase wins while it lasts. */
     const commitPinsRef = useRef(() => {});
     /** Late-bound handle to applyExpressions, which is declared further down. */
@@ -1931,8 +1940,9 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       applyExpressions(next);
       // A motion attached to a slot plays and PARKS on its last frame, so the
       // chosen look stays put instead of dropping back to the idle loop.
-      if (option !== null && typeof option.motion === "string") {
-        motion.current.playOnce(option.motion, 0, { kind: "slot", hold: true, persist: true });
+      slotMotionRef.current = option !== null && typeof option.motion === "string" ? option.motion : null;
+      if (slotMotionRef.current !== null) {
+        motion.current.playOnce(slotMotionRef.current, 0, { kind: "slot", hold: true, persist: true });
       } else if (option === null) {
         // Leaving a slot that owned a motion hands the body back to idle; the
         // other slots' pins are untouched, so their look survives.
@@ -2114,12 +2124,8 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
           applyExpressionsRef.current(restore);
           // Hand the body back to whatever the restored slots ask for; with no
           // slot motion among them that is the idle loop.
-          const owned = (pet?.expressionSlots ?? [])
-            .flatMap((slot) => slot.options)
-            .find((option) => typeof option.motion === "string"
-              && option.expressions.every((name) => restore[name] === true));
-          if (owned === undefined) motion.current.playIdle();
-          else motion.current.playOnce(owned.motion, 0, { kind: "slot", hold: true, persist: true });
+          if (slotMotionRef.current === null) motion.current.playIdle();
+          else motion.current.playOnce(slotMotionRef.current, 0, { kind: "slot", hold: true, persist: true });
         }, FIDGET_HOLD_MS);
         schedule();
       };
