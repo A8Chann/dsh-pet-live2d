@@ -6,17 +6,35 @@
 ## 跑
 
 ```bash
-npm install      # 提供 React UMD（server.mjs 从 node_modules 直接读）
-npm run suite    # 自动起测试服，跑完自动关
+npm install              # 提供 React UMD（server.mjs 从 node_modules 直接读）
+npm run dev -- head      # 【日常用这个】只跑匹配的 driver，几十秒
+npm run dev              # 同上，但常驻监听：改动 client.js / index.js / pet.json 自动重跑
+npm run suite            # 【提交前】全部 14 个 driver，并发跑
 ```
 
-指定单个 driver：
+耗时（本机 20 核）：
 
-```bash
-npm run suite -- cdp-motion cdp-exp     # 子串匹配
-node server.mjs 8793                    # 或手动起服
-node cdp-motion.mjs
-```
+| 方式 | 时间 | 用途 |
+|---|---|---|
+| `node dev.mjs mask` | **7 秒** | 改一行看一眼 |
+| `npm run suite`（6 并发） | **~2.9 分钟** | 提交前 |
+| `npm run suite:serial` | ~7 分钟 | 排查套件自身的问题时 |
+
+**为什么并发是安全的**：每个 driver 用独立的调试端口和独立的 Edge profile，
+本来就互不干扰。真正会打架的只有「会话相位」——它存在测试服的进程里，
+而 cdp-phase / cdp-v12 / cdp-exp / cdp-idle-return / cdp-host-events /
+cdp-handoff2 这 6 个都会推它。所以现在**每个 driver 配一个自己的测试服**
+（`PET_BASE` 注入），相位状态彻底隔离。曾用「共用一个服」跑并发，
+结果 cdp-host-events 的相位被隔壁重置、cdp-idle-return 读到别人的相位而失败。
+
+**没有固定 sleep**：每个 driver 曾经都带一个 `await sleep(3000)` 等模型加载。
+实测发现模型和点击遮罩在 `title=done` 时**早就好了**，这 3-4 秒纯属白等
+（整个套件因此白花约 30 秒，而且每加一个 driver 就多一份）。现在统一走
+`ready.mjs` 的 `waitReady()` 轮询真实条件——条件已满足时它几乎不花时间，
+机器慢的时候也不会像固定 sleep 那样直接失败。
+
+`run-suite` 每次都会先重建 DBG 变体（`make-variant.mjs`）。它是 `client.js`
+的副本，会悄悄过期——`cdp-motion` 就因为跑在缺少修复的旧副本上失败过一次。
 
 输出每个契约的 PASS/FAIL 与耗时，失败时打印该 driver 的末尾输出。
 

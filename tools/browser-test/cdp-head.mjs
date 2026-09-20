@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process'
 import { rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { browserPath, PROFILES, BASE } from './paths.mjs'
+import { waitReady } from './ready.mjs'
 
 const EDGE = browserPath()
 const PORT = 9379
@@ -28,7 +29,7 @@ const ev = async (e) => (await send('Runtime.evaluate', { expression: e, awaitPr
 await send('Runtime.enable'); await send('Page.enable')
 await send('Page.navigate', { url: BASE + '/' })
 for (let i = 0; i < 240; i++) { await sleep(500); if (await ev('document.title') === 'done') break }
-await sleep(3500)
+await waitReady(ev)
 
 const results = []
 const check = (label, ok, detail) => { results.push({ label, ok }); console.log((ok ? '  PASS ' : '  FAIL ') + label + (detail ? '   ' + detail : '')) }

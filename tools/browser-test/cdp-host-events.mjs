@@ -9,6 +9,7 @@ import { spawn } from 'node:child_process'
 import { rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { browserPath, PROFILES, BASE } from './paths.mjs'
+import { waitReady } from './ready.mjs'
 
 const EDGE = browserPath()
 const PORT = 9377
@@ -34,11 +35,20 @@ const api = async (path) => JSON.parse(await (await fetch(BASE + path)).text())
 await send('Runtime.enable'); await send('Page.enable')
 await send('Page.navigate', { url: BASE + '/' })
 for (let i = 0; i < 240; i++) { await sleep(500); if (await ev('document.title') === 'done') break }
-await sleep(3000)
+await waitReady(ev)
 
 const results = []
 const check = (label, ok, detail) => { results.push({ label, ok, detail }); console.log((ok ? '  PASS ' : '  FAIL ') + label + (detail ? '   ' + detail : '')) }
 const attr = (n) => ev('(document.querySelector("[data-dsh-live2d-pet]")||{}).getAttribute?.(' + JSON.stringify(n) + ')')
+/** Poll until a predicate holds, so assertions never race an async hop. */
+const until = async (fn, ms = 10000) => {
+  const deadline = Date.now() + ms
+  for (;;) {
+    if (await fn()) return true
+    if (Date.now() > deadline) return false
+    await sleep(200)
+  }
+}
 
 // --- the plugin must actually subscribe to the live event names ------------
 const emitTool = await api('/__emit?event=tools/pre-execute&name=read')
@@ -96,7 +106,10 @@ check('a lone tool still steps down afterwards', (await attr('data-phase')) === 
 // --- a turn ending celebrates, then settles --------------------------------
 const turn = await api('/__emit?event=agent/turn-stopping&name=done')
 check('agent/turn-stopping drives the done phase', turn.phase === 'done', 'phase=' + turn.phase)
-check('pet celebrates', (await attr('data-motion')) === 'BubbleGum', 'data-motion=' + await attr('data-motion'))
+// Polled: the phase reaches the client over SSE, and under a loaded parallel
+// suite that hop is not instantaneous. Reading data-motion once raced it.
+const celebrated = await until(async () => (await attr('data-motion')) === 'BubbleGum', 8000)
+check('pet celebrates', celebrated, 'data-motion=' + await attr('data-motion'))
 
 const bad = results.filter(r => !r.ok)
 console.log((bad.length === 0 ? 'OK' : 'FAILED') + '  ' + (results.length - bad.length) + '/' + results.length + ' checks passed')

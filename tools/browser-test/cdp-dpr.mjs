@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process'
 import { rmSync } from 'node:fs'
 import { browserPath, PROFILES, BASE } from './paths.mjs'
+import { waitReady } from './ready.mjs'
 import { join } from 'node:path'
 const EDGE = browserPath()
 const PORT = 9364
@@ -25,7 +26,7 @@ const ev = async (e) => (await send('Runtime.evaluate', { expression: e, awaitPr
 await send('Runtime.enable'); await send('Page.enable')
 await send('Page.navigate', { url: BASE + '/' })
 for (let i = 0; i < 240; i++) { await sleep(500); if (await ev('document.title') === 'done') break }
-await sleep(1500)
+await waitReady(ev)
 
 const out = {}
 out.dpr = await ev('window.devicePixelRatio')

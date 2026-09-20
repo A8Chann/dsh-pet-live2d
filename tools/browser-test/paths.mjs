@@ -38,4 +38,9 @@ export function browserPath() {
   throw new Error('No Edge/Chrome found. Set one of: ' + BROWSERS.join(', '))
 }
 
-export const BASE = 'http://127.0.0.1:8793'
+// The harness server each driver talks to. The suite gives every driver its
+// own server (see run-suite.mjs) because the activity hub is process-global:
+// two drivers nudging phases against one server stomp on each other, which is
+// exactly what broke cdp-host-events and cdp-idle-return when the suite first
+// went parallel.
+export const BASE = process.env.PET_BASE ?? 'http://127.0.0.1:' + (process.env.PET_PORT ?? '8793')

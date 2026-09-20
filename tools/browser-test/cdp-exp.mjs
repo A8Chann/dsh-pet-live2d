@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import { rmSync } from 'node:fs'
 import { createHash as ch } from 'node:crypto'
 import { browserPath, PROFILES, BASE } from './paths.mjs'
+import { waitReady } from './ready.mjs'
 import { join } from 'node:path'
 const EDGE = browserPath()
 const PORT = 9447
@@ -26,7 +27,7 @@ const ev = async (e) => (await send('Runtime.evaluate', { expression: e, awaitPr
 await send('Runtime.enable'); await send('Page.enable'); await send('Network.enable')
 await send('Page.navigate', { url: BASE + '/' })
 for (let i = 0; i < 240; i++) { await sleep(400); if (await ev('document.title') === 'done') break }
-await sleep(4000)
+await waitReady(ev)
 const out = {}
 // 1. expression requests observed during boot (idle phase pins 脸红)
 out.expressionRequestsAtBoot = reqs.slice(0, 12)

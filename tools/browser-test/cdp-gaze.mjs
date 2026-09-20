@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process'
 import { rmSync } from 'node:fs'
 import { browserPath, PROFILES, BASE } from './paths.mjs'
+import { waitReady } from './ready.mjs'
 import { join } from 'node:path'
 const EDGE = browserPath()
 const PORT = 9381
@@ -25,7 +26,7 @@ const ev = async (e) => (await send('Runtime.evaluate', { expression: e, awaitPr
 await send('Runtime.enable'); await send('Page.enable')
 await send('Page.navigate', { url: URL_TO_OPEN })
 for (let i = 0; i < 140; i++) { await sleep(500); if (await ev('document.querySelectorAll("[data-dsh-live2d-pet] canvas").length') > 0) break }
-await sleep(4000)
+await waitReady(ev)
 const out = {}
 const gaze = () => ev('document.querySelector("[data-dsh-live2d-pet]").getAttribute("data-gaze")')
 const geo = JSON.parse(await ev('JSON.stringify((()=>{const r=document.querySelector("[data-dsh-live2d-pet]").getBoundingClientRect();return [Math.round(r.left),Math.round(r.top),Math.round(r.width),Math.round(r.height)]})())'))

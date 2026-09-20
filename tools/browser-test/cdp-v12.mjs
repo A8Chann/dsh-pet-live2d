@@ -6,6 +6,7 @@ import { spawn } from 'node:child_process'
 import { rmSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { browserPath, PROFILES, BASE, SHOTS } from './paths.mjs'
+import { waitReady } from './ready.mjs'
 import { join } from 'node:path'
 
 const EDGE = browserPath()
@@ -39,6 +40,7 @@ const shot = async (n) => { const s = await send('Page.captureScreenshot', { for
 await send('Runtime.enable'); await send('Page.enable')
 await send('Page.navigate', { url: BASE + '/' })
 for (let i = 0; i < 240; i++) { await sleep(500); if (await ev('document.title') === 'done') break }
+await waitReady(ev)
 const sleep2 = sleep
 const out = {}
 const state = () => ev('document.querySelector("[data-dsh-live2d-pet]").getAttribute("data-motion")')
