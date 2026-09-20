@@ -19,6 +19,10 @@ export const SUITE = {
   'cdp-motion.mjs': '动作语义：嘴还原 / 喷水 / 定格 / 前置动作',
   'cdp-exp.mjs': '表情面板：44 项可点且真的生效',
   'cdp-handoff2.mjs': '定格姿势能被会话相位接管',
+  'cdp-host-events.mjs': '真实 DSH 事件接线（tools/*）+ 相位持续播放',
+  'cdp-head.mjs': '点头部才重锤出击；摸鱼不碰重锤/喷水',
+  'cdp-idle-return.mjs': '动作/表情到点自动回到初始待机',
+  'cdp-passthrough.mjs': '只有角色可拖动，透明处事件穿透',
 }
 
 const PORT = 8793

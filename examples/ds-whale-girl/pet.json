@@ -19,13 +19,12 @@
       "idle": "Idle",
       "waiting": "Idle",
       "thinking": "Idle",
-      "tool": "Hammer",
+      "tool": "Ketchup",
       "review": "SelfieQuick",
       "done": "BubbleGum",
       "failed": "SprayWater"
     },
     "expressions": {
-      "idle": "脸红",
       "waiting": "问号",
       "thinking": "呆呆眼",
       "tool": "流汗",
@@ -34,6 +33,15 @@
       "failed": "大哭"
     },
     "motionOptions": {
+      "Hammer": {
+        "fidget": false
+      },
+      "SprayWater": {
+        "preset": {
+          "jingyu": 1
+        },
+        "fidget": false
+      },
       "OpenCase": {
         "hold": true
       },
@@ -42,11 +50,6 @@
       },
       "SelfieQuick": {
         "prepend": "OpenCase"
-      },
-      "SprayWater": {
-        "preset": {
-          "jingyu": 1
-        }
       }
     }
   },

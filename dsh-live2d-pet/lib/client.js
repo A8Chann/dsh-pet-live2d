@@ -108,6 +108,16 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
      */
     let heldParams = null;
     /**
+     * The session phase currently being sustained, if any (requirement #4).
+     */
+    /**
+     * The session phase currently being sustained, if any (requirement #4).
+     * While set, finishing the phase's motion re-triggers it instead of
+     * dropping to the idle loop, so the pet keeps visibly working.
+     */
+    let sustainPhase = null;
+    let sustainTimer = 0;
+    /**
      * True once a held action has finished animating and is just sitting in
      * its final pose.
      *
@@ -180,6 +190,29 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       return declared !== null && typeof declared === "object" ? declared : null;
     };
 
+    /**
+     * Resolve a session phase to a motion group.
+     *
+     * The per-pet override lives on the component (it comes from pet.json), so
+     * the controller reads it through a hook the component installs. Keeping it
+     * here rather than in the component is what lets the sustain loop re-trigger
+     * a phase's motion without the component driving every beat.
+     */
+    let phaseMotionFor = () => undefined;
+
+    /**
+     * Whether the random idle fidget may pick this motion.
+     *
+     * Interaction verbs (锤人、喷水) are excluded so the pet never appears to
+     * react to something that did not happen; the pet can opt any group back in
+     * or out with motionOptions: { "<group>": { "fidget": false | true } }.
+     */
+    const fidgetAllowed = (group) => {
+      const declared = optionsFor(group);
+      if (declared !== null && typeof declared.fidget === "boolean") return declared.fidget;
+      return FIDGET_DENY.indexOf(group) === -1;
+    };
+
     /** Layer the currently pinned expression back over a freshly started motion. */
     const reapplyExpression = () => {
       if (applyExpression !== null) applyExpression();
@@ -187,6 +220,63 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
 
     /** The Cubism core model, or null before boot. */
     const coreModel = () => model?.internalModel?.coreModel ?? null;
+
+    /**
+     * The head's bounding box in MODEL space, or null when the model has no
+     * recognisable facial drawables (in which case every tap counts as a head
+     * tap, preserving the old behaviour for unknown models).
+     */
+    let headBox = null;
+
+    /**
+     * Measure the head from the model's own drawable geometry.
+     *
+     * Runs once per attach. The values are model-space, so they stay valid
+     * across resizes and drags; `hitsHead` maps through the live transform.
+     */
+    const measureHead = (nextModel) => {
+      try {
+        const im = nextModel?.internalModel;
+        const ids = im?.getDrawableIDs?.();
+        if (ids === undefined || ids === null || typeof im.getDrawableIndex !== "function") return null;
+        if (typeof im.getDrawableBounds !== "function") return null;
+        let minX = Infinity;
+        let minY = Infinity;
+        let maxX = -Infinity;
+        let maxY = -Infinity;
+        let found = 0;
+        for (const raw of ids) {
+          const id = String(raw);
+          if (!HEAD_DRAWABLE_HINTS.test(id)) continue;
+          const index = im.getDrawableIndex(id);
+          if (index < 0) continue;
+          const b = im.getDrawableBounds(index, {});
+          if (b === undefined || !Number.isFinite(b.x) || !Number.isFinite(b.y)) continue;
+          if (!(b.width > 0) || !(b.height > 0)) continue;
+          minX = Math.min(minX, b.x);
+          minY = Math.min(minY, b.y);
+          maxX = Math.max(maxX, b.x + b.width);
+          maxY = Math.max(maxY, b.y + b.height);
+          found += 1;
+        }
+        if (found === 0 || maxX <= minX || maxY <= minY) return null;
+        // The facial drawables cover the face only; a head pat should also land
+        // on the hair, ears and headband around and above it.
+        const w = maxX - minX;
+        const h = maxY - minY;
+        const padX = w * HEAD_PAD_SIDE;
+        const padTop = h * HEAD_PAD_TOP;
+        const padBottom = h * HEAD_PAD_BOTTOM;
+        return {
+          minX: minX - padX,
+          maxX: maxX + padX,
+          minY: minY - padTop,
+          maxY: maxY + padBottom,
+        };
+      } catch {
+        return null;
+      }
+    };
 
     /**
      * Live parameter state, addressed by NAME.
@@ -332,6 +422,22 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       return true;
     };
 
+    /**
+     * Drop every override and return to the pristine initial state.
+     *
+     * Requirement #3: after any action or expression has had its moment, the pet
+     * must end up exactly where it started — the idle loop, no pinned
+     * expression, no parameter left behind by a motion. This is the one funnel
+     * that guarantees it, and it is also what the sustain loop calls when a
+     * session phase ends.
+     */
+    const resetToRest = () => {
+      sustainPhase = null;
+      window.clearTimeout(sustainTimer);
+      sustainTimer = 0;
+      restoreHeld();
+      playIdle();
+    };
     /** Return to the looping idle animation; the resting state of the pet. */
     const playIdle = () => {
       clearTimer();
@@ -359,6 +465,52 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
           if (mine === token) playIdle();
         }, entry.duration + REACTION_TAIL_MS);
       }
+    };
+
+    /**
+     * What an action does when its motion finishes.
+     *
+     * Order of precedence:
+     *  1. a sustained session phase re-triggers its own motion (requirement #4),
+     *  2. `hold: true` keeps the pose — but only until ACTION_HOLD_MAX_MS, so
+     *     nothing can park the pet forever (requirement #3),
+     *  3. otherwise fall back to the idle loop.
+     */
+    const finishAction = (opts) => {
+      if (sustainPhase !== null) {
+        const mine = token;
+        window.clearTimeout(sustainTimer);
+        sustainTimer = window.setTimeout(() => {
+          sustainTimer = 0;
+          if (mine === token && sustainPhase !== null) playSustained();
+        }, PHASE_SUSTAIN_GAP_MS);
+        return;
+      }
+      if (opts !== null && opts.hold === true) {
+        settleHeld();
+        // Requirement #3: even a held pose is not permanent.
+        const mine = token;
+        window.clearTimeout(sustainTimer);
+        sustainTimer = window.setTimeout(() => {
+          sustainTimer = 0;
+          if (mine === token && sustainPhase === null) playIdle();
+        }, ACTION_HOLD_MAX_MS);
+        return;
+      }
+      playIdle();
+    };
+
+    /** Re-trigger the sustained phase's motion; the sustain loop's heartbeat. */
+    const playSustained = () => {
+      if (sustainPhase === null) return;
+      const group = phaseMotionFor(sustainPhase);
+      if (group === undefined || !Array.isArray(groups[group])) {
+        // The pet has no motion for this phase; the idle loop is the honest
+        // representation of "nothing to show".
+        playIdle();
+        return;
+      }
+      playOnce(group, 0, { kind: "phase" });
     };
 
     /**
@@ -399,22 +551,18 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
         if (mine !== token) return;
         // The prerequisite is done; run the action it was preparing for.
         if (prepend !== null) {
-          if (!start(entry, vendor.MotionPriority.FORCE, opts, chainSnapshot)) { playIdle(); return; }
+          if (!start(entry, vendor.MotionPriority.FORCE, opts, chainSnapshot)) { finishAction(opts); return; }
           // The chip and data-motion follow the committed action, so the second
           // half of a chain has to announce itself just like the first half.
           notify();
           timer = window.setTimeout(() => {
             timer = 0;
             if (mine !== token) return;
-            // hold:true keeps the final pose (掏出手机 stays in hand); anything
-            // else hands the body back to the idle loop.
-            if (opts.hold === true) settleHeld();
-            else playIdle();
+            finishAction(opts);
           }, ms(entry) * cycleCount + REACTION_TAIL_MS);
           return;
         }
-        if (opts.hold === true) settleHeld();
-        else playIdle();
+        finishAction(opts);
       }, holdMs);
       return true;
     };
@@ -487,6 +635,9 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
         groups = indexGroups(nextModel, catalogMotions);
         motionOptions = nextOptions ?? null;
         idleName = resolveIdleName(groups);
+        // Locate the head once, from the model's own geometry; it is stored in
+        // model space so it survives every later resize and drag.
+        headBox = measureHead(nextModel);
         token += 1;
         clearTimer();
         try {
@@ -512,11 +663,42 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
         startedAt = 0;
         heldParams = null;
         settled = false;
+        sustainPhase = null;
+        window.clearTimeout(sustainTimer);
+        sustainTimer = 0;
+        phaseMotionFor = () => undefined;
+        headBox = null;
         hitMask = null;
         hitBox = null;
       },
       playIdle,
       playOnce,
+      /** Install the phase -> group resolver the sustain loop needs. */
+      setPhaseResolver(fn) {
+        phaseMotionFor = typeof fn === "function" ? fn : () => undefined;
+      },
+      /**
+       * Enter (or leave) a sustained session phase.
+       *
+       * `null` leaves the phase and drops straight back to the initial idle
+       * state, which is also what the watchdog does if a phase never ends.
+       */
+      setSustain(phase) {
+        if (phase === sustainPhase) return;
+        sustainPhase = phase === undefined ? null : phase;
+        window.clearTimeout(sustainTimer);
+        sustainTimer = 0;
+        if (sustainPhase === null) {
+          // The phase ended: leave whatever it was doing and go back to rest.
+          if (kind === "phase") playIdle();
+        }
+        // A phase only ever STARTS through the component's applyPhase, which
+        // runs the motion; this call just arms the sustain.
+      },
+      /** Force the pet back to its initial idle state (diagnostics / reset). */
+      resetToRest,
+      /** Diagnostic: the session phase currently being sustained, if any. */
+      sustained: () => sustainPhase,
       updatePointer(x, y) {
         if (model !== null) model.focus(x, y);
       },
@@ -546,6 +728,83 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
         for (const value of hitMask.data) count += value;
         return { present: true, size: hitMask.width, opaque: count };
       },
+      /**
+       * The clickable silhouette as SVG path data, in stage-local pixels.
+       *
+       * Requirement #5: the pet must not swallow clicks meant for the page
+       * underneath. DOM hit-testing follows `clip-path`, so an invisible proxy
+       * carrying this path lets the transparent margin fall through to whatever
+       * is behind while the character itself stays draggable — no per-event JS
+       * and no full-canvas interception.
+       *
+       * The 64x64 grid is merged into rectangles so the path stays short.
+       * Returns null while no mask is available (the whole box is live then,
+       * which is the pre-mask behaviour).
+       */
+      maskPath() {
+        if (hitMask === null) return null;
+        const box = hitBox;
+        if (box === null || box.width <= 0 || box.height <= 0) return null;
+        const cols = hitMask.width;
+        const rows = hitMask.height;
+        const raw = hitMask.data;
+        // Dilate by one cell so the clip matches hitsMask exactly: that test
+        // accepts a hit when ANY neighbour within one cell is opaque, so the
+        // exact grid left a one-cell ring (most visibly the top of the head)
+        // where a press counted as "on the model" yet fell through the proxy.
+        // The same tolerance is what makes edge clicks feel reliable, so the
+        // proxy inherits it rather than the other way round.
+        const data = new Uint8Array(cols * rows);
+        for (let y = 0; y < rows; y += 1) {
+          for (let x = 0; x < cols; x += 1) {
+            let solid = 0;
+            for (let dy = -1; dy <= 1 && solid === 0; dy += 1) {
+              for (let dx = -1; dx <= 1; dx += 1) {
+                const nx = x + dx;
+                const ny = y + dy;
+                if (nx < 0 || ny < 0 || nx >= cols || ny >= rows) continue;
+                if (raw[ny * cols + nx] === 1) { solid = 1; break }
+              }
+            }
+            data[y * cols + x] = solid;
+          }
+        }
+        const used = new Uint8Array(cols * rows);
+        const cw = box.width / cols;
+        const ch = box.height / rows;
+        const parts = [];
+        for (let y = 0; y < rows; y += 1) {
+          for (let x = 0; x < cols; x += 1) {
+            const at = y * cols + x;
+            if (data[at] !== 1 || used[at] === 1) continue;
+            // Extend right while the row stays opaque.
+            let w = 1;
+            while (x + w < cols && data[y * cols + x + w] === 1 && used[y * cols + x + w] === 0) w += 1;
+            // Extend down while the whole span stays opaque.
+            let h = 1;
+            for (;;) {
+              const ny = y + h;
+              if (ny >= rows) break;
+              let ok = true;
+              for (let k = 0; k < w; k += 1) {
+                const nAt = ny * cols + x + k;
+                if (data[nAt] !== 1 || used[nAt] === 1) { ok = false; break }
+              }
+              if (!ok) break;
+              h += 1;
+            }
+            for (let yy = y; yy < y + h; yy += 1) {
+              for (let xx = x; xx < x + w; xx += 1) used[yy * cols + xx] = 1;
+            }
+            const px = (box.x + x * cw).toFixed(2);
+            const py = (box.y + y * ch).toFixed(2);
+            const pw = (w * cw).toFixed(2);
+            const ph = (h * ch).toFixed(2);
+            parts.push("M" + px + " " + py + "h" + pw + "v" + ph + "h-" + pw + "Z");
+          }
+        }
+        return parts.length === 0 ? null : parts.join("");
+      },
       hitsMask(x, y, width, height) {
         if (hitMask === null) return true;
         if (width <= 0 || height <= 0) return true;
@@ -570,6 +829,32 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       groups: () => groups,
       /** Declared playback policy for one motion group (diagnostics). */
       optionsFor,
+      /** Whether the idle fidget is allowed to pick this motion group. */
+      fidgetAllowed,
+      /**
+       * Whether a tap landed on the head (requirement #1).
+       *
+       * The stored box is in MODEL space, so the click is pushed through the
+       * model's own inverse transform — the same mapping the engine uses for
+       * gaze — which keeps it correct at any pet size or position.
+       *
+       * Returns true when the head could not be measured: an unrecognised model
+       * keeps the previous "any tap reacts" behaviour instead of going inert.
+       */
+      hitsHead(x, y) {
+        if (headBox === null || model === null || vendor === null) return true;
+        try {
+          // Pass one arg only: the engine then clones into a fresh Point, so
+          // the stage-space input and the model-space output never alias.
+          const point = model.toModelPosition(new vendor.Point(x, y));
+          return point.x >= headBox.minX && point.x <= headBox.maxX
+            && point.y >= headBox.minY && point.y <= headBox.maxY;
+        } catch {
+          return true;
+        }
+      },
+      /** Diagnostic: the measured head box in model space, or null. */
+      headBox: () => headBox,
       /**
        * Play a motion with its declared policy applied; used by the panel, the
        * tap reaction and the session-phase driver.
@@ -669,16 +954,38 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
   // ROOT_ATTR — the container is only a mount point and a takeover marker.
   const ROOT_SEL = "[" + PET_ATTR + "]";
   const CSS = [
-    ROOT_SEL + "{position:fixed;z-index:2147483000;user-select:none;-webkit-user-select:none;touch-action:none;font-family:system-ui,-apple-system,'Segoe UI',sans-serif}",
-    ROOT_SEL + " [data-stage]{position:relative;width:100%;height:100%;cursor:grab;border-radius:14px;overflow:visible}",
+    // The root never takes the pointer itself (requirement #5): a transparent
+    // div still swallows clicks across its whole box, which is what made the
+    // empty margin of the canvas block the page behind it. Only the explicitly
+    // re-armed children below are interactive.
+    ROOT_SEL + "{position:fixed;z-index:2147483000;user-select:none;-webkit-user-select:none;touch-action:none;font-family:system-ui,-apple-system,'Segoe UI',sans-serif;pointer-events:none}",
+    // The stage itself never takes the pointer: it would swallow every click in
+    // the transparent margin. The proxy below is the only interactive layer.
+    ROOT_SEL + " [data-stage]{position:relative;width:100%;height:100%;border-radius:14px;overflow:visible;pointer-events:none}",
     ROOT_SEL + " [data-stage][data-dragging]{cursor:grabbing}",
     ROOT_SEL + " [data-stage] canvas{display:block;width:100%!important;height:100%!important}",
+    // The hit-through proxy: an invisible box clipped to the character's
+    // silhouette. DOM hit-testing honours clip-path, so the transparent margin
+    // falls through to the page while the character stays draggable (#5).
+    // While no mask is ready the proxy is hidden and the stage keeps the whole
+    // box live, which is the safe pre-mask behaviour.
+    ROOT_SEL + " [data-hit]{position:absolute;inset:0;cursor:grab;pointer-events:auto}",
+    ROOT_SEL + " [data-stage][data-dragging] [data-hit]{cursor:grabbing}",
+    ROOT_SEL + " [data-hit][data-off]{display:none}",
+    // Until the silhouette is known the whole box stays live, so the pet is
+    // never inert; it degrades to the pre-mask behaviour instead of nothing.
+    ROOT_SEL + " [data-stage][data-nomask]{pointer-events:auto;cursor:grab}",
     ROOT_SEL + " [data-bar]{position:absolute;left:50%;transform:translateX(-50%);bottom:-2px;display:flex;gap:2px;padding:3px 6px;border-radius:999px;background:rgba(20,26,40,.74);backdrop-filter:blur(8px);opacity:0;transition:opacity .15s ease;pointer-events:none;white-space:nowrap}",
-    ROOT_SEL + ":hover [data-bar],[data-bar][data-open]{opacity:1;pointer-events:auto}",
+    // Driven by [data-hover] rather than :hover: the root is pointer-events:none
+    // so it never matches :hover, and the proxy that does match is only the
+    // character's silhouette — the bar would vanish as soon as the pointer
+    // travelled from the pet down to the buttons.
+    ROOT_SEL + "[data-hover] [data-bar],[data-bar][data-open]{opacity:1;pointer-events:auto}",
     ROOT_SEL + " [data-bar] button{border:0;background:transparent;color:#dbe4f5;font:500 11px/1.7 inherit;padding:2px 7px;border-radius:999px;cursor:pointer}",
     ROOT_SEL + " [data-bar] button:hover{background:rgba(255,255,255,.18)}",
     ROOT_SEL + " [data-bubble]{position:absolute;left:50%;bottom:100%;transform:translateX(-50%);margin-bottom:6px;max-width:min(240px,60vw);width:max-content;padding:7px 11px;border-radius:12px;background:linear-gradient(160deg,rgba(38,52,84,.95),rgba(21,28,46,.95));border:1px solid rgba(120,170,255,.3);box-shadow:0 8px 24px rgba(0,0,0,.35);color:#e8eefc;font:400 12px/1.5 inherit;white-space:pre-wrap;pointer-events:none}",
-    ROOT_SEL + " [data-panel]{position:absolute;right:calc(100% + 10px);bottom:0;width:270px;max-height:min(440px,72vh);display:flex;flex-direction:column;border-radius:14px;overflow:hidden;background:rgba(22,29,46,.95);backdrop-filter:blur(14px);border:1px solid rgba(120,170,255,.24);box-shadow:0 14px 40px rgba(0,0,0,.44);color:#e8eefc;font:400 12px/1.5 inherit}",
+    // Sits outside the pet's box entirely, so it must re-arm itself.
+    ROOT_SEL + " [data-panel]{position:absolute;right:calc(100% + 10px);bottom:0;width:270px;max-height:min(440px,72vh);display:flex;flex-direction:column;border-radius:14px;overflow:hidden;background:rgba(22,29,46,.95);backdrop-filter:blur(14px);border:1px solid rgba(120,170,255,.24);box-shadow:0 14px 40px rgba(0,0,0,.44);color:#e8eefc;font:400 12px/1.5 inherit;pointer-events:auto}",
     ROOT_SEL + " [data-panel] header{display:flex;align-items:center;gap:6px;padding:9px 11px;border-bottom:1px solid rgba(120,170,255,.14);font-weight:600}",
     ROOT_SEL + " [data-panel] header select{flex:1;min-width:0;background:rgba(255,255,255,.08);color:inherit;border:1px solid rgba(120,170,255,.24);border-radius:7px;padding:4px 6px;font:inherit}",
     ROOT_SEL + " [data-panel] [data-tabs]{display:flex;gap:2px;padding:6px 8px 0}",
@@ -741,6 +1048,62 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
   const IDLE_FIDGET_MAX_MS = 26000;
 
   /**
+   * How long a session phase keeps replaying its motion.
+   *
+   * "持续播放" — a phase is a STATE, not an event, so a one-shot animation that
+   * drops back to the idle loop the moment it ends reads as "ignored". While a
+   * phase is live the controller re-triggers its motion, so the pet visibly
+   * stays busy for as long as the assistant is.
+   */
+  const PHASE_SUSTAIN_GAP_MS = 200;
+
+  /**
+   * Upper bound on how long any single action may hold the body.
+   *
+   * Requirement #3: everything must eventually fall back to the initial idle
+   * state. Without this, a motion declared `hold: true` (掏出手机 keeps the
+   * phone up) would park the pet in that pose forever, and a pinned expression
+   * would stay on the face until manually cleared.
+   */
+  const ACTION_HOLD_MAX_MS = 9000;
+
+  /** How long a manually pinned expression stays before auto-clearing. */
+  const EXPRESSION_HOLD_MS = 12000;
+
+  /**
+   * Motions that must never be picked as an idle "摸鱼" animation.
+   *
+   * These are the user's own interaction verbs: 重锤出击 is what a tap does and
+   * 鲸鱼喷水 is what a failure does. Letting the random fidget pick them makes
+   * the pet appear to react to a click or an error that never happened, which
+   * is exactly the confusion reported as "摸鱼动画里也会重锤出击".
+   *
+   * A pet may extend this through motionOptions: { "<group>": { "fidget": false } }.
+   */
+  const FIDGET_DENY = ["Hammer", "SprayWater"];
+
+  /**
+   * Drawable-name hints that identify the FACE, used to locate the head.
+   *
+   * 重锤出击 is the "pat the head" reaction, so it must only fire when the click
+   * actually lands on the head — tapping the desk or the body answered with a
+   * hammer swing (requirement #1).
+   *
+   * The model declares no Cubism HitAreas, so the head is derived from its own
+   * drawable geometry instead of a guessed percentage: any drawable whose id
+   * looks like a facial feature is unioned, and the box is grown to cover the
+   * hair and headband sitting above it. That keeps the region correct when the
+   * pet is resized or dragged, because it is measured in MODEL space and mapped
+   * through the live transform at click time.
+   */
+  const HEAD_DRAWABLE_HINTS = /(face|eye|mouth|nose|brow|cheek|head|kao)/i;
+
+  /** How far the face box grows to become the whole head, as a fraction of it. */
+  const HEAD_PAD_SIDE = 0.55;
+  const HEAD_PAD_TOP = 0.85;
+  const HEAD_PAD_BOTTOM = 0.10;
+
+  /**
    * Session phase -> motion group (#4).
    *
    * A pet may override any slot through its manifest's `live2d.motions`, which
@@ -754,6 +1117,18 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
     done: "BubbleGum",
     failed: "SprayWater",
   };
+
+  /**
+   * Which session phases replay their motion for as long as they last.
+   *
+   * Only phases that map to a DISTINCTIVE motion are sustained — repeating the
+   * idle loop every few seconds would just look twitchy. 'thinking' and
+   * 'waiting' both rest on the idle loop, which already reads as "alive but
+   * not doing anything", so they are left alone; 'tool' (busy hands), 'done'
+   * (a small celebration) and 'failed' (the whale sprays) each have a real
+   * animation to keep running.
+   */
+  const PHASE_SUSTAIN = ["tool", "done", "failed"];
 
   /**
    * Session phase -> expression, layered like a manual expression pin.
@@ -939,6 +1314,12 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
     // without reaching through React internals.
     if (typeof window !== "undefined") window.__dshLive2dPet = motion.current;
     const pinnedRef = useRef({});
+    // The pinned-expression set lives in the component, not the controller, so
+    // expose it on the same diagnostic seam; otherwise a test can only see it
+    // through the panel's chips, which do not exist while the panel is closed.
+    if (typeof window !== "undefined") {
+      window.__dshLive2dPet.expressions = () => Object.keys(pinnedRef.current);
+    }
     const [motionGroup, setMotionGroup] = useState("");
 
     const [catalog, setCatalog] = useState(null);
@@ -1179,6 +1560,9 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
           if (disposed) return;
           if (mask === null) motion.current.setHitMask(null, null);
           else motion.current.setHitMask(mask, mask.box);
+          // Publish the silhouette for the hit-through proxy. An empty string
+          // means "no mask": the proxy stays hidden and behaves like before.
+          setMaskPath(motion.current.maskPath() ?? "");
         };
         rebuildMaskRef.current = refreshMask;
         void refreshMask();
@@ -1309,6 +1693,23 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       else void model.expression(names[names.length - 1]);
     }, []);
 
+    /**
+     * Arm the auto-clear for a MANUALLY chosen expression.
+     *
+     * Requirement #3: a face or prop the user picked must not stay on forever.
+     * Phase-driven expressions deliberately do not use this — the session
+     * stream owns them and clears them when the phase changes.
+     */
+    const armExpressionClear = useCallback(() => {
+      window.clearTimeout(expressionTimer.current);
+      expressionTimer.current = window.setTimeout(() => {
+        expressionTimer.current = 0;
+        // Only clear if the face still is what we pinned; a later phase may
+        // have replaced it already.
+        if (Object.keys(pinnedRef.current).length > 0) applyExpressions({});
+      }, EXPRESSION_HOLD_MS);
+    }, [applyExpressions]);
+
     // One funnel for expression changes: state, the pinned mirror the
     // controller re-layers after each motion start, and the live model all
     // move together.
@@ -1317,11 +1718,27 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       if (next[expressionName] === true) delete next[expressionName];
       else next[expressionName] = true;
       applyExpressions(next);
-    }, [applyExpressions]);
+      if (Object.keys(next).length > 0) armExpressionClear();
+      else window.clearTimeout(expressionTimer.current);
+    }, [applyExpressions, armExpressionClear]);
+
+    /**
+     * Show an expression for a moment without toggling it.
+     *
+     * Used by reactions (a head pat blushes): unlike `toggleExpression`, which
+     * is the panel's on/off switch, this always turns the face ON and lets the
+     * auto-clear timer take it away again.
+     */
+    const flashExpression = useCallback((expressionName) => {
+      const next = Object.assign({}, pinnedRef.current, { [expressionName]: true });
+      applyExpressions(next);
+      armExpressionClear();
+    }, [applyExpressions, armExpressionClear]);
 
     const resetAll = useCallback(() => {
+      window.clearTimeout(expressionTimer.current);
       applyExpressions({});
-      motion.current.playIdle();
+      motion.current.resetToRest();
       say(pick(LINES.reset));
     }, [applyExpressions, say]);
 
@@ -1337,19 +1754,37 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       } catch {
         return undefined;
       }
-      /** Drive the motion + expression for one session phase. */
+      /**
+       * Drive the motion + expression for one session phase.
+       *
+       * A phase is a STATE, not a one-shot event: 'waiting', 'tool' and 'done'
+       * can each last many seconds, so they are handed to the controller's
+       * sustain loop, which re-triggers the motion until the phase changes
+       * (requirement #4). Everything else simply plays once and settles.
+       */
       const applyPhase = (phase) => {
         const group = phaseMotionRef.current[phase];
+        const sustained = PHASE_SUSTAIN.indexOf(phase) !== -1;
         if (phase === "idle" || group === undefined) {
+          // No motion for this phase: stop sustaining and return to rest.
+          motion.current.setSustain(null);
           motion.current.playIdle();
         } else {
           const groups = motion.current.groups();
-          if (Array.isArray(groups[group])) motion.current.playOnce(group, 0, { kind: "phase" });
+          if (Array.isArray(groups[group])) {
+            motion.current.setSustain(sustained ? phase : null);
+            motion.current.playOnce(group, 0, { kind: "phase" });
+          } else {
+            motion.current.setSustain(null);
+          }
         }
         const expression = phaseExpressionRef.current[phase];
         if (expression === undefined) applyExpressions({});
         else applyExpressions({ [expression]: true });
       };
+      // The sustain loop lives in the controller, but the phase -> group map
+      // comes from the pet manifest, so hand the resolver over.
+      motion.current.setPhaseResolver((phase) => phaseMotionRef.current[phase]);
       // The motion subscription (declared above) flushes a deferred phase here.
       flushPhaseRef.current = applyPhase;
       const onMessage = (event) => {
@@ -1381,6 +1816,9 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       return () => {
         source.close();
         phaseRef.current = "idle";
+        // A dropped stream must not leave the pet sustaining a phase forever.
+        motion.current.setSustain(null);
+        motion.current.setPhaseResolver(null);
       };
     }, [ready, applyExpressions]);
 
@@ -1404,10 +1842,15 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
           schedule();
           return;
         }
-        // Pick a random group that is not the idle loop itself.
+        // Pick a random group that is neither the idle loop itself nor one of
+        // the user's interaction verbs. 重锤出击 belongs to a tap and 鲸鱼喷水 to
+        // a failure; a random 摸鱼 replaying them looks like the pet reacting to
+        // something that never happened (requirements #1 and #2).
         const groups = motion.current.groups();
         const idleName = motion.current.idleName();
-        const names = Object.keys(groups).filter((group) => group !== idleName);
+        const names = Object.keys(groups).filter((group) => (
+          group !== idleName && motion.current.fidgetAllowed(group)
+        ));
         if (names.length > 0) {
           const group = names[Math.floor(Math.random() * names.length)];
           const count = groups[group].length;
@@ -1427,6 +1870,8 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
     // Last time the user touched the pet; the idle-fidget timer (#6) measures
     // quiet time from here so a fidget never fires under the user's cursor.
     const lastInteraction = useRef(Date.now());
+    // Auto-clear timer for a manually pinned expression (requirement #3).
+    const expressionTimer = useRef(0);
     // Session-phase plumbing (declared here so the SSE effect can read it).
     const phaseRef = useRef("idle");
     const phaseMotionRef = useRef(PHASE_MOTION);
@@ -1438,6 +1883,30 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
     // phase that arrived while another animation held the body (re-applied on
     // the next idle so a busy moment cannot make the mirror go stale).
     const [phase, setPhaseState] = useState("idle");
+    /**
+     * The character's silhouette as CSS `clip-path` path data (requirement #5).
+     * Empty until the alpha mask has been extracted; while empty the proxy is
+     * hidden and the stage keeps its old full-box behaviour.
+     */
+    const [maskPath, setMaskPath] = useState("");
+    /**
+     * Whether the pointer is on the pet (or its chrome).
+     *
+     * The root is pointer-events:none so the page behind stays clickable, which
+     * also means :hover never matches it — the toolbar's reveal is driven from
+     * here instead. Kept true while the pointer is also over the toolbar or the
+     * panel, so moving down to a button does not make the bar vanish.
+     */
+    const [hovering, setHovering] = useState(false);
+    const hoverDepth = useRef(0);
+    const enterChrome = useCallback(() => {
+      hoverDepth.current += 1;
+      setHovering(true);
+    }, []);
+    const leaveChrome = useCallback(() => {
+      hoverDepth.current = Math.max(0, hoverDepth.current - 1);
+      if (hoverDepth.current === 0) setHovering(false);
+    }, []);
     const pendingPhase = useRef(null);
     // Published by the stream effect so the (earlier-declared) subscription can
     // flush a deferred phase; a ref avoids a declaration-order dependency.
@@ -1445,22 +1914,34 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
     const flushPhaseRef = useRef(() => {});
 
     /**
-     * Whether the press landed on the model itself rather than on the
-     * transparent part of its canvas.
+     * Whether the press landed on the character rather than on the transparent
+     * part of its square canvas.
      *
-     * The canvas is a full square but the character occupies only part of it,
-     * so a raw bounding-box click made every empty corner clickable. The model
-     * declares real hit areas (Head / Body here), and the engine hit-tests in
-     * world space, which is exactly the model's local space because it sits at
-     * the stage centre unscaled by any container transform.
+     * This pack declares no Cubism HitAreas at all, so the region comes from the
+     * rendered alpha silhouette. It is the fallback path: once the mask is known
+     * the interactive proxy is already clipped to the same silhouette, and this
+     * only has to answer for the pre-mask window.
      */
     const hitsModel = useCallback((clientX, clientY) => {
       const stage = stageRef.current;
       if (stage === null) return false;
       const rect = stage.getBoundingClientRect();
-      // Decide against the rendered silhouette, so the transparent margin of
-      // the square canvas is not clickable while the character itself is.
       return motion.current.hitsMask(clientX - rect.left, clientY - rect.top, rect.width, rect.height);
+    }, []);
+
+    /**
+     * Whether the press landed on the pet's HEAD (requirement #1).
+     *
+     * 重锤出击 is the "pat the head" reaction, so it is reserved for the head;
+     * tapping the desk or the body no longer swings a hammer. The region is
+     * measured from the model's own facial drawables, so it needs no per-pet
+     * tuning.
+     */
+    const hitsHead = useCallback((clientX, clientY) => {
+      const stage = stageRef.current;
+      if (stage === null) return false;
+      const rect = stage.getBoundingClientRect();
+      return motion.current.hitsHead(clientX - rect.left, clientY - rect.top);
     }, []);
 
     const onPointerDown = useCallback((event) => {
@@ -1474,10 +1955,13 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
         bottom: posRef.current.bottom,
         moved: false,
         onModel: hitsModel(event.clientX, event.clientY),
+        // Resolved once, at press time: the model keeps swaying, so asking
+        // again on release could answer differently than the press did.
+        onHead: hitsHead(event.clientX, event.clientY),
       };
       setDragging(true);
       try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* not capturable */ }
-    }, [hitsModel]);
+    }, [hitsModel, hitsHead]);
 
     useEffect(() => {
       const onMove = (event) => {
@@ -1505,16 +1989,21 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
             return current;
           });
         } else if (state.onModel) {
-          // A motionless press that landed on the character is a tap; one on a
-          // transparent corner is ignored entirely.
-          const groups = motion.current.groups();
-          // Prefer a dedicated tap group; the DS whale girl has none, so the
-          // "重锤出击" group stands in as its physical reaction.
-          const tap = ["TapBody", "tap_body", "Hammer"].find((group) => Array.isArray(groups[group]));
-          if (tap !== undefined) motion.current.playOnce(tap, 0, { kind: "tap" });
-          toggleExpression("脸红");
-          say(pick(LINES.click));
           lastInteraction.current = Date.now();
+          if (state.onHead) {
+            // Patting the head gets the full reaction: the hammer swing, a
+            // blush, and a line.
+            const groups = motion.current.groups();
+            const tap = ["TapHead", "tap_head", "Hammer", "TapBody", "tap_body"]
+              .find((group) => Array.isArray(groups[group]));
+            if (tap !== undefined) motion.current.playOnce(tap, 0, { kind: "tap" });
+            flashExpression("脸红");
+            say(pick(LINES.click));
+          } else {
+            // Anywhere else on the character is a lighter acknowledgement —
+            // deliberately WITHOUT 重锤出击, which now belongs to the head only.
+            say(pick(LINES.click));
+          }
         }
       };
       window.addEventListener("pointermove", onMove, { passive: true });
@@ -1609,6 +2098,7 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
 
     return h("div", {
       [PET_ATTR]: "",
+      ...(hovering ? { "data-hover": "" } : {}),
       style: rootStyle(size, pos),
       // Observability: the committed action of the motion state machine
       // ('idle' while resting) and the current gaze target, so the pet's
@@ -1621,11 +2111,29 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       h("div", {
         ref: stageRef,
         "data-stage": "",
+        // No mask yet: keep the whole box interactive rather than inert.
+        ...(maskPath === "" ? { "data-nomask": "" } : {}),
         ...(dragging ? { "data-dragging": "" } : {}),
-        onPointerDown,
-      }),
+        // The fallback path: with no mask the stage itself starts the drag.
+        ...(maskPath === "" ? { onPointerDown } : {}),
+      },
+        // Only the silhouette is interactive; everything else in the square
+        // canvas stays click-through to the page behind (requirement #5).
+        h("div", {
+          "data-hit": "",
+          ...(maskPath === "" ? { "data-off": "" } : { style: { clipPath: "path('" + maskPath + "')", WebkitClipPath: "path('" + maskPath + "')" } }),
+          ...(maskPath === "" ? {} : { onPointerDown }),
+          onPointerEnter: enterChrome,
+          onPointerLeave: leaveChrome,
+        }),
+      ),
       bubble === null ? null : h("div", { "data-bubble": "" }, bubble),
-      h("div", { "data-bar": "", ...(panelOpen ? { "data-open": "" } : {}) },
+      h("div", {
+        "data-bar": "",
+        ...(panelOpen ? { "data-open": "" } : {}),
+        onPointerEnter: enterChrome,
+        onPointerLeave: leaveChrome,
+      },
         h("button", { type: "button", onClick: () => setPanelOpen((open) => !open) }, panelOpen ? "收起" : "面板"),
         h("button", { type: "button", onClick: resetAll }, "归位"),
         h("button", { type: "button", onClick: () => setSize((current) => Math.max(MIN_SIZE, current - 40)) }, "－"),

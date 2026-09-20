@@ -15,16 +15,40 @@ const PORT = Number(process.argv[2] ?? 8793)
 const host = await import(pathToFileURL(join(PLUGIN, 'lib', 'index.js')).href)
 const { buildRoutes, ActivityHub, attachActivityEvents } = host
 
-// The harness stands in for the DSH host, so it owns the activity hub too and
-// exposes a test-only nudge endpoint to drive session phases.
+// The harness stands in for the DSH host, so it owns the activity hub too.
+//
+// It supplies a REAL (if tiny) event bus rather than a no-op ctx. That matters:
+// with a stub, attachActivityEvents registered nothing and every phase test had
+// to drive the hub through /__nudge, so the plugin's actual host-event wiring
+// was never exercised — which is how a subscription to the non-existent
+// 'tool/call' event survived a green suite while the pet ignored tool activity
+// in the real DSH. The bus below lets /__emit fire the genuine event names.
+const listeners = new Map()
+const bus = {
+  on(event, handler) {
+    if (!listeners.has(event)) listeners.set(event, [])
+    listeners.get(event).push(handler)
+    return () => {
+      const list = listeners.get(event) ?? []
+      const at = list.indexOf(handler)
+      if (at >= 0) list.splice(at, 1)
+    }
+  },
+}
+const emit = async (event, ...args) => {
+  const out = []
+  for (const handler of listeners.get(event) ?? []) out.push(await handler(...args))
+  return out
+}
+
 const hub = new ActivityHub()
-attachActivityEvents({ on: () => {} }, hub)
+attachActivityEvents(bus, hub)
 
 const routes = buildRoutes(hub)
 const byPath = new Map(routes.filter((r) => r.kind === 'exact').map((r) => [r.path, r]))
 const prefixes = routes.filter((r) => r.kind === 'prefix').sort((a, b) => b.path.length - a.path.length)
 
-const server = createServer((req, res) => {
+const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x')
   const pathname = url.pathname
 
@@ -81,6 +105,27 @@ const server = createServer((req, res) => {
     else hub.set(phase, '')
     res.writeHead(200, { 'content-type': 'text/plain' })
     res.end(hub.snapshot().phase)
+    return
+  }
+
+  // Fire a REAL DSH lifecycle event through the bus, so the plugin's own
+  // subscriptions are what the assertions observe. Waterfall events get a
+  // trailing next() so a handler that resumes the chain can be detected.
+  if (pathname === '/__emit') {
+    const event = url.searchParams.get('event') || ''
+    const name = url.searchParams.get('name') || ''
+    let resumed = false
+    const next = async () => { resumed = true; return { kind: 'accept' } }
+    const payload = event.startsWith('tools/')
+      ? { name, callId: 'test-call', parent: undefined }
+      : { status: name, agent: {} }
+    const seen = listeners.get(event)
+    const handlers = seen ?? []
+    for (const handler of handlers) {
+      try { await handler(payload, next) } catch (error) { console.error('emit ' + event + ': ' + error) }
+    }
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ event, handlers: handlers.length, resumed, phase: hub.snapshot().phase }))
     return
   }
 

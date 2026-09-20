@@ -593,6 +593,23 @@ export function attachActivityEvents(ctx, hub) {
       /* host without this event */
     }
   }
+  // Waterfall events only continue if the handler resumes the chain, so a
+  // throw here would silently break tool execution for the whole session.
+  const onWaterfall = (event, handler) => {
+    try {
+      ctx.on(event, (...args) => {
+        try {
+          return handler(...args)
+        } catch {
+          // Never swallow the chain: hand control straight on.
+          const next = args[args.length - 1]
+          return typeof next === 'function' ? next() : undefined
+        }
+      })
+    } catch {
+      /* host without this event */
+    }
+  }
   on('agent/status', (payload) => {
     const status = payload?.status
     if (status === 'running') hub.set('thinking', '')
@@ -605,10 +622,23 @@ export function attachActivityEvents(ctx, hub) {
     hub.set('waiting', '')
     return typeof next === 'function' ? next() : undefined
   })
-  // Tool activity refines the generic 'thinking' phase while a turn is running.
-  on('tool/call', (payload) => {
-    const name = payload?.name
-    if (typeof name === 'string' && name !== '') hub.set('tool', name)
+
+  // Tool activity refines the generic 'thinking' phase while a turn runs.
+  //
+  // The obvious-looking event name for this is 'tool/call', but that is a
+  // SESSION LOG event (a record appended to the transcript), not a cordis
+  // lifecycle event — subscribing to it never fires, which is why the pet
+  // appeared to ignore tool activity entirely. The live hooks are the
+  // 'tools/*' waterfall events, which carry the ToolExecution itself.
+  onWaterfall('tools/pre-execute', (exec, next) => {
+    const name = exec?.name
+    hub.set('tool', typeof name === 'string' ? name : '')
+    return next()
+  })
+  // Back to plain thinking once the tool returns, so the pet stops "working".
+  onWaterfall('tools/post-execute', (_exec, _result, next) => {
+    if (hub.phase === 'tool') hub.set('thinking', '')
+    return next()
   })
 }
 
