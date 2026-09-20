@@ -156,10 +156,27 @@ function normaliseSlots(raw) {
         const trimmed = name.trim()
         if (trimmed !== '' && !expressions.includes(trimmed)) expressions.push(trimmed)
       }
-      if (expressions.length === 0) continue
+      // An option may also drive a MOTION, because some of this model's actions
+      // sit at the same level as an expression: 吹泡泡糖 belongs with the mouth,
+      // 掏出手机 and 挤番茄酱 with the hand. `requires` lists expressions that must
+      // be on for the action to make sense (挤番茄酱 needs 蛋包饭 first).
+      const motion = typeof option.motion === 'string' && option.motion.trim() !== ''
+        ? option.motion.trim()
+        : null
+      const requires = []
+      for (const name of Array.isArray(option.requires) ? option.requires : []) {
+        if (typeof name === 'string' && name.trim() !== '' && !requires.includes(name.trim())) {
+          requires.push(name.trim())
+        }
+      }
+      if (expressions.length === 0 && motion === null) continue
       options.push({
-        label: typeof option.label === 'string' && option.label !== '' ? option.label : expressions[0],
+        label: typeof option.label === 'string' && option.label !== ''
+          ? option.label
+          : (expressions[0] ?? motion),
         expressions,
+        ...(motion === null ? {} : { motion }),
+        ...(requires.length === 0 ? {} : { requires }),
       })
     }
     if (options.length === 0) continue
@@ -317,6 +334,10 @@ export function scanPet(dir, id) {
     // the pet declares which may not be worn together; the browser half turns
     // that into a one-choice-per-slot panel.
     expressionSlots: normaliseSlots(block.expressionSlots),
+    // Session phase -> a whole LOOK expressed in slot vocabulary
+    // ({ whale: "头顶鲸", lhand: "画笔" }), so a phase drives several slots at
+    // once instead of a single expression.
+    looksByPhase: typeof block.looksByPhase === 'object' && block.looksByPhase !== null ? block.looksByPhase : {},
     translate: {
       x: typeof block.translate?.x === 'number' ? block.translate.x : 0,
       y: typeof block.translate?.y === 'number' ? block.translate.y : 0,
@@ -469,6 +490,7 @@ function catalogRoute() {
           motionsByPhase: pet.motionsByPhase,
           expressionsByPhase: pet.expressionsByPhase,
           expressionSlots: pet.expressionSlots,
+          looksByPhase: pet.looksByPhase,
           motionOptions: pet.motionOptions,
           motions: pet.motions,
           expressions: pet.expressions,

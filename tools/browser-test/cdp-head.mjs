@@ -64,9 +64,15 @@ await ev('window.__dshLive2dPet.playIdle()')
 await sleep(900)
 await clickAt(probe.rect.x + probe.head.lx, probe.rect.y + probe.head.ly)
 await sleep(1200)
-check('a head tap plays 重锤出击', (await attr('data-motion')) === 'Hammer', 'data-motion=' + await attr('data-motion'))
-check('a head tap blushes', (await ev('window.__dshLive2dPet.expressions().length')) > 0,
-  'expressions=' + JSON.stringify(await ev('window.__dshLive2dPet.expressions()')))
+// A head pat answers with ONE of three reactions at random — 重锤出击, 问号 or
+// 星星眼 — and deliberately does NOT blush.
+const patMotion = await attr('data-motion')
+const patFaces = await ev('window.__dshLive2dPet.expressions()')
+const patReaction = patMotion === 'Hammer' ? 'Hammer' : (patFaces[0] ?? '(none)')
+check('a head tap answers with one of the three reactions',
+  ['Hammer', '问号', '星星眼'].includes(patReaction),
+  'motion=' + patMotion + ' faces=' + JSON.stringify(patFaces))
+check('a head tap does NOT blush', !patFaces.includes('脸红'), JSON.stringify(patFaces))
 
 // --- tapping the body must NOT swing the hammer ----------------------------
 await ev('window.__dshLive2dPet.resetToRest()')

@@ -554,7 +554,11 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       }
       if (opts !== null && opts.hold === true) {
         settleHeld();
-        // Requirement #3: even a held pose is not permanent.
+        // A SLOT's motion parks for good: 吹泡泡糖 belongs to the mouth slot and
+        // 掏出手机 to the hand slot, so their pose is part of the chosen look and
+        // must survive until the slot changes. Only an ad-hoc action (a preview
+        // from the 动作 tab) is released by the watchdog.
+        if (opts.persist === true) return;
         const mine = token;
         window.clearTimeout(sustainTimer);
         sustainTimer = window.setTimeout(() => {
@@ -1129,6 +1133,30 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
   const IDLE_FIDGET_MAX_MS = 26000;
 
   /**
+   * Which slots the idle fidget may draw from (requirement #4).
+   *
+   * Hands, mood, blush and mouth — the pet's own body and face. Deliberately
+   * NOT the outfit slots: a random 摸鱼 that swapped her glasses or put a whale
+   * on her head would undo a choice the user made on purpose.
+   */
+  const FIDGET_SLOTS = ["rhand", "lhand", "mood", "cheek", "mouth"];
+
+  /** How long a fidget look lasts before the user's own choices come back. */
+  const FIDGET_HOLD_MS = 7000;
+
+  /**
+   * What a head pat may answer with (requirement #5).
+   *
+   * One of these at random, and no blush — the blush is what a tap used to add
+   * unconditionally, which made every pat look identical.
+   */
+  const HEAD_PAT_REACTIONS = [
+    { motion: "Hammer" },
+    { expression: "问号" },
+    { expression: "星星眼" },
+  ];
+
+  /**
    * How long a session phase keeps replaying its motion.
    *
    * "持续播放" — a phase is a STATE, not an event, so a one-shot animation that
@@ -1396,6 +1424,15 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
     // without reaching through React internals.
     if (typeof window !== "undefined") window.__dshLive2dPet = motion.current;
     const pinnedRef = useRef({});
+    /**
+     * The pins the USER owns (slot choices, flashes) and the pins the SESSION
+     * phase imposes, kept apart so a phase can drive the look without destroying
+     * the user's outfit, and give it back when the phase ends.
+     */
+    const userPinsRef = useRef({});
+    const phasePinsRef = useRef({});
+    /** Commit both layers; the phase wins while it lasts. */
+    const commitPinsRef = useRef(() => {});
     /** Late-bound handle to applyExpressions, which is declared further down. */
     const applyExpressionsRef = useRef(() => {});
     // The pinned-expression set lives in the component, not the controller, so
@@ -1419,6 +1456,34 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
     const [ready, setReady] = useState(false);
     const [bubble, setBubble] = useState(null);
     const [panelOpen, setPanelOpen] = useState(false);
+    /**
+     * Viewport coordinates the panel was pinned at, captured once when it opens.
+     *
+     * Measured on open and never again: the whole point is that resizing the pet
+     * must not move the panel the size slider lives in.
+     */
+    const [panelBox, setPanelBox] = useState(null);
+
+    useEffect(() => {
+      if (!panelOpen) {
+        setPanelBox(null);
+        return undefined;
+      }
+      // One frame after it appears, so the panel has been laid out.
+      const id = window.requestAnimationFrame(() => {
+        const root = rootRef.current;
+        if (root === null) return;
+        const el = root.querySelector("[data-panel]");
+        if (el === null) return;
+        const rect = el.getBoundingClientRect();
+        const margin = 8;
+        setPanelBox({
+          left: Math.max(margin, Math.min(rect.left, window.innerWidth - rect.width - margin)),
+          top: Math.max(margin, Math.min(rect.top, window.innerHeight - rect.height - margin)),
+        });
+      });
+      return () => window.cancelAnimationFrame(id);
+    }, [panelOpen]);
     const [tab, setTab] = useState("motions");
 
     const [pinned, setPinned] = useState({});
@@ -1512,6 +1577,7 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       // the built-in defaults.
       phaseMotionRef.current = Object.assign({}, PHASE_MOTION, pet.motionsByPhase || {});
       phaseExpressionRef.current = Object.assign({}, PHASE_EXPRESSION, pet.expressionsByPhase || {});
+      looksByPhaseRef.current = pet.looksByPhase || {};
       phaseRef.current = "idle";
 
       fitRef.scale = typeof pet.scale === "number" && pet.scale > 0 ? pet.scale : 1;
@@ -1795,6 +1861,18 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
     applyExpressionsRef.current = applyExpressions;
 
     /**
+     * Push both pin layers to the model: the user's own choices, with the live
+     * session phase layered on top.
+     *
+     * The phase wins while it lasts because the session is what the pet is meant
+     * to be mirroring; when the phase ends its layer is emptied and the user's
+     * outfit comes straight back, without having been destroyed in between.
+     */
+    commitPinsRef.current = () => {
+      applyExpressions(Object.assign({}, userPinsRef.current, phasePinsRef.current));
+    };
+
+    /**
      * Arm the auto-clear for a MANUALLY chosen expression.
      *
      * Requirement #3: a face or prop the user picked must not stay on forever.
@@ -1807,7 +1885,11 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
         expressionTimer.current = 0;
         // Only clear if the face still is what we pinned; a later phase may
         // have replaced it already.
-        if (Object.keys(pinnedRef.current).length > 0) applyExpressions({});
+        // Only the user's own layer expires; a live phase owns its own face.
+        if (Object.keys(userPinsRef.current).length > 0) {
+          userPinsRef.current = {};
+          commitPinsRef.current();
+        }
       }, EXPRESSION_HOLD_MS);
     }, [applyExpressions]);
 
@@ -1819,10 +1901,11 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
      * this is the only path that shows a face and hands it back on a timer.
      */
     const flashExpression = useCallback((expressionName) => {
-      const next = Object.assign({}, pinnedRef.current, { [expressionName]: true });
-      applyExpressions(next);
+      const next = Object.assign({}, userPinsRef.current, { [expressionName]: true });
+      userPinsRef.current = next;
+      commitPinsRef.current();
       armExpressionClear();
-    }, [applyExpressions, armExpressionClear]);
+    }, [armExpressionClear]);
 
     /**
      * Choose an option within one dress-up slot.
@@ -1839,8 +1922,22 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       }
       if (option !== null) {
         for (const name of option.expressions) next[name] = true;
+        // 'requires' are forced on even when another slot owns them: 挤番茄酱 is a
+        // right-hand action whose 蛋包饭 base lives in the left-hand slot. The
+        // panel then shows that slot as 蛋包饭 because the pin is there, not
+        // because this code touched the slot.
+        for (const name of option.requires ?? []) next[name] = true;
       }
       applyExpressions(next);
+      // A motion attached to a slot plays and PARKS on its last frame, so the
+      // chosen look stays put instead of dropping back to the idle loop.
+      if (option !== null && typeof option.motion === "string") {
+        motion.current.playOnce(option.motion, 0, { kind: "slot", hold: true, persist: true });
+      } else if (option === null) {
+        // Leaving a slot that owned a motion hands the body back to idle; the
+        // other slots' pins are untouched, so their look survives.
+        motion.current.playIdle();
+      }
       // A dress-up choice PERSISTS. The auto-clear exists so a reaction or a
       // session phase cannot leave the pet stuck, but an outfit is an explicit
       // choice the user reverses from this panel (or with 归位), and expiring it
@@ -1850,7 +1947,9 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
 
     const resetAll = useCallback(() => {
       window.clearTimeout(expressionTimer.current);
-      applyExpressions({});
+      userPinsRef.current = {};
+      phasePinsRef.current = {};
+      commitPinsRef.current();
       motion.current.resetToRest();
       say(pick(LINES.reset));
     }, [applyExpressions, say]);
@@ -1876,6 +1975,22 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
        * (requirement #4). Everything else simply plays once and settles.
        */
       const applyPhase = (phase) => {
+        // A phase is a whole LOOK, expressed in the panel's own vocabulary
+        // (requirement #10), so it drives several slots at once — and every one
+        // of them includes a whale, so the pet is never idle-looking mid-session.
+        const look = looksByPhaseRef.current[phase];
+        const slotById = new Map((pet?.expressionSlots ?? []).map((slot) => [slot.id, slot]));
+        const pins = {};
+        if (look !== undefined) {
+          for (const [slotId, label] of Object.entries(look)) {
+            const option = slotById.get(slotId)?.options.find((o) => o.label === label);
+            if (option === undefined) continue;
+            for (const name of option.expressions) pins[name] = true;
+            for (const name of option.requires ?? []) pins[name] = true;
+          }
+        }
+        phasePinsRef.current = pins;
+        commitPinsRef.current();
         const group = phaseMotionRef.current[phase];
         const sustained = PHASE_SUSTAIN.indexOf(phase) !== -1;
         if (phase === "idle" || group === undefined) {
@@ -1892,8 +2007,10 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
           }
         }
         const expression = phaseExpressionRef.current[phase];
-        if (expression === undefined) applyExpressions({});
-        else applyExpressions({ [expression]: true });
+        if (expression !== undefined) {
+          phasePinsRef.current[expression] = true;
+          commitPinsRef.current();
+        }
       };
       // The sustain loop lives in the controller, but the phase -> group map
       // comes from the pet manifest, so hand the resolver over.
@@ -1929,6 +2046,8 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       return () => {
         source.close();
         phaseRef.current = "idle";
+        phasePinsRef.current = {};
+        commitPinsRef.current();
         // A dropped stream must not leave the pet sustaining a phase forever.
         motion.current.setSustain(null);
         motion.current.setPhaseResolver(null);
@@ -1936,45 +2055,80 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
     }, [ready, applyExpressions]);
 
     // ---- idle fidget (#6) ----------------------------------------------
-    // After the pet has been left alone for a while it plays a random
-    // non-idle motion once, "摸鱼" style, then drops back to its idle loop.
-    // Only ever fires from a genuinely idle machine, so it cannot interrupt a
-    // reaction or a session-driven animation, and any interaction resets it.
+    // After the pet has been left alone for a while it picks one or two
+    // SLOT options at random — a hand pose, a mood, a blush, a mouth — plays
+    // them, then puts back whatever the user had chosen. "摸鱼" is meant to look
+    // like the pet amusing itself, so it is drawn from the same vocabulary the
+    // panel exposes rather than from raw motion groups.
+    //
+    // It never fires while a session phase is live: the pet is supposed to be
+    // following the assistant then, and a random fidget would read as it losing
+    // track.
     useEffect(() => {
       if (!ready) return undefined;
       let timer = 0;
+      let revert = 0;
       const schedule = () => {
         window.clearTimeout(timer);
         const wait = IDLE_FIDGET_MIN_MS + Math.random() * (IDLE_FIDGET_MAX_MS - IDLE_FIDGET_MIN_MS);
         timer = window.setTimeout(fire, wait);
       };
+      /** The slot options the fidget is allowed to draw from (requirement #4). */
+      const pool = () => (pet?.expressionSlots ?? []).filter((slot) => FIDGET_SLOTS.includes(slot.id));
       const fire = () => {
         const quietFor = Date.now() - lastInteraction.current;
         const busy = motion.current.isPlaying() || dragState.current !== null;
-        if (busy || quietFor < IDLE_FIDGET_MIN_MS) {
+        if (busy || quietFor < IDLE_FIDGET_MIN_MS || phaseRef.current !== "idle") {
           schedule();
           return;
         }
-        // Pick a random group that is neither the idle loop itself nor one of
-        // the user's interaction verbs. 重锤出击 belongs to a tap and 鲸鱼喷水 to
-        // a failure; a random 摸鱼 replaying them looks like the pet reacting to
-        // something that never happened (requirements #1 and #2).
-        const groups = motion.current.groups();
-        const idleName = motion.current.idleName();
-        const names = Object.keys(groups).filter((group) => (
-          group !== idleName && motion.current.fidgetAllowed(group)
-        ));
-        if (names.length > 0) {
-          const group = names[Math.floor(Math.random() * names.length)];
-          const count = groups[group].length;
-          lastInteraction.current = Date.now();
-          motion.current.playOnce(group, Math.floor(Math.random() * count), { kind: "fidget" });
+        const slots = pool().filter((slot) => slot.options.length > 0);
+        if (slots.length === 0) {
+          schedule();
+          return;
         }
+        const restore = Object.assign({}, pinnedRef.current);
+        const next = Object.assign({}, restore);
+        // One or two slots at a time: "可以只选其中一个或者多个".
+        const count = 1 + Math.floor(Math.random() * 2);
+        const picked = slots.slice().sort(() => Math.random() - 0.5).slice(0, count);
+        let played = null;
+        for (const slot of picked) {
+          const option = slot.options[Math.floor(Math.random() * slot.options.length)];
+          for (const candidate of slot.options) {
+            for (const name of candidate.expressions) delete next[name];
+          }
+          for (const name of option.expressions) next[name] = true;
+          for (const name of option.requires ?? []) next[name] = true;
+          if (typeof option.motion === "string") played = option.motion;
+        }
+        lastInteraction.current = Date.now();
+        applyExpressionsRef.current(next);
+        if (played !== null) {
+          // Parks on its last frame like any other slot motion, so hold on.
+          motion.current.playOnce(played, 0, { kind: "fidget", hold: true, persist: true });
+        }
+        window.clearTimeout(revert);
+        revert = window.setTimeout(() => {
+          revert = 0;
+          applyExpressionsRef.current(restore);
+          // Hand the body back to whatever the restored slots ask for; with no
+          // slot motion among them that is the idle loop.
+          const owned = (pet?.expressionSlots ?? [])
+            .flatMap((slot) => slot.options)
+            .find((option) => typeof option.motion === "string"
+              && option.expressions.every((name) => restore[name] === true));
+          if (owned === undefined) motion.current.playIdle();
+          else motion.current.playOnce(owned.motion, 0, { kind: "slot", hold: true, persist: true });
+        }, FIDGET_HOLD_MS);
         schedule();
       };
       schedule();
-      return () => window.clearTimeout(timer);
-    }, [ready]);
+      return () => {
+        window.clearTimeout(timer);
+        window.clearTimeout(revert);
+      };
+    }, [ready, pet]);
 
     // ---- click + drag -------------------------------------------------
     // Interaction bookkeeping lives above the effects that read it, so the
@@ -1989,6 +2143,8 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
     const phaseRef = useRef("idle");
     const phaseMotionRef = useRef(PHASE_MOTION);
     const phaseExpressionRef = useRef(PHASE_EXPRESSION);
+    /** phase -> slot-vocabulary look, from the pet manifest (requirement #10). */
+    const looksByPhaseRef = useRef({});
     // Gaze target, mirrored onto the pet root as data-gaze.
     const [gaze, setGaze] = useState("center");
     gazeSinkRef.current = setGaze;
@@ -2126,13 +2282,19 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
         } else if (state.onModel) {
           lastInteraction.current = Date.now();
           if (state.onHead) {
-            // Patting the head gets the full reaction: the hammer swing, a
-            // blush, and a line.
-            const groups = motion.current.groups();
-            const tap = ["TapHead", "tap_head", "Hammer", "TapBody", "tap_body"]
-              .find((group) => Array.isArray(groups[group]));
-            if (tap !== undefined) motion.current.playOnce(tap, 0, { kind: "tap" });
-            flashExpression("脸红");
+            // Patting the head picks ONE of three reactions at random
+            // (requirement #5) — and deliberately does not blush. The two face
+            // reactions are transient: they are flashed and the auto-clear
+            // takes them away, so a pat never leaves a permanent face on a
+            // slot the user chose.
+            const reaction = pick(HEAD_PAT_REACTIONS);
+            if (reaction.motion !== undefined) {
+              const groups = motion.current.groups();
+              const tap = [reaction.motion, "TapHead", "tap_head"].find((group) => Array.isArray(groups[group]));
+              if (tap !== undefined) motion.current.playOnce(tap, 0, { kind: "tap" });
+            } else if (reaction.expression !== undefined) {
+              flashExpression(reaction.expression);
+            }
             say(pick(LINES.click));
           } else {
             // Anywhere else on the character is a lighter acknowledgement —
@@ -2213,7 +2375,22 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
     }, [pinned, pet]);
 
     const panel = panelOpen && pet !== undefined
-      ? h("div", { "data-panel": "" },
+      ? h("div", {
+          "data-panel": "",
+          // Pin the panel once it is on screen (requirement #11).
+          //
+          // It is anchored to the pet's box, so resizing the pet moved the panel
+          // out from under the pointer — right while the user is dragging the
+          // size slider INSIDE that panel. Freezing it at the coordinates it
+          // first appeared at keeps the controls reachable.
+          style: panelBox === null ? undefined : {
+            position: "fixed",
+            left: panelBox.left + "px",
+            top: panelBox.top + "px",
+            right: "auto",
+            bottom: "auto",
+          },
+        },
           h("header", null,
             catalog.pets.length > 1
               ? h("select", {

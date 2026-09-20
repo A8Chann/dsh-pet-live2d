@@ -20,18 +20,10 @@
       "waiting": "Idle",
       "thinking": "Idle",
       "tool": "Ketchup",
-      "review": "SelfieQuick",
       "done": "BubbleGum",
       "failed": "SprayWater"
     },
-    "expressions": {
-      "waiting": "问号",
-      "thinking": "呆呆眼",
-      "tool": "流汗",
-      "review": "星星眼",
-      "done": "情绪花花",
-      "failed": "大哭"
-    },
+    "expressions": {},
     "motionOptions": {
       "Hammer": {
         "fidget": false
@@ -162,8 +154,8 @@
         ]
       },
       {
-        "id": "desk",
-        "label": "桌面摆设",
+        "id": "whale",
+        "label": "鲸鱼",
         "none": "无",
         "options": [
           {
@@ -173,11 +165,18 @@
             ]
           },
           {
-            "label": "鲸鱼放桌上",
+            "label": "放桌上",
             "expressions": [
               "鲸鱼放桌上"
             ]
-          },
+          }
+        ]
+      },
+      {
+        "id": "desk",
+        "label": "桌面摆设",
+        "none": "无",
+        "options": [
           {
             "label": "巴菲",
             "expressions": [
@@ -187,10 +186,16 @@
         ]
       },
       {
-        "id": "hands",
-        "label": "手部",
+        "id": "rhand",
+        "label": "右手",
         "none": "无",
         "options": [
+          {
+            "label": "喵喵手",
+            "expressions": [
+              "喵喵手"
+            ]
+          },
           {
             "label": "双手比耶",
             "expressions": [
@@ -198,9 +203,30 @@
             ]
           },
           {
-            "label": "喵喵手",
+            "label": "掏出手机",
+            "motion": "OpenCase"
+          },
+          {
+            "label": "挤番茄酱",
+            "motion": "Ketchup",
             "expressions": [
-              "喵喵手"
+              "挤番茄酱"
+            ],
+            "requires": [
+              "蛋包饭"
+            ]
+          }
+        ]
+      },
+      {
+        "id": "lhand",
+        "label": "左手",
+        "none": "无",
+        "options": [
+          {
+            "label": "撤回",
+            "expressions": [
+              "撤回"
             ]
           },
           {
@@ -219,12 +245,6 @@
             "label": "蛋包饭",
             "expressions": [
               "蛋包饭"
-            ]
-          },
-          {
-            "label": "手机换色",
-            "expressions": [
-              "手机换色"
             ]
           }
         ]
@@ -300,6 +320,18 @@
             "expressions": [
               "调皮"
             ]
+          },
+          {
+            "label": "闭眼口水",
+            "expressions": [
+              "闭眼口水"
+            ]
+          },
+          {
+            "label": "吐魂",
+            "expressions": [
+              "吐魂"
+            ]
           }
         ]
       },
@@ -315,10 +347,8 @@
             ]
           },
           {
-            "label": "闭眼口水",
-            "expressions": [
-              "闭眼口水"
-            ]
+            "label": "吹泡泡糖",
+            "motion": "BubbleGum"
           }
         ]
       },
@@ -343,12 +373,6 @@
             "label": "流汗",
             "expressions": [
               "流汗"
-            ]
-          },
-          {
-            "label": "吐魂",
-            "expressions": [
-              "吐魂"
             ]
           }
         ]
@@ -392,14 +416,14 @@
         ]
       },
       {
-        "id": "deskaction",
-        "label": "桌面动作",
+        "id": "other",
+        "label": "其他",
         "none": "无",
         "options": [
           {
-            "label": "撤回",
+            "label": "手机换色",
             "expressions": [
-              "撤回"
+              "手机换色"
             ]
           },
           {
@@ -407,16 +431,35 @@
             "expressions": [
               "点菜按下"
             ]
-          },
-          {
-            "label": "挤番茄酱",
-            "expressions": [
-              "挤番茄酱"
-            ]
           }
         ]
       }
-    ]
+    ],
+    "looksByPhase": {
+      "thinking": {
+        "whale": "头顶鲸",
+        "eyes": "呆呆眼"
+      },
+      "tool": {
+        "whale": "放桌上",
+        "lhand": "画笔",
+        "symbol": "流汗"
+      },
+      "waiting": {
+        "whale": "头顶鲸",
+        "symbol": "问号"
+      },
+      "done": {
+        "whale": "头顶鲸",
+        "mood": "开心兴奋",
+        "ambient": "情绪花花"
+      },
+      "failed": {
+        "whale": "放桌上",
+        "mood": "大哭",
+        "symbol": "流汗"
+      }
+    }
   },
   "remarks": {
     "pet": [

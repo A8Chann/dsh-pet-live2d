@@ -1,0 +1,70 @@
+# DSH_Pet_Live2d 项目规则
+
+给 DSH Web GUI 做 Live2D 桌宠插件（`dsh-live2d-pet/`）+ 配套验证工具（`tools/`）。
+模型是 B站@氵六青 的 DS鲸鱼娘（Cubism 5，1 个 .moc3、8 组动作、44 个表情）。
+
+## 验证：用确定性信号，不要用像素
+
+**这条是踩了最多次的坑，放第一位。**
+
+给一只**一直在呼吸眨眼**的宠物做视觉验证时，下面两种方法都是无效的：
+
+| 方法 | 表面结果 | 为什么无效 |
+|---|---|---|
+| 冻结 rAF + 截图逐像素比对 | 每格 0.00% | 冻结 `requestAnimationFrame` 并不能可靠停住 Pixi ticker，后续每格都在读同一张陈旧帧 |
+| 比对 canvas 哈希 | `changed: true` | 任意两帧都不会逐字节相同，**信号恒为真**，等于没测 |
+
+我因此对同一个问题给出过两次**互相矛盾**的结论，还写进了 commit message。
+
+**可靠做法：读引擎在帧内写进模型的参数值。**
+
+```js
+// 在 core.update 的末尾采样，此时表达式已经写完、还没被还原
+const base = core.update.bind(core)
+core.update = () => {
+  base()
+  window.__last = names.map((n) => core._model.parameters.values[ids.indexOf(n)])
+}
+```
+
+确定性、不受动画相位影响。所有"某效果是否真的生效"的断言都应该落到这里。
+
+**推论：不要写打印型 driver。** 断言必须以退出码收尾。曾经有个 driver 结尾无条件
+`process.exit(0)`，只打印不断言，加上它唯一的信号恒为真 —— 等于从来没有测过任何东西。
+
+## Cubism / 引擎
+
+- **参数按名字查必须走 `core._model.parameters.ids`**（纯字符串数组）。
+  引擎包装层的 `getParameterIndex(string)` 拿 CubismId 对象比较，传字符串**永远 miss**。
+- **每帧顺序**：`loadParameters()` → 动作写参数 → `saveParameters()` → 表达式写 → 算形变 → 绘制。
+  **要叠加自己的参数，必须挂在 `saveParameters()` 之后。** 挂在 `loadParameters()` 之后会被
+  这一帧的快照吃进基线，下一帧恢复时已经含了它、再叠一次，于是**永远关不掉**。
+- **表达式管理器一次只持有一个 `currentExpression`**，在
+  `internalModel.motionManager.expressionManager`（**不是** `internalModel.expressionManager`）。
+  要多个同时生效只能自己写参数。
+- **引擎解析定义的 File 用 `new URL(file, modelUrl)`**：根相对路径可用，`blob:` 会被
+  判成相对路径改写掉而加载不了。
+- **本模型所有 motion3.json 都声明 `Loop: true`**，永远不触发 `motionFinish`；
+  必须自己按 `Duration` 定时收尾，并以 `loop: false` 启动。
+- 动作停下后**不会还原**它写过的参数；待机循环只驱动 247 个参数里的 89 个。
+  一次性动作要在启动前快照、回待机时还原。
+
+## 浏览器 / CDP
+
+- **`clip-path` 影响命中测试，`mask-image` 不影响。** 要让透明区域事件穿透、只留角色可点，
+  只能用 `clip-path`（配合 `pointer-events: none` 的根节点 + 剪影代理层）。
+- **不要用固定 sleep 等模型加载**：`title=done` 时模型和点击剪影**早就好了**，
+  固定 3-4 秒是纯浪费（每个 driver 一份）。轮询真实条件（`ready.mjs` 的 `waitReady`）。
+- **不要用磁盘上的"变体副本"做 A/B**：副本会过期，直接跑单个 driver 就会静默测旧代码。
+  让测试服**按请求即时生成**变体。
+
+## 文档与语言
+
+- 回复用用户的语言（中文）；代码注释、commit message 也用中文。
+- 改动插件行为后同步更新 `dsh-live2d-pet/README.md` 与 `examples/ds-whale-girl/README.md`。
+
+## 工作流
+
+- 日常验证：`cd tools/browser-test && npm run dev -- <关键字>`（单个 driver 约 7 秒）
+- 提交前：`npm run suite`（15 个 driver 并发，约 3 分钟）
+- 改了 `lib/client.js` 要重启 `dsh web` 才生效（bundle 不热重载）
