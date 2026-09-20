@@ -1,0 +1,33 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>pending</title>
+<script>
+window.__ModuleLoader__ = {
+  mode: 'queue',
+  pendingQueue: [],
+  load(registration) {
+    try {
+      const req = (spec) => {
+        if (spec === 'react') return window.React;
+        if (spec === 'react-dom/client') return window.ReactDOM;
+        if (spec === 'react-dom') return window.ReactDOM;
+        throw new Error('unseeded external: ' + spec);
+      };
+      const mod = registration.factory(req);
+      window.__pluginExports = window.__pluginExports || {};
+      window.__pluginExports[registration.id] = mod;
+    } catch (error) {
+      window.__bootError = String(error && error.stack || error);
+    }
+  }
+};
+window.__errors = [];
+window.addEventListener('error', (e) => window.__errors.push('error: ' + (e.message || e)));
+window.addEventListener('unhandledrejection', (e) => window.__errors.push('rejection: ' + (e.reason && e.reason.message || e.reason)));
+</script>
+<script src="/react.js"></script>
+<script src="/react-dom.js"></script>
+</head>
+<body style="margin:0;background:#101725">
+<script src="/plugins/dsh-live2d-pet/client.js"></script>
+<script type="module" src="/harness.js"></script>
+</body></html>

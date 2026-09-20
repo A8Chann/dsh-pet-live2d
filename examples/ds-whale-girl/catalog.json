@@ -1,0 +1,310 @@
+{
+  "motions": [
+    {
+      "key": "Idle",
+      "label": "待机",
+      "category": "action"
+    },
+    {
+      "key": "Hammer",
+      "label": "重锤出击",
+      "category": "action"
+    },
+    {
+      "key": "BubbleGum",
+      "label": "吹泡泡糖",
+      "category": "action"
+    },
+    {
+      "key": "SprayWater",
+      "label": "鲸鱼喷水",
+      "category": "action"
+    },
+    {
+      "key": "OpenCase",
+      "label": "掏出手机",
+      "category": "action"
+    },
+    {
+      "key": "Selfie",
+      "label": "自拍动画",
+      "category": "action"
+    },
+    {
+      "key": "SelfieQuick",
+      "label": "快速自拍",
+      "category": "action"
+    },
+    {
+      "key": "Ketchup",
+      "label": "挤番茄酱",
+      "category": "action"
+    }
+  ],
+  "expressions": [
+    {
+      "key": "脸红",
+      "label": "脸红",
+      "category": "emotion",
+      "file": "脸红.exp3.json"
+    },
+    {
+      "key": "爱心眼",
+      "label": "爱心眼",
+      "category": "emotion",
+      "file": "爱心眼.exp3.json"
+    },
+    {
+      "key": "星星眼",
+      "label": "星星眼",
+      "category": "emotion",
+      "file": "星星眼.exp3.json"
+    },
+    {
+      "key": "情绪花花",
+      "label": "情绪花花",
+      "category": "emotion",
+      "file": "情绪花花.exp3.json"
+    },
+    {
+      "key": "心跳",
+      "label": "心跳",
+      "category": "emotion",
+      "file": "心跳.exp3.json"
+    },
+    {
+      "key": "开心兴奋",
+      "label": "开心兴奋",
+      "category": "emotion",
+      "file": "开心兴奋.exp3.json"
+    },
+    {
+      "key": "悲伤",
+      "label": "悲伤",
+      "category": "emotion",
+      "file": "悲伤.exp3.json"
+    },
+    {
+      "key": "大哭",
+      "label": "大哭",
+      "category": "emotion",
+      "file": "哭.exp3.json"
+    },
+    {
+      "key": "生气",
+      "label": "生气",
+      "category": "emotion",
+      "file": "生气.exp3.json"
+    },
+    {
+      "key": "晕晕",
+      "label": "晕晕",
+      "category": "emotion",
+      "file": "晕晕.exp3.json"
+    },
+    {
+      "key": "流汗",
+      "label": "流汗",
+      "category": "emotion",
+      "file": "流汗.exp3.json"
+    },
+    {
+      "key": "问号",
+      "label": "问号",
+      "category": "emotion",
+      "file": "问号.exp3.json"
+    },
+    {
+      "key": "感叹号",
+      "label": "感叹号",
+      "category": "emotion",
+      "file": "感叹号.exp3.json"
+    },
+    {
+      "key": "阴暗",
+      "label": "阴暗",
+      "category": "emotion",
+      "file": "阴暗.exp3.json"
+    },
+    {
+      "key": "调皮",
+      "label": "调皮",
+      "category": "emotion",
+      "file": "调皮.exp3.json"
+    },
+    {
+      "key": "闭眼口水",
+      "label": "闭眼口水",
+      "category": "emotion",
+      "file": "闭眼口水.exp3.json"
+    },
+    {
+      "key": "吐魂",
+      "label": "吐魂",
+      "category": "emotion",
+      "file": "吐魂.exp3.json"
+    },
+    {
+      "key": "吐舌",
+      "label": "吐舌",
+      "category": "emotion",
+      "file": "吐舌.exp3.json"
+    },
+    {
+      "key": "呆呆眼",
+      "label": "呆呆眼",
+      "category": "emotion",
+      "file": "呆呆眼.exp3.json"
+    },
+    {
+      "key": "冒爱心",
+      "label": "冒爱心",
+      "category": "emotion",
+      "file": "love.exp3.json"
+    },
+    {
+      "key": "圆眼镜",
+      "label": "圆眼镜",
+      "category": "accessory",
+      "file": "圆眼镜.exp3.json"
+    },
+    {
+      "key": "方眼镜",
+      "label": "方眼镜",
+      "category": "accessory",
+      "file": "方眼镜.exp3.json"
+    },
+    {
+      "key": "椭圆眼镜",
+      "label": "椭圆眼镜",
+      "category": "accessory",
+      "file": "椭圆眼镜.exp3.json"
+    },
+    {
+      "key": "墨镜",
+      "label": "墨镜",
+      "category": "accessory",
+      "file": "墨镜.exp3.json"
+    },
+    {
+      "key": "头箍",
+      "label": "头箍",
+      "category": "accessory",
+      "file": "头箍.exp3.json"
+    },
+    {
+      "key": "单边马尾",
+      "label": "单边马尾",
+      "category": "accessory",
+      "file": "单边马尾.exp3.json"
+    },
+    {
+      "key": "蝴蝶结贴纸",
+      "label": "蝴蝶结贴纸",
+      "category": "accessory",
+      "file": "蝴蝶结贴纸.exp3.json"
+    },
+    {
+      "key": "猫猫贴纸",
+      "label": "猫猫贴纸",
+      "category": "accessory",
+      "file": "猫猫贴纸.exp3.json"
+    },
+    {
+      "key": "兔兔贴纸",
+      "label": "兔兔贴纸",
+      "category": "accessory",
+      "file": "兔兔贴纸.exp3.json"
+    },
+    {
+      "key": "头顶鲸",
+      "label": "头顶鲸",
+      "category": "prop",
+      "file": "鲸鱼.exp3.json"
+    },
+    {
+      "key": "鲸鱼放桌上",
+      "label": "鲸鱼放桌上",
+      "category": "prop",
+      "file": "鲸鱼放桌上.exp3.json"
+    },
+    {
+      "key": "桌面巴菲",
+      "label": "桌面巴菲",
+      "category": "prop",
+      "file": "巴菲.exp3.json"
+    },
+    {
+      "key": "蛋包饭",
+      "label": "蛋包饭",
+      "category": "prop",
+      "file": "蛋包饭.exp3.json"
+    },
+    {
+      "key": "桌面粉魔爪",
+      "label": "桌面粉魔爪",
+      "category": "prop",
+      "file": "魔爪.exp3.json"
+    },
+    {
+      "key": "魔爪换色",
+      "label": "魔爪换色",
+      "category": "prop",
+      "file": "魔爪换色.exp3.json"
+    },
+    {
+      "key": "双手比耶",
+      "label": "双手比耶",
+      "category": "prop",
+      "file": "双手比耶.exp3.json"
+    },
+    {
+      "key": "喵喵手",
+      "label": "喵喵手",
+      "category": "prop",
+      "file": "喵喵手~喵~动画.exp3.json"
+    },
+    {
+      "key": "手机换色",
+      "label": "手机换色",
+      "category": "prop",
+      "file": "手机换色.exp3.json"
+    },
+    {
+      "key": "深色桌布",
+      "label": "深色桌布",
+      "category": "prop",
+      "file": "深色桌布.exp3.json"
+    },
+    {
+      "key": "画笔",
+      "label": "画笔",
+      "category": "prop",
+      "file": "画笔.exp3.json"
+    },
+    {
+      "key": "橡皮",
+      "label": "橡皮",
+      "category": "prop",
+      "file": "橡皮.exp3.json"
+    },
+    {
+      "key": "撤回",
+      "label": "撤回",
+      "category": "prop",
+      "file": "撤回.exp3.json"
+    },
+    {
+      "key": "点菜按下",
+      "label": "点菜按下",
+      "category": "prop",
+      "file": "点菜按下.exp3.json"
+    },
+    {
+      "key": "挤番茄酱",
+      "label": "挤番茄酱",
+      "category": "prop",
+      "file": "挤.exp3.json"
+    }
+  ]
+}

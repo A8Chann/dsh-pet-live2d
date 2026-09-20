@@ -1,0 +1,44 @@
+import { spawn } from 'node:child_process'
+import { rmSync } from 'node:fs'
+import { browserPath, PROFILES, BASE } from './paths.mjs'
+import { join } from 'node:path'
+const EDGE = browserPath()
+const PORT = 9364
+const PROFILE = join(PROFILES, '_cdp-dpr')
+rmSync(PROFILE, { recursive: true, force: true })
+// force-device-scale-factor=2 simulates a HiDPI screen.
+const edge = spawn(EDGE, ['--headless=new', '--remote-debugging-port=' + PORT, '--enable-unsafe-swiftshader',
+  '--use-angle=swiftshader', '--no-first-run', '--no-default-browser-check', '--disable-extensions',
+  '--user-data-dir=' + PROFILE, '--window-size=1280,860', '--force-device-scale-factor=2', 'about:blank'], { stdio: 'ignore' })
+const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+let page
+for (let i = 0; i < 120 && page === undefined; i++) {
+  try { page = (await (await fetch('http://127.0.0.1:' + PORT + '/json/list')).json()).find(t => t.type === 'page') } catch {}
+  if (page === undefined) await sleep(250)
+}
+const ws = new WebSocket(page.webSocketDebuggerUrl)
+await new Promise((res, rej) => { ws.onopen = res; ws.onerror = rej })
+let nextId = 0; const pending = new Map()
+ws.onmessage = (e) => { const m = JSON.parse(e.data); if (m.id !== undefined) { const s = pending.get(m.id); if (s) { pending.delete(m.id); s(m) } } }
+const send = (a, p = {}) => new Promise(r => { const id = ++nextId; pending.set(id, r); ws.send(JSON.stringify({ id, method: a, params: p })) })
+const ev = async (e) => (await send('Runtime.evaluate', { expression: e, awaitPromise: true, returnByValue: true })).result?.result?.value
+await send('Runtime.enable'); await send('Page.enable')
+await send('Page.navigate', { url: BASE + '/' })
+for (let i = 0; i < 240; i++) { await sleep(500); if (await ev('document.title') === 'done') break }
+await sleep(1500)
+
+const out = {}
+out.dpr = await ev('window.devicePixelRatio')
+out.at160 = JSON.parse(await ev('JSON.stringify((()=>{const c=document.querySelector("[data-dsh-live2d-pet] canvas");const r=c.getBoundingClientRect();return {css:[Math.round(r.width),Math.round(r.height)],backing:[c.width,c.height]}})())'))
+// Grow the pet and re-measure: the backing store must scale with it.
+await ev(`(() => {
+  const bs = Array.from(document.querySelectorAll('[data-dsh-live2d-pet] [data-bar] button'));
+  const plus = bs[bs.length - 1];
+  for (let i = 0; i < 5; i++) plus.click();
+  return true;
+})()`)
+await sleep(1800)
+out.atGrown = JSON.parse(await ev('JSON.stringify((()=>{const c=document.querySelector("[data-dsh-live2d-pet] canvas");const r=c.getBoundingClientRect();return {css:[Math.round(r.width),Math.round(r.height)],backing:[c.width,c.height]}})())'))
+out.sharp = out.atGrown.backing[0] === Math.round(out.atGrown.css[0] * out.dpr)
+console.log(JSON.stringify(out, null, 1))
+ws.close(); edge.kill(); process.exit(0)

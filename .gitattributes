@@ -1,0 +1,22 @@
+# Normalize line endings in the repository so Windows checkouts do not churn.
+# Text files are stored with LF and checked out with the platform's native
+# ending; binary assets are never touched.
+* text=auto eol=lf
+
+# Binary assets — must never be line-ending converted.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.gif binary
+*.ico binary
+*.moc3 binary
+*.exp3.json text eol=lf
+*.motion3.json text eol=lf
+*.physics3.json text eol=lf
+*.cdi3.json text eol=lf
+
+# Keep markdown and yml readable in diffs.
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf

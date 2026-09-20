@@ -1,0 +1,684 @@
+/**
+ * dsh-live2d-pet — host half.
+ *
+ * A self-contained Live2D desk-pet plugin for the DSH Web GUI. It is
+ * deliberately independent of any other pet plugin: it discovers Live2D pet
+ * directories itself, serves their model reference closure, serves the Live2D
+ * runtime files, and answers one catalog endpoint the browser half renders.
+ *
+ * Discovery follows the DSH pet convention: every directory under
+ * '$DSH_HOME/pets/<id>/' holding a pet.json whose 'renderer' is 'live2d'.
+ * The model's declared reference closure (moc3, textures, motions, physics,
+ * expressions) is the allow-list the asset route serves — a crafted '..'
+ * segment can never match, and realpath containment is the second layer.
+ *
+ * The proprietary Cubism Core runtime is NEVER bundled or downloaded by this
+ * plugin: it is read from the user-supplied
+ * '$DSH_HOME/pets/.runtime/live2dcubismcore.min.js'.
+ *
+ * buildRoutes() is exported so the same route table can be mounted by the
+ * DSH web server (apply) and by tests.
+ */
+
+import { existsSync, readFileSync, realpathSync, readdirSync, statSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { extname, join, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+export const name = 'live2d-pet'
+
+export const inject = ['webServer']
+
+/** Browser-facing API base. */
+export const API = '/api/live2d-pet'
+
+/** Size ceilings per served file class, in bytes. */
+const CAP_JSON = 64 * 1024
+const CAP_IMAGE = 24 * 1024 * 1024
+const CAP_MODEL = 48 * 1024 * 1024
+const CAP_RUNTIME = 24 * 1024 * 1024
+
+const MIME = {
+  '.png': 'image/png',
+  '.webp': 'image/webp',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.json': 'application/json; charset=utf-8',
+  '.moc3': 'application/octet-stream',
+  '.js': 'application/javascript; charset=utf-8',
+}
+
+/** $DSH_HOME (defaults to ~/.dsh). */
+export function dshHome() {
+  const raw = process.env.DSH_HOME
+  return raw !== undefined && raw.trim() !== '' ? raw.trim() : join(homedir(), '.dsh')
+}
+
+/** Directory holding every installed pet. */
+export function petsRoot() {
+  return join(dshHome(), 'pets')
+}
+
+/** Directory holding the user-supplied Live2D runtime files. */
+export function runtimeDir() {
+  return join(petsRoot(), '.runtime')
+}
+
+/** Package root of this plugin (lib/ -> package root), resolved once. */
+let packageRoot
+export function pluginRoot() {
+  packageRoot ??= fileURLToPath(new URL('..', import.meta.url))
+  return packageRoot
+}
+
+/** Plain JSON read that never throws. */
+function readJson(file) {
+  try {
+    return JSON.parse(readFileSync(file, 'utf8'))
+  } catch {
+    return undefined
+  }
+}
+
+/** Safe relative path: no absolute paths, no backslashes, no traversal, plain segments. */
+export function safeRel(raw) {
+  if (typeof raw !== 'string' || raw.trim() === '') return undefined
+  const value = raw.trim()
+  if (value.includes('\\') || /^[a-z][a-z0-9+.-]*:/i.test(value) || /^[\\/]/.test(value)) return undefined
+  const segments = value.split('/').filter((segment) => segment !== '')
+  if (segments.length === 0) return undefined
+  if (segments.some((segment) => segment === '.' || segment === '..' || !/^[A-Za-z0-9._-]+$/.test(segment))) return undefined
+  return segments.join('/')
+}
+
+/**
+ * The reference closure of one Cubism model3.json — exactly the files the
+ * asset route may serve for the pet that declares it.
+ */
+export function modelClosure(model3) {
+  const out = new Set()
+  if (typeof model3 !== 'object' || model3 === null) return out
+  const refs = model3.FileReferences
+  if (typeof refs !== 'object' || refs === null) return out
+  const push = (raw) => {
+    const safe = safeRel(raw)
+    if (safe !== undefined) out.add(safe)
+  }
+  if (refs.Moc !== undefined) push(refs.Moc)
+  if (Array.isArray(refs.Textures)) refs.Textures.forEach(push)
+  for (const key of ['Physics', 'Pose', 'DisplayInfo', 'UserData']) if (refs[key] !== undefined) push(refs[key])
+  if (Array.isArray(refs.Expressions)) {
+    for (const expression of refs.Expressions) {
+      if (typeof expression === 'object' && expression !== null) push(expression.File)
+    }
+  }
+  if (typeof refs.Motions === 'object' && refs.Motions !== null) {
+    for (const motions of Object.values(refs.Motions)) {
+      if (!Array.isArray(motions)) continue
+      for (const motion of motions) {
+        if (typeof motion === 'object' && motion !== null) push(motion.File)
+      }
+    }
+  }
+  return out
+}
+
+/** Scan one pet directory into a catalog entry, or undefined when unusable. */
+export function scanPet(dir, id) {
+  const manifestFile = join(dir, 'pet.json')
+  if (!existsSync(manifestFile)) return undefined
+  const manifest = readJson(manifestFile)
+  if (manifest === undefined || typeof manifest !== 'object' || manifest === null) return undefined
+  if (manifest.renderer !== 'live2d') return undefined
+  const block = manifest.live2d
+  if (typeof block !== 'object' || block === null) return undefined
+  const modelPath = safeRel(block.model)
+  if (modelPath === undefined || !modelPath.endsWith('.model3.json')) return undefined
+  const modelFile = join(dir, modelPath)
+  if (!existsSync(modelFile)) return undefined
+  const model3 = readJson(modelFile)
+  if (model3 === undefined) return undefined
+  const closure = modelClosure(model3)
+  if (closure.size === 0) return undefined
+  // The model descriptor itself rides the same route: the browser fetches it
+  // first, then every file it names, so it belongs in the servable set.
+  closure.add(modelPath)
+
+  // Labels/categories are optional host-only metadata shipped beside the
+  // manifest ('catalog.json'); the authoritative motion/expression lists
+  // always come from the model itself, so a pet without one still lists
+  // everything, just with the model's own names.
+  const labels = readJson(join(dir, 'catalog.json')) ?? {}
+  const labelFor = (kind, key) => {
+    const list = labels[kind]
+    if (!Array.isArray(list)) return undefined
+    const hit = list.find((entry) => entry !== null && typeof entry === 'object' && entry.key === key)
+    return hit === undefined ? undefined : hit
+  }
+
+  // Every motion entry carries its own duration and loop flag, read from the
+  // motion3.json the model references. The browser half needs both: the
+  // engine refuses to restart a still-active group+index, and a motion
+  // flagged Loop never emits motionFinish — so playback has to be driven by
+  // the model's own timing instead of by that event alone.
+  const motions = []
+  const motionGroups = model3.FileReferences?.Motions
+  if (typeof motionGroups === 'object' && motionGroups !== null) {
+    for (const [group, list] of Object.entries(motionGroups)) {
+      if (!Array.isArray(list) || list.length === 0) continue
+      const meta = labelFor('motions', group)
+      const items = list.map((entry, index) => {
+        const file = typeof entry === 'object' && entry !== null ? safeRel(entry.File) : undefined
+        const motionMeta = file === undefined ? undefined : readJson(join(dir, file))
+        const rawDuration = motionMeta?.Meta?.Duration
+        // Every parameter the motion writes. The browser half needs this to
+        // clean up after a one-shot action: a motion such as 吹泡泡糖 drives
+        // its own mouth/pose parameters that the idle loop does NOT drive, so
+        // once the motion stops its last written value stays on the model
+        // forever unless something puts it back ("泡泡吹完嘴没还原").
+        const params = []
+        const curves = motionMeta?.Curves
+        if (Array.isArray(curves)) {
+          for (const curve of curves) {
+            if (curve?.Target === 'Parameter' && typeof curve.Id === 'string' && curve.Id !== '') {
+              params.push(curve.Id)
+            }
+          }
+        }
+        return {
+          index,
+          duration: typeof rawDuration === 'number' && rawDuration > 0 ? Math.round(rawDuration * 1000) : 0,
+          loop: motionMeta?.Meta?.Loop === true,
+          params,
+        }
+      })
+      motions.push({
+        group,
+        count: items.length,
+        label: meta?.label ?? group,
+        category: meta?.category ?? 'action',
+        items,
+      })
+    }
+  }
+
+  const expressions = []
+  const expressionRefs = model3.FileReferences?.Expressions
+  if (Array.isArray(expressionRefs)) {
+    for (const reference of expressionRefs) {
+      if (typeof reference !== 'object' || reference === null) continue
+      const expressionName = typeof reference.Name === 'string' && reference.Name !== '' ? reference.Name : reference.File
+      if (typeof expressionName !== 'string') continue
+      const meta = labelFor('expressions', expressionName)
+      expressions.push({ name: expressionName, label: meta?.label ?? expressionName, category: meta?.category ?? 'other' })
+    }
+  }
+
+  return {
+    id,
+    displayName: typeof manifest.displayName === 'string' && manifest.displayName !== '' ? manifest.displayName : id,
+    description: typeof manifest.description === 'string' ? manifest.description : '',
+    scale: typeof block.scale === 'number' && block.scale > 0 && block.scale <= 10 ? block.scale : 1,
+    // The manifest's phase -> motion-group / expression maps (same keys the
+    // catalog uses), so the browser half can retarget session phases per pet.
+    motionsByPhase: typeof block.motions === 'object' && block.motions !== null ? block.motions : {},
+    // Per-motion playback policy (hold / reset / prepend) declared by the pet.
+    // See the browser half's motion controller: a model whose motion3.json all
+    // say "Loop": true cannot express "play once and hold the pose" or "clean
+    // up the mouth afterwards" on its own, so the pet says it here.
+    motionOptions: typeof block.motionOptions === 'object' && block.motionOptions !== null ? block.motionOptions : {},
+    expressionsByPhase: typeof block.expressions === 'object' && block.expressions !== null ? block.expressions : {},
+    translate: {
+      x: typeof block.translate?.x === 'number' ? block.translate.x : 0,
+      y: typeof block.translate?.y === 'number' ? block.translate.y : 0,
+    },
+    dir,
+    modelPath,
+    modelUrl: API + '/asset/' + encodeURIComponent(id) + '/' + modelPath.split('/').map(encodeURIComponent).join('/'),
+    closure,
+    motions,
+    expressions,
+  }
+}
+
+/** Build the live catalog from disk (fresh per request, so installs are picked up). */
+export function buildCatalog() {
+  const root = petsRoot()
+  if (!existsSync(root)) return []
+  let names = []
+  try {
+    names = readdirSync(root).filter((entry) => !entry.startsWith('.'))
+  } catch {
+    return []
+  }
+  names.sort()
+  const pets = []
+  for (const entry of names) {
+    const dir = join(root, entry)
+    try {
+      if (!statSync(dir).isDirectory()) continue
+    } catch {
+      continue
+    }
+    const pet = scanPet(dir, entry)
+    if (pet !== undefined) pets.push(pet)
+  }
+  return pets
+}
+
+/** realpath containment; a symlink escaping its root is refused. */
+function contained(base, candidate) {
+  try {
+    const realBase = realpathSync(base)
+    const realCandidate = realpathSync(candidate)
+    return realCandidate === realBase || realCandidate.startsWith(realBase + sep) ? realCandidate : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function sendJson(response, status, payload) {
+  const body = Buffer.from(JSON.stringify(payload), 'utf8')
+  response.writeHead(status, {
+    'cache-control': 'no-store',
+    'content-type': 'application/json; charset=utf-8',
+    'content-length': String(body.byteLength),
+  })
+  response.end(body)
+}
+
+/** Weak validator from size + mtime. */
+function weakEtag(stat) {
+  return '"' + stat.size.toString(16) + '-' + Math.round(stat.mtimeMs).toString(16) + '"'
+}
+
+/** Serve one file with containment, size ceiling and revalidation. */
+function serveFile(request, response, base, file, cap) {
+  const resolved = contained(base, file)
+  if (resolved === undefined) {
+    response.writeHead(403)
+    response.end()
+    return
+  }
+  let stat
+  try {
+    stat = statSync(resolved)
+    if (!stat.isFile()) throw new Error('not a file')
+    if (stat.size > cap) {
+      response.writeHead(413)
+      response.end()
+      return
+    }
+  } catch {
+    response.writeHead(404)
+    response.end()
+    return
+  }
+  const etag = weakEtag(stat)
+  if (request.headers['if-none-match'] === etag) {
+    response.writeHead(304, { etag, 'cache-control': 'no-cache' })
+    response.end()
+    return
+  }
+  readFile(resolved).then((body) => {
+    response.writeHead(200, {
+      'content-type': MIME[extname(resolved).toLowerCase()] ?? 'application/octet-stream',
+      'content-length': String(body.byteLength),
+      'cache-control': 'no-cache',
+      etag,
+    })
+    if (request.method === 'HEAD') {
+      response.end()
+      return
+    }
+    response.end(body)
+  }, () => {
+    response.writeHead(404)
+    response.end()
+  })
+}
+
+/** Loopback-only fence: the pet API never answers a non-local peer. */
+function loopbackOnly(request) {
+  const address = request.socket?.remoteAddress ?? ''
+  return address === '' || address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1'
+}
+
+/** Split a request path into the segments after one known prefix. */
+function segmentsAfter(pathname, prefix) {
+  if (!pathname.startsWith(prefix + '/')) return undefined
+  return pathname.slice(prefix.length + 1).split('/')
+}
+
+/** The catalog route (GET /api/live2d-pet/catalog). */
+function catalogRoute() {
+  return {
+    kind: 'exact',
+    path: API + '/catalog',
+    handler: (request, response) => {
+      if (!loopbackOnly(request)) {
+        response.writeHead(403)
+        response.end()
+        return
+      }
+      if (request.method !== 'GET' && request.method !== 'HEAD') {
+        response.writeHead(405, { allow: 'GET, HEAD' })
+        response.end()
+        return
+      }
+      sendJson(response, 200, {
+        ok: true,
+        coreUrl: API + '/runtime/live2dcubismcore.min.js',
+        vendorUrl: API + '/runtime/live2d-vendor.js',
+        pets: buildCatalog().map((pet) => ({
+          id: pet.id,
+          displayName: pet.displayName,
+          description: pet.description,
+          modelUrl: pet.modelUrl,
+          scale: pet.scale,
+          translate: pet.translate,
+          motionsByPhase: pet.motionsByPhase,
+          expressionsByPhase: pet.expressionsByPhase,
+          motionOptions: pet.motionOptions,
+          motions: pet.motions,
+          expressions: pet.expressions,
+        })),
+      })
+    },
+  }
+}
+
+/** The model reference-closure route (GET /api/live2d-pet/asset/<id>/<path>). */
+function assetRoute() {
+  return {
+    kind: 'prefix',
+    path: API + '/asset',
+    handler: (request, response) => {
+      if (!loopbackOnly(request)) {
+        response.writeHead(403)
+        response.end()
+        return
+      }
+      if (request.method !== 'GET' && request.method !== 'HEAD') {
+        response.writeHead(405)
+        response.end()
+        return
+      }
+      let pathname
+      try {
+        pathname = new URL(request.url ?? '/', 'http://pet.local').pathname
+      } catch {
+        response.writeHead(400)
+        response.end()
+        return
+      }
+      const segments = segmentsAfter(pathname, API + '/asset')
+      if (segments === undefined || segments.length < 2) {
+        response.writeHead(404)
+        response.end()
+        return
+      }
+      let id
+      let rel
+      try {
+        id = decodeURIComponent(segments[0])
+        rel = segments.slice(1).map(decodeURIComponent).join('/')
+      } catch {
+        response.writeHead(400)
+        response.end()
+        return
+      }
+      const pet = buildCatalog().find((candidate) => candidate.id === id)
+      // The closure probe is a Set lookup on scan-time normalized paths, so a
+      // crafted '..' / '.' segment can never match a real file.
+      if (pet === undefined || !pet.closure.has(rel)) {
+        response.writeHead(404)
+        response.end()
+        return
+      }
+      const ext = extname(rel).toLowerCase()
+      const cap = ext === '.json' ? CAP_JSON : (ext === '.moc3' ? CAP_MODEL : CAP_IMAGE)
+      serveFile(request, response, pet.dir, join(pet.dir, rel), cap)
+    },
+  }
+}
+
+/** The runtime route (user-supplied Cubism Core + plugin vendor bundle). */
+function runtimeRoute() {
+  const vendorBase = join(pluginRoot(), 'lib')
+  const coreBase = runtimeDir()
+  return {
+    kind: 'prefix',
+    path: API + '/runtime',
+    handler: (request, response) => {
+      if (request.method !== 'GET' && request.method !== 'HEAD') {
+        response.writeHead(405)
+        response.end()
+        return
+      }
+      let pathname
+      try {
+        pathname = new URL(request.url ?? '/', 'http://pet.local').pathname
+      } catch {
+        response.writeHead(400)
+        response.end()
+        return
+      }
+      const segments = segmentsAfter(pathname, API + '/runtime')
+      if (segments === undefined || segments.length !== 1) {
+        response.writeHead(404)
+        response.end()
+        return
+      }
+      // An exact-name allow-list: a segment carrying a separator never matches.
+      const runtimeName = segments[0]
+      let base
+      if (runtimeName === 'live2dcubismcore.min.js') base = coreBase
+      else if (runtimeName === 'live2d-vendor.js') base = vendorBase
+      else {
+        response.writeHead(404)
+        response.end()
+        return
+      }
+      const file = join(base, runtimeName)
+      if (!existsSync(file)) {
+        sendJson(response, 404, { ok: false, error: 'runtime-file-missing', file: runtimeName })
+        return
+      }
+      serveFile(request, response, base, file, CAP_RUNTIME)
+    },
+  }
+}
+
+
+// ---------------------------------------------------------------- activity
+//
+// Session-activity mirror (requirement #4): the pet follows the DSH agent's
+// real lifecycle instead of only reacting to clicks.
+//
+// The event vocabulary is the official one (verified against dsh-agent's
+// runtime-types): 'agent/status' carries idle <-> running, 'agent/turn-stopping'
+// fires when a turn finishes, 'agent/error' on failure, and 'approval/request'
+// (a waterfall event, so it must be resumed) while the user is being asked.
+//
+// Delivery is a same-origin SSE stream rather than polling: transitions are
+// pushed the moment they happen, and an idle page costs only a keep-alive
+// comment frame.
+
+/** The activity phases the browser half understands. */
+export const ACTIVITY_PHASES = ['idle', 'thinking', 'waiting', 'tool', 'done', 'failed']
+
+/** How long the 'done' celebration is held before falling back to idle. */
+const DONE_HOLD_MS = 3500
+
+/** SSE keep-alive interval. */
+const SSE_PING_MS = 30000
+
+/**
+ * The activity hub: folds DSH session events into one coarse phase, and fans
+ * that phase out to every subscribed SSE response.
+ */
+export class ActivityHub {
+  constructor() {
+    this.phase = 'idle'
+    this.detail = ''
+    this.listeners = new Set()
+    this.doneTimer = undefined
+  }
+
+  /** Current snapshot (sent as the first frame of every stream). */
+  snapshot() {
+    return { phase: this.phase, detail: this.detail, at: Date.now() }
+  }
+
+  /** Subscribe one SSE response; returns the unsubscribe function. */
+  subscribe(listener) {
+    this.listeners.add(listener)
+    return () => { this.listeners.delete(listener) }
+  }
+
+  set(phase, detail = '') {
+    if (this.phase === phase && this.detail === detail) return
+    this.phase = phase
+    this.detail = detail
+    this.emit()
+  }
+
+  /**
+   * Enter the 'done' celebration and fall back to idle after a hold, so the
+   * pet visibly finishes a turn instead of snapping straight back.
+   */
+  celebrate() {
+    if (this.doneTimer !== undefined) clearTimeout(this.doneTimer)
+    this.set('done', '')
+    this.doneTimer = setTimeout(() => {
+      this.doneTimer = undefined
+      this.set('idle', '')
+    }, DONE_HOLD_MS)
+    // Keep the process free to exit; the timer is purely cosmetic.
+    this.doneTimer?.unref?.()
+  }
+
+  emit() {
+    const payload = this.snapshot()
+    for (const listener of this.listeners) {
+      try {
+        listener(payload)
+      } catch {
+        /* a dead stream must not break the others */
+      }
+    }
+  }
+
+  dispose() {
+    if (this.doneTimer !== undefined) {
+      clearTimeout(this.doneTimer)
+      this.doneTimer = undefined
+    }
+    this.listeners.clear()
+  }
+}
+
+/**
+ * Fold the official DSH events into hub phases. Every subscription is optional
+ * at runtime: an older host that lacks one simply keeps mirroring the others.
+ */
+export function attachActivityEvents(ctx, hub) {
+  const on = (event, handler) => {
+    try {
+      ctx.on(event, handler)
+    } catch {
+      /* host without this event */
+    }
+  }
+  on('agent/status', (payload) => {
+    const status = payload?.status
+    if (status === 'running') hub.set('thinking', '')
+    else if (status === 'idle' && hub.phase !== 'done') hub.set('idle', '')
+  })
+  on('agent/turn-stopping', () => hub.celebrate())
+  on('agent/error', () => hub.set('failed', ''))
+  // approval/request is a waterfall event: it MUST resume the chain.
+  on('approval/request', (_request, next) => {
+    hub.set('waiting', '')
+    return typeof next === 'function' ? next() : undefined
+  })
+  // Tool activity refines the generic 'thinking' phase while a turn is running.
+  on('tool/call', (payload) => {
+    const name = payload?.name
+    if (typeof name === 'string' && name !== '') hub.set('tool', name)
+  })
+}
+
+/** The activity stream + snapshot route. */
+function eventsRoute(hub) {
+  return {
+    kind: 'exact',
+    path: API + '/events',
+    handler: (request, response) => {
+      if (!loopbackOnly(request)) {
+        response.writeHead(403)
+        response.end()
+        return
+      }
+      if (request.method !== 'GET' || hub === undefined) {
+        response.writeHead(405, { allow: 'GET' })
+        response.end()
+        return
+      }
+      response.writeHead(200, {
+        'content-type': 'text/event-stream; charset=utf-8',
+        'cache-control': 'no-store',
+        connection: 'keep-alive',
+        'x-accel-buffering': 'no',
+      })
+      const frame = (payload) => {
+        // Guard every write: the peer may have gone away mid-push.
+        try {
+          response.write('data: ' + JSON.stringify(payload) + '\n\n')
+        } catch {
+          /* stream already closed */
+        }
+      }
+      frame(hub.snapshot())
+      const unsubscribe = hub.subscribe(frame)
+      const ping = setInterval(() => {
+        try {
+          response.write(': ping\n\n')
+        } catch {
+          /* stream already closed */
+        }
+      }, SSE_PING_MS)
+      ping.unref?.()
+      const close = () => {
+        clearInterval(ping)
+        unsubscribe()
+      }
+      request.on('close', close)
+      response.on('close', close)
+      response.on('error', close)
+    },
+  }
+}
+
+/** The complete route table this plugin owns. */
+export function buildRoutes(hub) {
+  return [catalogRoute(), assetRoute(), runtimeRoute(), eventsRoute(hub)]
+}
+
+export function apply(ctx) {
+  const hub = new ActivityHub()
+  attachActivityEvents(ctx, hub)
+  ctx.effect(() => () => hub.dispose(), 'live2d-pet: activity hub')
+  ctx.inject(['webServer'], (host) => {
+    for (const route of buildRoutes(hub)) {
+      try {
+        host.effect(() => host.webServer.register(route), 'live2d-pet: route ' + route.path)
+      } catch (error) {
+        host.logger?.warn('live2d-pet: route ' + route.path + ' failed: ' + String(error))
+      }
+    }
+  })
+}

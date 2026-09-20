@@ -1,0 +1,1705 @@
+// dsh-live2d-pet — browser half.
+//
+// A self-contained Live2D desk pet for the DSH Web GUI. Hand-written
+// __ModuleLoader__ factory (no build step); the only external require is
+// react / react-dom/client, which the loader module table seeds.
+//
+// The plugin mounts one page-global floating surface on document.body:
+//   * a WebGL Live2D model rendered by the lazily-loaded vendor bundle,
+//   * mouse tracking — the model's eyes and head follow the pointer,
+//   * drag to move, position and size persisted in localStorage,
+//   * click reaction (a motion + a speech bubble),
+//   * a control panel listing every motion group and expression the loaded
+//     model declares, discovered from the host catalog endpoint.
+//
+// The proprietary Cubism Core runtime is never bundled: the page loads the
+// user-supplied file from the host's runtime route first, and reports a
+// localized install hint when it is absent.
+window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
+
+  var module = { exports: {} };
+  var exports = module.exports;
+  Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
+
+  const react = require("react");
+  const h = react.createElement;
+  const { useCallback, useEffect, useRef, useState } = react;
+
+  const name = "live2d-pet";
+  const inject = [];
+
+  const API = "/api/live2d-pet";
+  const STORAGE_KEY = "dsh-live2d-pet.state.v1";
+  const ROOT_ATTR = "data-dsh-live2d-pet-root";
+  const PET_ATTR = "data-dsh-live2d-pet";
+  const LEGACY_ATTR = "data-dsh-live2d-pet-container";
+  const MIN_SIZE = 160;
+  const MAX_SIZE = 760;
+  const DEFAULT_SIZE = 300;
+
+  // -------------------------------------------------- motion controller
+  //
+  // Why this is a state machine rather than "just call model.motion()":
+  //
+  //  * The engine's MotionManager refuses to (re)start a group+index that is
+  //    still active, so replaying the same reaction needs an explicit
+  //    stopAllMotions() first — otherwise a second click does nothing.
+  //  * Its priority gate means a NORMAL request cannot interrupt a motion
+  //    that is already playing, so reactions must use FORCE or the pet
+  //    silently stops responding after the first one.
+  //  * motionFinish fires only for a motion that ends by itself. A model whose
+  //    motions are all flagged Loop in their own motion3.json (the DS whale
+  //    girl is exactly that) never finishes, so "play once, then go back to
+  //    idle" has to be driven by the motion's declared Duration instead.
+  //
+  // The controller therefore owns the whole motion lifecycle: one action at a
+  // time, always returning to the idle loop, every transition interruptible.
+
+  /** Idle group names tried in order before falling back to the first group. */
+  const IDLE_CANDIDATES = ["Idle", "idle", "待机"];
+
+  /** How long a one-shot reaction is held when it declares no duration. */
+  const REACTION_FALLBACK_MS = 1600;
+
+  /** Reserved for future head/eye yielding while a reaction owns the body. */
+  const REACTION_TAIL_MS = 60;
+
+  /**
+   * How long a prerequisite motion runs before the action it precedes.
+   *
+   * 自拍 motions start with `phone: 1` already baked into their first keyframe:
+   * the author assumes the phone is ALREADY in hand. Playing 快速自拍 on its own
+   * therefore waves an invisible phone around. Running 掏出手机 first — the
+   * motion that actually raises it — is what makes the selfie read correctly.
+   */
+  const PREPEND_HOLD_MS = 1100;
+
+  /**
+   * A motionFinish arriving sooner than this after a start cannot be genuine.
+   *
+   * model.motion() is asynchronous: it has to load and parse the motion before
+   * it is queued. In that window stopAllMotions() has already cleared the
+   * previous motion while MotionManager still reports playing===true and
+   * isFinished()===true, so it emits motionFinish for a motion that never
+   * actually ran. Trusting that event ends the new reaction instantly, which
+   * is precisely the "click and it snaps back / loops forever" failure.
+   */
+  const MOTION_FINISH_GUARD_MS = 250;
+
+  function createMotionController() {
+    let vendor = null;
+    let model = null;
+    let idleName = null;
+    let groups = {};
+    let motionOptions = null;
+    let applyExpression = null;
+
+    let kind = "idle";
+    let token = 0;
+    let timer = 0;
+    let currentGroup = null;
+    let currentEntry = null;
+    let startedAt = 0;
+    let onChange = null;
+    /**
+     * Parameters this controller has deliberately written and must undo.
+     * See restoreHeld() — a motion's own curves are not reset by the engine,
+     * so anything we pinned on purpose has to be un-pinned on purpose.
+     */
+    let heldParams = null;
+    /**
+     * True once a held action has finished animating and is just sitting in
+     * its final pose.
+     *
+     * A held pose is deliberately NOT "busy": if it were, the idle-fidget
+     * scheduler would never fire again and a session phase could never take
+     * the body back, so one click on 掏出手机 would freeze the pet for the rest
+     * of the session. It is instead a resting state that merely looks
+     * different from the idle loop.
+     */
+    let settled = false;
+    /** Downsampled opacity grid of the rendered character (null = unknown). */
+    let hitMask = null;
+    /** The stage-local box the grid spans (the model's bounding box). */
+    let hitBox = null;
+
+    const notify = () => {
+      if (onChange !== null) {
+        try {
+          onChange(currentGroup, kind);
+        } catch {
+          /* a listener must never break playback */
+        }
+      }
+    };
+
+    const motionManager = () => model?.internalModel?.motionManager ?? null;
+
+    const clearTimer = () => {
+      if (timer !== 0) {
+        window.clearTimeout(timer);
+        timer = 0;
+      }
+    };
+
+    /** Stop whatever plays now; required before replaying the same motion. */
+    const stopAll = () => {
+      try {
+        motionManager()?.stopAllMotions?.();
+      } catch {
+        /* not booted yet */
+      }
+    };
+
+    /** Resolve one concrete motion entry, clamped to the group's real length. */
+    const entryFor = (group, index) => {
+      const list = groups[group];
+      if (!Array.isArray(list) || list.length === 0) return null;
+      const at = Math.max(0, Math.min(index, list.length - 1));
+      return list[at];
+    };
+
+    /**
+     * Per-motion playback policy declared by the pet (pet.json
+     * live2d.motionOptions, keyed by motion group):
+     *
+     *   { "OpenCase": { "hold": true },
+     *     "Selfie":   { "prepend": "OpenCase" },
+     *     "SprayWater": { "preset": { "jingyu": 1 } } }
+     *
+     * The model cannot express any of this itself: every motion3.json in this
+     * pack declares "Loop": true and only animates its own handful of
+     * parameters, so "hold the phone", "raise the phone first" and "the whale
+     * is what sprays" are all facts about the AUTHOR's intent that have to be
+     * declared alongside the pet.
+     */
+    const optionsFor = (group) => {
+      const declared = motionOptions !== null && typeof motionOptions === "object"
+        ? motionOptions[group]
+        : undefined;
+      return declared !== null && typeof declared === "object" ? declared : null;
+    };
+
+    /** Layer the currently pinned expression back over a freshly started motion. */
+    const reapplyExpression = () => {
+      if (applyExpression !== null) applyExpression();
+    };
+
+    /** The Cubism core model, or null before boot. */
+    const coreModel = () => model?.internalModel?.coreModel ?? null;
+
+    /**
+     * Live parameter state, addressed by NAME.
+     *
+     * The wrapper's getParameterIndex() compares against CubismId objects, so
+     * looking up a string always misses (it returns a fresh out-of-range index
+     * and the value reads back undefined). The core model's raw tables are
+     * plain string arrays, so the name -> index mapping has to go through
+     * those. Reading _model.parameters directly is the only reliable way to
+     * touch a parameter by name, and it is stable across the Cubism 3/4/5
+     * runtimes the engine supports.
+     */
+    const parameterIndex = (core, id) => {
+      try {
+        const raw = core?._model?.parameters;
+        if (raw === undefined || raw === null) return -1;
+        return Array.from(raw.ids).indexOf(id);
+      } catch {
+        return -1;
+      }
+    };
+
+    const readParameter = (id) => {
+      const core = coreModel();
+      const at = parameterIndex(core, id);
+      if (at < 0) return undefined;
+      try {
+        return core._model.parameters.values[at];
+      } catch {
+        return undefined;
+      }
+    };
+
+    const writeParameter = (id, value) => {
+      const core = coreModel();
+      const at = parameterIndex(core, id);
+      if (at < 0) return false;
+      try {
+        core._model.parameters.values[at] = value;
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    /**
+     * Put a motion's parameters back where they were before it ran.
+     *
+     * The engine only ever WRITES the parameters a motion curves; it never
+     * restores them when the motion stops. That is fine while the idle loop
+     * happens to drive the same parameter, but this model's action-specific
+     * parameters (chuipaopao*, phone*, pengshui, …) are driven by NOTHING
+     * except the action itself. Once 吹泡泡糖 ends, its last written mouth
+     * value sticks forever — the "泡泡吹完嘴没还原" bug.
+     *
+     * The snapshot is taken when the action starts; restoring it on the way
+     * back to idle is what makes a one-shot action actually be one-shot.
+     */
+    const snapshot = (ids, extra) => {
+      const out = {};
+      const all = (ids || []).concat(extra === null || extra === undefined ? [] : Object.keys(extra));
+      for (const id of all) {
+        const value = readParameter(id);
+        if (value !== undefined) out[id] = value;
+      }
+      return out;
+    };
+
+    const restore = (snapshotValues) => {
+      if (snapshotValues === null || snapshotValues === undefined) return;
+      for (const [id, value] of Object.entries(snapshotValues)) writeParameter(id, value);
+    };
+
+    /** Undo whatever a finished one-shot action deliberately pinned. */
+    const restoreHeld = () => {
+      if (heldParams === null) return;
+      const held = heldParams;
+      heldParams = null;
+      restore(held.saved);
+    };
+
+    /**
+     * Retire a held action into its resting pose.
+     *
+     * The motion keeps painting its final frame (it was started with
+     * loop:false and has since finished), so nothing has to be re-triggered —
+     * the pet just stops counting as busy. The parameter pins stay installed
+     * on purpose, and playIdle() releases them when the body changes hands.
+     */
+    const settleHeld = () => {
+      if (settled) return;
+      settled = true;
+      // `kind` returns to idle (so the body is up for grabs) but the GROUP is
+      // deliberately kept: the pet really is parked in 掏出手机's final pose, and
+      // both data-motion and the panel chip should keep saying so.
+      kind = "idle";
+      notify();
+    };
+
+    /**
+     * Start one entry; false when the group is missing or the start threw.
+     *
+     * `keep` carries a parameter snapshot from an earlier motion in the same
+     * chain: when 掏出手机 is prepended to 自拍, the phone must stay up across
+     * both motions, so the second start must NOT re-snapshot (that would
+     * capture the already-raised phone and "restore" it to raised forever).
+     */
+    const start = (entry, priority, options, keep) => {
+      if (model === null || entry === null || vendor === null) return false;
+      const opts = options || {};
+      // `preset` pins parameters the ACTION needs but the motion itself does
+      // not animate. 鲸鱼喷水 only writes `pengshui` (碰水); the whale that is
+      // supposed to do the spraying is a separate parameter (`jingyu`) that
+      // nothing in that motion touches — which is why it looked like a no-op.
+      const preset = opts.preset ?? null;
+      stopAll();
+      // Releasing the previous action's pins before the new one starts keeps
+      // two actions from fighting over the same parameter.
+      if (keep === undefined) restoreHeld();
+      const saved = keep === undefined ? snapshot(entry.params, preset) : keep;
+      currentGroup = entry.group;
+      currentEntry = entry;
+      startedAt = Date.now();
+      settled = false;
+      try {
+        // loop:false is essential. Every motion3.json in this model declares
+        // "Loop": true, and the engine merges the motion's own flag with the
+        // caller's (`setLoop(loop ?? motionData.loop)`), so a motion started
+        // without an explicit flag loops forever and never holds a pose.
+        void model.motion(entry.group, entry.index, priority, { loop: false });
+      } catch {
+        currentEntry = null;
+        return false;
+      }
+      // Applied AFTER the snapshot, so retiring the action puts them back.
+      if (preset !== null && keep === undefined) {
+        for (const [id, value] of Object.entries(preset)) writeParameter(id, value);
+      }
+      // A chain keeps the ORIGINAL pre-action snapshot, so retiring it undoes
+      // everything the whole chain touched rather than just the last motion.
+      heldParams = { saved, holds: opts.holds || null };
+      reapplyExpression();
+      return true;
+    };
+
+    /** Return to the looping idle animation; the resting state of the pet. */
+    const playIdle = () => {
+      clearTimer();
+      token += 1;
+      kind = "idle";
+      currentEntry = null;
+      if (model === null || idleName === null) return;
+      // Coming back to rest retires the previous action's parameter pins, so
+      // the bubble-gum mouth (and anything else action-specific) is released
+      // before the idle loop takes over.
+      restoreHeld();
+      const entry = entryFor(idleName, 0);
+      if (entry === null) return;
+      if (!start(entry, vendor.MotionPriority.IDLE)) return;
+      // Idle is the resting state, so it deliberately highlights no chip —
+      // notify() reports the committed action, not the running loop.
+      currentGroup = null;
+      notify();
+      // Idle is also started with loop:false, so it has to be re-queued when
+      // its declared duration elapses to keep looping.
+      if (entry.duration > 0) {
+        const mine = token;
+        timer = window.setTimeout(() => {
+          timer = 0;
+          if (mine === token) playIdle();
+        }, entry.duration + REACTION_TAIL_MS);
+      }
+    };
+
+    /**
+     * Play one motion, then either return to idle or hold its final pose.
+     *
+     * Every motion is started with loop:false, so the controller's own timer
+     * always owns the lifetime — the model's declared Duration is what decides
+     * how long that is. `hold: true` parks the pet in the last frame instead
+     * of snapping back; `prepend` runs a prerequisite motion first.
+     */
+    const playOnce = (group, index, options) => {
+      const entry = entryFor(group, index);
+      if (entry === null || model === null || vendor === null) return false;
+      // The pet's declared policy is the default; an explicit caller option
+      // (the panel, or the session-phase driver) still wins.
+      const opts = Object.assign({}, optionsFor(group), options || {});
+      const mine = ++token;
+      clearTimer();
+
+      // A prerequisite action (掏出手机 before 拍照) runs first and chains into
+      // the real motion. The snapshot is taken BEFORE the prerequisite so that
+      // retiring the whole chain puts the phone back down.
+      const prepend = opts.prepend === undefined ? null : entryFor(opts.prepend, 0);
+      const first = prepend ?? entry;
+      const cycleCount = typeof opts.cycles === "number" && opts.cycles > 0 ? opts.cycles : 1;
+      const ms = (item) => (item.duration > 0 ? item.duration : REACTION_FALLBACK_MS);
+      if (!start(first, vendor.MotionPriority.FORCE, opts)) return false;
+      const chainSnapshot = heldParams === null ? null : heldParams.saved;
+
+      kind = opts.kind || "action";
+      notify();
+
+      // Every motion in this model declares Loop, so none of them terminate on
+      // their own and the controller always owns the lifetime.
+      const holdMs = (prepend === null ? ms(entry) * cycleCount : PREPEND_HOLD_MS) + REACTION_TAIL_MS;
+      timer = window.setTimeout(() => {
+        timer = 0;
+        if (mine !== token) return;
+        // The prerequisite is done; run the action it was preparing for.
+        if (prepend !== null) {
+          if (!start(entry, vendor.MotionPriority.FORCE, opts, chainSnapshot)) { playIdle(); return; }
+          // The chip and data-motion follow the committed action, so the second
+          // half of a chain has to announce itself just like the first half.
+          notify();
+          timer = window.setTimeout(() => {
+            timer = 0;
+            if (mine !== token) return;
+            // hold:true keeps the final pose (掏出手机 stays in hand); anything
+            // else hands the body back to the idle loop.
+            if (opts.hold === true) settleHeld();
+            else playIdle();
+          }, ms(entry) * cycleCount + REACTION_TAIL_MS);
+          return;
+        }
+        if (opts.hold === true) settleHeld();
+        else playIdle();
+      }, holdMs);
+      return true;
+    };
+
+    /**
+     * A motion that genuinely ended by itself releases the pet back to idle.
+     *
+     * The event is only trustworthy once the new motion has had time to become
+     * the playing one; anything earlier is the stop() artifact described on
+     * MOTION_FINISH_GUARD_MS. Because a looping motion never finishes on its
+     * own, the duration timer armed by playOnce is the real backstop — this
+     * handler exists for non-looping motions, where it retires the pet sooner
+     * than the timer would.
+     */
+    const onMotionFinish = () => {
+      if (Date.now() - startedAt < MOTION_FINISH_GUARD_MS) return;
+      // Deliberately inert.
+      //
+      // Every motion is now started with loop:false, so they ALL finish on
+      // their own — including the first half of a chain (掏出手机 → 自拍) and
+      // actions that must hold their last pose. Acting on this event would
+      // cancel the chain or drop the pose at exactly the wrong moment.
+      //
+      // The controller's own timers are the single authority on what happens
+      // when an action ends, because only they know about chains and holds.
+    };
+
+    /** Index the model's real motion groups, enriched with declared timing. */
+    const indexGroups = (nextModel, catalogMotions) => {
+      const declared = {};
+      for (const entry of catalogMotions || []) {
+        if (entry !== null && typeof entry === "object" && Array.isArray(entry.items)) {
+          declared[entry.group] = entry.items;
+        }
+      }
+      const settings = nextModel?.internalModel?.settings?.motions ?? {};
+      const out = {};
+      for (const group of Object.keys(settings)) {
+        const list = settings[group];
+        if (!Array.isArray(list) || list.length === 0) continue;
+        const meta = declared[group] || [];
+        out[group] = list.map((_, index) => {
+          const item = meta[index] || {};
+          return {
+            group,
+            index,
+            duration: typeof item.duration === "number" ? item.duration : 0,
+            loop: item.loop === true,
+            // Parameters this motion's curves touch; needed to undo them.
+            params: Array.isArray(item.params) ? item.params : [],
+          };
+        });
+      }
+      return out;
+    };
+
+    const resolveIdleName = (built) => {
+      for (const candidate of IDLE_CANDIDATES) {
+        if (Array.isArray(built[candidate])) return candidate;
+      }
+      const keys = Object.keys(built);
+      return keys.length > 0 ? keys[0] : null;
+    };
+
+    return {
+      /** Bind a freshly loaded model and start its idle loop. */
+      attach(nextVendor, nextModel, catalogMotions, nextOptions) {
+        vendor = nextVendor;
+        model = nextModel;
+        groups = indexGroups(nextModel, catalogMotions);
+        motionOptions = nextOptions ?? null;
+        idleName = resolveIdleName(groups);
+        token += 1;
+        clearTimer();
+        try {
+          motionManager()?.on?.("motionFinish", onMotionFinish);
+        } catch {
+          /* older engine without the event: the duration timers carry it */
+        }
+        playIdle();
+      },
+      /** Unbind before the model is destroyed. */
+      detach() {
+        clearTimer();
+        token += 1;
+        model = null;
+        vendor = null;
+        groups = {};
+        motionOptions = null;
+        heldParams = null;
+        idleName = null;
+        kind = "idle";
+        currentGroup = null;
+        currentEntry = null;
+        startedAt = 0;
+        heldParams = null;
+        settled = false;
+        hitMask = null;
+        hitBox = null;
+      },
+      playIdle,
+      playOnce,
+      updatePointer(x, y) {
+        if (model !== null) model.focus(x, y);
+      },
+      setExpressionApplier(fn) {
+        applyExpression = typeof fn === "function" ? fn : null;
+      },
+      /** Subscribe to motion transitions; the panel chip follows them. */
+      subscribe(fn) {
+        onChange = typeof fn === "function" ? fn : null;
+      },
+      /**
+       * Install (or clear) the rendered-character alpha mask used to decide
+       * whether a press landed on the pet rather than on empty canvas.
+       */
+      setHitMask(mask, box) {
+        hitMask = mask;
+        hitBox = box;
+      },
+      /**
+       * Whether the given STAGE-local point is over the character. With no mask
+       * available the whole box is accepted, which is the pre-mask behaviour.
+       */
+      /** Diagnostic: how many cells of the installed mask are opaque. */
+      maskInfo() {
+        if (hitMask === null) return { present: false };
+        let count = 0;
+        for (const value of hitMask.data) count += value;
+        return { present: true, size: hitMask.width, opaque: count };
+      },
+      hitsMask(x, y, width, height) {
+        if (hitMask === null) return true;
+        if (width <= 0 || height <= 0) return true;
+        // The grid covers the model's own bounding box, so normalise against
+        // that box rather than the whole stage.
+        const box = hitBox ?? { x: 0, y: 0, width, height };
+        const gx = Math.floor(((x - box.x) / box.width) * hitMask.width);
+        const gy = Math.floor(((y - box.y) / box.height) * hitMask.height);
+        // One cell of tolerance: the model breathes and sways, so requiring an
+        // exact opaque cell would make edge clicks feel unreliable.
+        for (let dy = -1; dy <= 1; dy += 1) {
+          for (let dx = -1; dx <= 1; dx += 1) {
+            const cx = gx + dx;
+            const cy = gy + dy;
+            if (cx < 0 || cy < 0 || cx >= hitMask.width || cy >= hitMask.height) continue;
+            if (hitMask.data[cy * hitMask.width + cx] === 1) return true;
+          }
+        }
+        return false;
+      },
+      idleName: () => idleName,
+      groups: () => groups,
+      /** Declared playback policy for one motion group (diagnostics). */
+      optionsFor,
+      /**
+       * Play a motion with its declared policy applied; used by the panel, the
+       * tap reaction and the session-phase driver.
+       */
+      playGroup(group, index, overrides) {
+        return playOnce(group, index, overrides);
+      },
+      currentGroup: () => currentGroup,
+      /**
+       * Whether the body is actively animating something the user asked for.
+       * A held pose has settled into rest, so it reports false — otherwise a
+       * single 掏出手机 would suppress idle fidgets and session phases forever.
+       */
+      isPlaying: () => kind !== "idle" && !settled,
+      /** Diagnostic: is the pet parked in a held pose? */
+      isHeld: () => settled,
+      /**
+       * Which kind of action owns the body right now ('idle', 'tap', 'panel',
+       * 'fidget', 'phase'). Session phases may preempt each other but must
+       * never cut off something the user just triggered.
+       */
+      kind: () => kind,
+    };
+  }
+
+  // ------------------------------------------------------------- storage
+
+  function loadStored() {
+    try {
+      const raw = window.localStorage.getItem(STORAGE_KEY);
+      if (raw === null) return {};
+      const parsed = JSON.parse(raw);
+      return typeof parsed === "object" && parsed !== null ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function saveStored(patch) {
+    try {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(Object.assign(loadStored(), patch)));
+    } catch {
+      /* storage is best-effort */
+    }
+  }
+
+  // ------------------------------------------------------------- runtime
+
+  /** Inject one classic script; repeat calls share the same in-flight promise. */
+  const scriptCache = new Map();
+  function injectScript(src) {
+    let pending = scriptCache.get(src);
+    if (pending === undefined) {
+      pending = new Promise((resolve, reject) => {
+        const tag = document.createElement("script");
+        tag.src = src;
+        tag.async = false;
+        tag.onload = () => resolve();
+        tag.onerror = () => reject(new Error("script failed: " + src));
+        document.head.appendChild(tag);
+      });
+      scriptCache.set(src, pending);
+    }
+    return pending;
+  }
+
+  /** Ensure the user-supplied Cubism Core global exists. */
+  async function ensureCore(coreUrl) {
+    if (window.Live2DCubismCore !== undefined) return true;
+    try {
+      await injectScript(coreUrl);
+    } catch {
+      return false;
+    }
+    return window.Live2DCubismCore !== undefined;
+  }
+
+  async function ensureVendor(vendorUrl) {
+    if (window.__dshLive2dPetVendor !== undefined) return window.__dshLive2dPetVendor;
+    await injectScript(vendorUrl);
+    return window.__dshLive2dPetVendor;
+  }
+
+  let vendorConfigured = false;
+  function configureVendor(vendor) {
+    if (vendorConfigured) return;
+    vendorConfigured = true;
+    vendor.extensions.add(vendor.Live2DPlugin);
+    vendor.configureCubismSDK({ memorySizeMB: 64 });
+  }
+
+  // --------------------------------------------------------------- style
+
+  const STYLE_ID = "dsh-live2d-pet-style";
+  // The selector every rule below hangs off is the PET's own root div
+  // ('data-dsh-live2d-pet'), not the bare React container that carries
+  // ROOT_ATTR — the container is only a mount point and a takeover marker.
+  const ROOT_SEL = "[" + PET_ATTR + "]";
+  const CSS = [
+    ROOT_SEL + "{position:fixed;z-index:2147483000;user-select:none;-webkit-user-select:none;touch-action:none;font-family:system-ui,-apple-system,'Segoe UI',sans-serif}",
+    ROOT_SEL + " [data-stage]{position:relative;width:100%;height:100%;cursor:grab;border-radius:14px;overflow:visible}",
+    ROOT_SEL + " [data-stage][data-dragging]{cursor:grabbing}",
+    ROOT_SEL + " [data-stage] canvas{display:block;width:100%!important;height:100%!important}",
+    ROOT_SEL + " [data-bar]{position:absolute;left:50%;transform:translateX(-50%);bottom:-2px;display:flex;gap:2px;padding:3px 6px;border-radius:999px;background:rgba(20,26,40,.74);backdrop-filter:blur(8px);opacity:0;transition:opacity .15s ease;pointer-events:none;white-space:nowrap}",
+    ROOT_SEL + ":hover [data-bar],[data-bar][data-open]{opacity:1;pointer-events:auto}",
+    ROOT_SEL + " [data-bar] button{border:0;background:transparent;color:#dbe4f5;font:500 11px/1.7 inherit;padding:2px 7px;border-radius:999px;cursor:pointer}",
+    ROOT_SEL + " [data-bar] button:hover{background:rgba(255,255,255,.18)}",
+    ROOT_SEL + " [data-bubble]{position:absolute;left:50%;bottom:100%;transform:translateX(-50%);margin-bottom:6px;max-width:min(240px,60vw);width:max-content;padding:7px 11px;border-radius:12px;background:linear-gradient(160deg,rgba(38,52,84,.95),rgba(21,28,46,.95));border:1px solid rgba(120,170,255,.3);box-shadow:0 8px 24px rgba(0,0,0,.35);color:#e8eefc;font:400 12px/1.5 inherit;white-space:pre-wrap;pointer-events:none}",
+    ROOT_SEL + " [data-panel]{position:absolute;right:calc(100% + 10px);bottom:0;width:270px;max-height:min(440px,72vh);display:flex;flex-direction:column;border-radius:14px;overflow:hidden;background:rgba(22,29,46,.95);backdrop-filter:blur(14px);border:1px solid rgba(120,170,255,.24);box-shadow:0 14px 40px rgba(0,0,0,.44);color:#e8eefc;font:400 12px/1.5 inherit}",
+    ROOT_SEL + " [data-panel] header{display:flex;align-items:center;gap:6px;padding:9px 11px;border-bottom:1px solid rgba(120,170,255,.14);font-weight:600}",
+    ROOT_SEL + " [data-panel] header select{flex:1;min-width:0;background:rgba(255,255,255,.08);color:inherit;border:1px solid rgba(120,170,255,.24);border-radius:7px;padding:4px 6px;font:inherit}",
+    ROOT_SEL + " [data-panel] [data-tabs]{display:flex;gap:2px;padding:6px 8px 0}",
+    ROOT_SEL + " [data-panel] [data-tabs] button{flex:1;border:0;background:transparent;color:#9fb0cf;font:600 11px/2 inherit;border-radius:7px;cursor:pointer}",
+    ROOT_SEL + " [data-panel] [data-tabs] button[data-on]{background:rgba(120,170,255,.2);color:#eaf1ff}",
+    ROOT_SEL + " [data-panel] [data-body]{flex:1;overflow:auto;padding:8px}",
+    ROOT_SEL + " [data-panel] [data-group]{margin-bottom:9px}",
+    ROOT_SEL + " [data-panel] [data-group]>span{display:block;margin:0 0 4px 2px;color:#8ea3c8;font-size:10px;letter-spacing:.06em}",
+    ROOT_SEL + " [data-panel] [data-chips]{display:flex;flex-wrap:wrap;gap:4px}",
+    ROOT_SEL + " [data-panel] [data-chips] button{border:1px solid rgba(120,170,255,.22);background:rgba(255,255,255,.055);color:#dce6f8;font:400 11px/1.5 inherit;padding:3px 8px;border-radius:999px;cursor:pointer;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
+    ROOT_SEL + " [data-panel] [data-chips] button:hover{background:rgba(120,170,255,.24)}",
+    ROOT_SEL + " [data-panel] [data-chips] button[data-on]{background:rgba(120,170,255,.34);border-color:rgba(160,200,255,.55)}",
+    ROOT_SEL + " [data-panel] footer{display:flex;align-items:center;gap:8px;padding:7px 10px;border-top:1px solid rgba(120,170,255,.14);color:#9fb0cf;font-size:11px}",
+    ROOT_SEL + " [data-panel] footer input[type=range]{flex:1;min-width:0}",
+    ROOT_SEL + " [data-panel] footer button{border:0;background:transparent;color:#9fb0cf;font:inherit;cursor:pointer}",
+    ROOT_SEL + " [data-hint]{position:absolute;inset:0;display:grid;place-items:center;padding:12px;text-align:center;color:#c3cee6;font-size:12px;line-height:1.6}",
+    ROOT_SEL + " [data-hint] code{display:block;margin-top:5px;font-size:11px;opacity:.85;word-break:break-all}",
+  ].join("\n");
+
+  function ensureStyle() {
+    if (document.getElementById(STYLE_ID) !== null) return;
+    const tag = document.createElement("style");
+    tag.id = STYLE_ID;
+    tag.textContent = CSS;
+    document.head.appendChild(tag);
+  }
+
+  // ------------------------------------------------------------ lines
+
+  const LINES = {
+    greet: ["你好呀，我是鲸鱼娘～", "今天也一起加油吧！", "终于见到你了", "摸鱼时间到？"],
+    click: ["呀！", "痒痒的～", "干嘛呀", "摸摸头？", "嘿嘿"],
+    reset: ["表情归位～", "清清爽爽"],
+    loadFailed: ["呜呜，模型加载失败了"],
+  };
+
+  function pick(list) {
+    return list[Math.floor(Math.random() * list.length)];
+  }
+
+  // ---------------------------------------------------------- the pet
+
+  /** The layout callback the boot effect publishes for resize handling. */
+  const layoutRef = { current: null };
+
+  /** The mask rebuild hook the boot effect publishes (null before boot). */
+  const rebuildMaskRef = { current: null };
+
+  /** The active pet's fit adjustments (manifest live2d.scale / translate). */
+  const fitRef = { scale: 1, x: 0, y: 0 };
+
+  /** How far outside the stage the pointer still steers the gaze, in px. */
+  const GAZE_RANGE = 240;
+
+  /** How long a tap may move, in px, before it counts as a drag. */
+  const DRAG_SLOP_PX = 4;
+
+  /** Quiet time before the first idle fidget, and the randomised gap after. */
+  const IDLE_FIDGET_MIN_MS = 12000;
+  const IDLE_FIDGET_MAX_MS = 26000;
+
+  /**
+   * Session phase -> motion group (#4).
+   *
+   * A pet may override any slot through its manifest's `live2d.motions`, which
+   * uses these same phase keys; anything unmapped simply stays on the idle
+   * loop, so a model without a suitable group degrades quietly.
+   */
+  const PHASE_MOTION = {
+    thinking: "Idle",
+    waiting: "Idle",
+    tool: "Ketchup",
+    done: "BubbleGum",
+    failed: "SprayWater",
+  };
+
+  /**
+   * Session phase -> expression, layered like a manual expression pin.
+   *
+   * Names are matched against the model's declared Expression `Name`, not its
+   * file name: this pack's 哭.exp3.json is declared as "大哭", so the obvious
+   * "哭" never resolves and the failed phase silently pinned nothing.
+   */
+  const PHASE_EXPRESSION = {
+    thinking: "呆呆眼",
+    waiting: "问号",
+    tool: "流汗",
+    done: "情绪花花",
+    failed: "大哭",
+  };
+
+  /**
+   * How many device pixels the canvas backing store gets per CSS pixel.
+   *
+   * This is the single biggest lever on how the pet looks when it is SHRUNK.
+   * The stage is only 160-760 CSS px but the model's atlas is 2048², so at a
+   * 300px pet every screen pixel is fed by ~7 texture texels — and whatever
+   * the sampler does, the renderer only ever produces 300² samples. Thin line
+   * art therefore lands between sample points and washes out ("线条很虚").
+   *
+   * Rendering at 2x and letting the browser filter the canvas down to its CSS
+   * size is plain super-sampling: 4 render samples per displayed pixel instead
+   * of 1. That is what actually brings the outlines back at small sizes, and
+   * it costs nothing extra at the sizes this pet uses (2x of 300px is 600²,
+   * about a third of a megapixel).
+   *
+   * A HiDPI screen already renders at 2x, so this only raises the floor; the
+   * ceiling stops a 3x display from quadrupling the memory for no gain.
+   */
+  const RENDER_RESOLUTION_MIN = 2;
+  const RENDER_RESOLUTION_MAX = 3;
+
+  /**
+   * Anisotropic filtering level for the model's textures.
+   *
+   * The engine keeps the LOD trim/filter knobs but never applies the sampler
+   * anisotropy from `textureOptions`, so it is set on each texture's style
+   * after load. 8x is ample for line art and costs nothing measurable at the
+   * sizes this pet uses.
+   */
+  const TEXTURE_ANISOTROPY = 8;
+
+  function renderResolution() {
+    const dpr = (typeof window !== "undefined" && window.devicePixelRatio) || 1;
+    return Math.min(RENDER_RESOLUTION_MAX, Math.max(RENDER_RESOLUTION_MIN, dpr));
+  }
+
+  /** Resolution of the opacity grid derived from the rendered character. */
+  const HIT_MASK_SIZE = 64;
+
+  /** Alpha above which a sampled pixel counts as part of the character. */
+  const HIT_MASK_ALPHA = 24;
+
+  /**
+   * Build a coarse opacity grid of the character as actually rendered.
+   *
+   * Cubism hit areas cannot be used here: this model declares none (and the
+   * engine's hitTest leans on the physics hit-testing that only exists when a
+   * model ships them), so a click anywhere in the canvas' transparent margin
+   * would otherwise register. Extracting the model itself gives the true
+   * silhouette for any model, with or without hit areas.
+   *
+   * Returns null when extraction is unavailable, in which case callers fall
+   * back to accepting the whole box.
+   */
+  async function buildHitMask(app, model) {
+    try {
+      const source = app?.canvas;
+      if (source === undefined || source === null || source.width === 0) return null;
+      // The model is drawn inside the stage box; sample exactly its bounds so
+      // the 64x64 grid maps onto the character, not onto empty margins.
+      let bounds;
+      try {
+        bounds = model.getBounds();
+      } catch {
+        bounds = undefined;
+      }
+      const sourceW = source.width;
+      const sourceH = source.height;
+      const rect = bounds === undefined || bounds.width === 0 || bounds.height === 0
+        ? { x: 0, y: 0, width: sourceW, height: sourceH }
+        : bounds;
+      // Model bounds are in logical stage px; the drawing buffer is scaled by
+      // the renderer resolution, so convert before cropping.
+      const ratio = sourceW / Math.max(1, app.renderer.width || sourceW);
+      const sx = Math.max(0, Math.floor(rect.x * ratio));
+      const sy = Math.max(0, Math.floor(rect.y * ratio));
+      const sw = Math.min(sourceW - sx, Math.ceil(rect.width * ratio));
+      const sh = Math.min(sourceH - sy, Math.ceil(rect.height * ratio));
+      if (sw <= 0 || sh <= 0) return null;
+      const canvas = document.createElement("canvas");
+      canvas.width = HIT_MASK_SIZE;
+      canvas.height = HIT_MASK_SIZE;
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
+      if (ctx === null) return null;
+      // The grid spans exactly the model's bounding box, and hitsMask() maps a
+      // stage-local point through the same box, so no aspect math is needed.
+      ctx.drawImage(source, sx, sy, sw, sh, 0, 0, HIT_MASK_SIZE, HIT_MASK_SIZE);
+      const pixels = ctx.getImageData(0, 0, HIT_MASK_SIZE, HIT_MASK_SIZE).data;
+      const data = new Uint8Array(HIT_MASK_SIZE * HIT_MASK_SIZE);
+      let opaque = 0;
+      for (let i = 0; i < data.length; i += 1) {
+        if (pixels[i * 4 + 3] > HIT_MASK_ALPHA) {
+          data[i] = 1;
+          opaque += 1;
+        }
+      }
+      // A mask with almost nothing in it is useless (extraction produced a
+      // blank frame); treat it as "no mask" rather than making the pet inert.
+      if (opaque < data.length * 0.01) return null;
+      // Convert the cropped device-pixel box back into stage-local units.
+      const box = {
+        x: sx / ratio,
+        y: sy / ratio,
+        width: sw / ratio,
+        height: sh / ratio,
+      };
+      return { width: HIT_MASK_SIZE, height: HIT_MASK_SIZE, data, box };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Build the hit mask once the model has actually painted.
+   *
+   * Reading the drawing buffer immediately after boot yields an empty frame —
+   * the first draw has not been composited yet — so this waits a few animation
+   * frames and retries until the silhouette has pixels, then gives up quietly
+   * (leaving the whole box clickable, which is the safe fallback).
+   */
+  async function buildHitMaskWhenPainted(app, model, isDisposed) {
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      if (isDisposed()) return null;
+      // eslint-disable-next-line no-await-in-loop -- retries are inherently serial
+      await new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
+      // eslint-disable-next-line no-await-in-loop -- retries are inherently serial
+      const mask = await buildHitMask(app, model);
+      if (mask !== null) return mask;
+    }
+    return null;
+  }
+
+  /**
+   * Relax the gaze to the model's default resting position — the centre of the
+   * stage. Published through a ref because it is needed from the gaze effect,
+   * the layout pass and the drag handler, which live in different scopes.
+   */
+  const focusDefaultRef = { current: () => {} };
+  function focusDefault() {
+    focusDefaultRef.current();
+  }
+
+  /**
+   * Observability: which target the gaze is currently tracking. Published on
+   * the pet root as `data-gaze` ('center' while resting, 'pointer' while the
+   * cursor steers it) so the resting behaviour is directly assertable.
+   */
+  const gazeSinkRef = { current: () => {} };
+  function reportGaze(target) {
+    gazeSinkRef.current(target);
+  }
+
+  function Pet() {
+    const stageRef = useRef(null);
+    const appRef = useRef(null);
+    const modelRef = useRef(null);
+    const sizeRef = useRef(null);
+    const posRef = useRef(null);
+    const bubbleTimer = useRef(0);
+    const greeted = useRef(false);
+    // One controller per mounted pet: it owns the entire motion lifecycle, so
+    // no component callback ever calls model.motion() directly.
+    const motion = useRef(null);
+    if (motion.current === null) motion.current = createMotionController();
+    // Diagnostic seam: the controller is published on window so the clickable
+    // region and internal state can be characterised from a test harness
+    // without reaching through React internals.
+    if (typeof window !== "undefined") window.__dshLive2dPet = motion.current;
+    const pinnedRef = useRef({});
+    const [motionGroup, setMotionGroup] = useState("");
+
+    const [catalog, setCatalog] = useState(null);
+    const [error, setError] = useState(null);
+    const [coreMissing, setCoreMissing] = useState(false);
+    const [ready, setReady] = useState(false);
+    const [bubble, setBubble] = useState(null);
+    const [panelOpen, setPanelOpen] = useState(false);
+    const [tab, setTab] = useState("motions");
+
+    const [pinned, setPinned] = useState({});
+    const [dragging, setDragging] = useState(false);
+    const [petId, setPetId] = useState(() => loadStored().petId);
+    const [size, setSize] = useState(() => {
+      const stored = loadStored().size;
+      return typeof stored === "number" && stored >= MIN_SIZE && stored <= MAX_SIZE ? stored : DEFAULT_SIZE;
+    });
+    const [pos, setPos] = useState(() => {
+      const stored = loadStored();
+      return {
+        right: typeof stored.right === "number" ? Math.max(0, stored.right) : 24,
+        bottom: typeof stored.bottom === "number" ? Math.max(0, stored.bottom) : 0,
+      };
+    });
+
+    sizeRef.current = size;
+    posRef.current = pos;
+
+    const pet = catalog !== null && catalog.pets.length > 0
+      ? (catalog.pets.find((entry) => entry.id === petId) ?? catalog.pets[0])
+      : undefined;
+
+    const say = useCallback((text) => {
+      setBubble(text);
+      window.clearTimeout(bubbleTimer.current);
+      bubbleTimer.current = window.setTimeout(() => setBubble(null), 4200);
+    }, []);
+
+    useEffect(() => () => window.clearTimeout(bubbleTimer.current), []);
+
+    // The controller owns the motion lifecycle; the panel highlights whatever
+    // group it is currently playing and clears the highlight on idle.
+    useEffect(() => {
+      const controller = motion.current;
+      controller.setExpressionApplier(() => {
+        const model = modelRef.current;
+        if (model === null) return;
+        const names = Object.keys(pinnedRef.current);
+        if (names.length > 0) void model.expression(names[names.length - 1]);
+      });
+      controller.subscribe((group) => {
+        setMotionGroup(group === null ? "" : group);
+        // Back at rest: flush a phase that had to wait for the body.
+        if (group === null && pendingPhaseRef.current !== null) {
+          const next = pendingPhaseRef.current;
+          pendingPhaseRef.current = null;
+          flushPhaseRef.current(next);
+        }
+      });
+      return () => {
+        controller.subscribe(null);
+        controller.setExpressionApplier(null);
+      };
+    }, []);
+
+    // ---- catalog ------------------------------------------------------
+    useEffect(() => {
+      let alive = true;
+      fetch(API + "/catalog").then(
+        (response) => {
+          if (!response.ok) throw new Error("catalog HTTP " + response.status);
+          return response.json();
+        },
+      ).then((value) => {
+        if (!alive) return;
+        setCatalog(value);
+        setPetId((current) => (
+          value.pets.length === 0 || value.pets.some((entry) => entry.id === current)
+            ? current
+            : value.pets[0].id
+        ));
+      }, (reason) => {
+        if (alive) setError(String((reason && reason.message) || reason));
+      });
+      return () => { alive = false; };
+    }, []);
+
+    // ---- model boot ---------------------------------------------------
+    useEffect(() => {
+      if (catalog === null || pet === undefined) return undefined;
+      const stage = stageRef.current;
+      if (stage === null) return undefined;
+      let disposed = false;
+      let app;
+      let model;
+
+        // Per-pet phase overrides: the manifest's live2d.motions/expressions use
+      // the same phase keys, so a model can retarget any slot. Unset slots keep
+      // the built-in defaults.
+      phaseMotionRef.current = Object.assign({}, PHASE_MOTION, pet.motionsByPhase || {});
+      phaseExpressionRef.current = Object.assign({}, PHASE_EXPRESSION, pet.expressionsByPhase || {});
+      phaseRef.current = "idle";
+
+      fitRef.scale = typeof pet.scale === "number" && pet.scale > 0 ? pet.scale : 1;
+      fitRef.x = typeof pet.translate?.x === "number" ? pet.translate.x : 0;
+      fitRef.y = typeof pet.translate?.y === "number" ? pet.translate.y : 0;
+
+      // The model's UNSCALED size, captured once at load while scale is still
+      // 1. It is essential that the fit is derived from this and never from
+      // model.width/height: Pixi's Container.width getter reports the size at
+      // the CURRENT scale, so using it as the fit input makes every layout
+      // multiply the previous scale by itself again — which is why merely
+      // opening the panel (one relayout) blew the pet up dramatically.
+      let source = null;
+
+      const layout = () => {
+        const currentApp = appRef.current;
+        const currentModel = modelRef.current;
+        if (currentApp === undefined || currentApp === null || currentModel === null || source === null) return;
+        const rect = stage.getBoundingClientRect();
+        const width = Math.max(1, Math.round(rect.width));
+        const height = Math.max(1, Math.round(rect.height));
+        // Logical size in CSS px; the renderer's resolution (set at init) keeps
+        // the backing store at device-pixel density so scaling stays crisp.
+        currentApp.renderer.resize(width, height);
+        const fit = Math.min(width / source.width, height / source.height) * 0.94;
+        currentModel.anchor.set(0.5, 0.5);
+        currentModel.scale.set(fit * fitRef.scale);
+        currentModel.position.set(width / 2 + fitRef.x, height / 2 + fitRef.y);
+        // Keep the gaze anchored to the model's own centre after a resizeso a
+        // stale pointer position cannot leave it staring off-frame.
+        focusDefault();
+      };
+      layoutRef.current = layout;
+
+      const boot = async () => {
+        if (!await ensureCore(catalog.coreUrl)) {
+          if (!disposed) setCoreMissing(true);
+          return;
+        }
+        if (disposed) return;
+        setCoreMissing(false);
+        const vendor = await ensureVendor(catalog.vendorUrl);
+        if (disposed) return;
+        if (vendor === undefined) throw new Error("vendor bundle unavailable");
+        configureVendor(vendor);
+
+        const nextApp = new vendor.Application();
+        const rect = stage.getBoundingClientRect();
+        // resolution = max(2, DPR) with autoDensity off: the backing store is
+        // sized in device pixels by Pixi, while the CSS size is still driven by
+        // our own 100%/100% rule. That is what keeps a large or upscaled pet
+        // sharp instead of a stretched 1x bitmap, and the 2x floor doubles the
+        // samples available for a small pet (see RENDER_RESOLUTION_MIN).
+        await nextApp.init({
+          width: Math.max(1, Math.round(rect.width)),
+          height: Math.max(1, Math.round(rect.height)),
+          backgroundAlpha: 0,
+          antialias: true,
+          autoDensity: false,
+          resolution: renderResolution(),
+          preference: "webgl",
+          // The rendered frame must stay readable so the character's
+          // silhouette can be sampled for click hit-testing (see
+          // buildHitMask). Without this the drawing buffer is cleared after
+          // compositing and every readback comes back empty.
+          preserveDrawingBuffer: true,
+        });
+        if (disposed) {
+          nextApp.destroy({ removeView: true }, { children: true });
+          return;
+        }
+        app = nextApp;
+        appRef.current = nextApp;
+        app.canvas.style.width = "100%";
+        app.canvas.style.height = "100%";
+        stage.appendChild(app.canvas);
+
+        const loaded = await vendor.Live2DModel.from(pet.modelUrl, {
+          autoUpdate: false,
+          autoHitTest: true,
+          autoFocus: false,
+          // Textures stay at full resolution and are minified by a real mip
+          // chain instead of the engine's LOD copies.
+          //
+          // The model ships a 2048x2048 atlas that is drawn at ~160-760 CSS
+          // px, so it is minified 3-12x. Two things were wrong before:
+          //
+          //  * 'single-auto' only kicks in below effectiveScale 0.5 and then
+          //    swaps the texture for ONE 2^n-divided copy — at a 300px pet
+          //    effectiveScale is ~0.59, so that branch never even fired and
+          //    the 2048px atlas was point-sampled straight down to 300px,
+          //    throwing away 6 of every 7 texels. That is the shimmer and the
+          //    washed-out ("虚") thin linework.
+          //  * 'lod: false' is not "keep the full texture": the engine only
+          //    asks the asset loader for a mip chain when lod === "full", so
+          //    lod:false gives a full-res texture with NO mipmaps — the worst
+          //    of both worlds under minification.
+          //
+          // "full" is the setting that actually builds the mip chain (feeding
+          // every level to GL), while still leaving the trim/filter LOD knobs
+          // at their defaults. Anisotropy then keeps the diagonals of the line
+          // art from smearing at grazing angles.
+          textureOptions: { lod: "full" },
+        });
+        // Only `lod` is forwarded to the asset loader, so the sampler style has
+        // to be applied to the live texture sources afterwards. Anisotropic
+        // filtering is what keeps the diagonals of the line art (bangs, ribbon
+        // edges) from smearing into a soft blur when the surface is at a
+        // grazing angle to the screen.
+        for (const texture of loaded.textures ?? []) {
+          const style = texture?.source?.style;
+          if (style === undefined || style === null) continue;
+          style.maxAnisotropy = TEXTURE_ANISOTROPY;
+        }
+        if (disposed) {
+          loaded.destroy({ children: true });
+          return;
+        }
+        model = loaded;
+        modelRef.current = loaded;
+        app.stage.addChild(loaded);
+        // Capture the intrinsic geometry now, before any scaling is applied.
+        const intrinsic = loaded.internalModel;
+        source = {
+          width: Math.max(1, intrinsic?.originalWidth || loaded.width),
+          height: Math.max(1, intrinsic?.originalHeight || loaded.height),
+        };
+        layout();
+        loaded.automator.autoUpdate = true;
+        motion.current.attach(vendor, loaded, pet.motions, pet.motionOptions);
+        setReady(true);
+        // Derive the clickable silhouette from the first rendered frame. This
+        // runs after ready so the panel and pet are usable even if extraction
+        // is slow, and a failure simply leaves the whole box clickable.
+        const refreshMask = async () => {
+          const mask = await buildHitMaskWhenPainted(app, loaded, () => disposed);
+          if (disposed) return;
+          if (mask === null) motion.current.setHitMask(null, null);
+          else motion.current.setHitMask(mask, mask.box);
+        };
+        rebuildMaskRef.current = refreshMask;
+        void refreshMask();
+      };
+
+      boot().catch((reason) => {
+        if (!disposed) {
+          setError(String((reason && reason.message) || reason));
+          say(pick(LINES.loadFailed));
+        }
+      });
+
+      return () => {
+        disposed = true;
+        motion.current.detach();
+        layoutRef.current = null;
+        rebuildMaskRef.current = null;
+        appRef.current = null;
+        modelRef.current = null;
+        setReady(false);
+        const currentApp = app;
+        const currentModel = model;
+        app = undefined;
+        model = undefined;
+        if (currentApp !== undefined) {
+          try { currentApp.destroy({ removeView: true }, { children: true }); } catch { /* partial boot */ }
+        } else if (currentModel !== undefined) {
+          // A model that finished loading before its app existed is still ours
+          // to release; the app-owned path is handled by the app destroy above.
+          try { currentModel.destroy({ children: true }); } catch { /* partial boot */ }
+        }
+      };
+    }, [catalog, pet, say]);
+
+    // ---- resize -------------------------------------------------------
+    // A resized pet moves and rescales the model, so the silhouette captured
+    // at boot no longer lines up with the clickable area. Re-derive it after
+    // the layout settles (debounced: a drag-resize fires many times).
+    useEffect(() => {
+      const layout = layoutRef.current;
+      if (layout !== null) layout();
+      const timer = window.setTimeout(() => {
+        const rebuild = rebuildMaskRef.current;
+        if (rebuild !== null) void rebuild();
+      }, 250);
+      return () => window.clearTimeout(timer);
+    }, [size, panelOpen]);
+
+    useEffect(() => {
+      const stage = stageRef.current;
+      if (stage === null || typeof ResizeObserver === "undefined") return undefined;
+      const observer = new ResizeObserver(() => {
+        const layout = layoutRef.current;
+        if (layout !== null) layout();
+      });
+      observer.observe(stage);
+      return () => observer.disconnect();
+    }, []);
+
+    // ---- greeting -----------------------------------------------------
+    useEffect(() => {
+      if (!ready || greeted.current) return;
+      greeted.current = true;
+      say(pick(LINES.greet));
+    }, [ready, say]);
+
+
+    // ---- mouse tracking -----------------------------------------------
+    // Gaze is driven only while the pointer is in or near the stage, and relaxes
+    // to the model's DEFAULT resting position — its own centre, not wherever the
+    // pointer happened to be last — the moment it leaves that neighbourhood.
+    useEffect(() => {
+      if (!ready) return undefined;
+      const stage = stageRef.current;
+      if (stage === null) return undefined;
+      // The resting target is the stage centre, i.e. where the model sits.
+      focusDefaultRef.current = () => {
+        const rect = stage.getBoundingClientRect();
+        // The DEFAULT resting target is the model's own centre — not the last
+        // pointer position — so the pet always settles back to a neutral gaze.
+        motion.current.updatePointer(rect.width / 2, rect.height / 2);
+        reportGaze("center");
+      };
+      let resting = false;
+      focusDefault();
+      resting = true;
+      const onMove = (event) => {
+        const rect = stage.getBoundingClientRect();
+        const x = event.clientX - rect.left;
+        const y = event.clientY - rect.top;
+        const near = x >= -GAZE_RANGE && y >= -GAZE_RANGE
+          && x <= rect.width + GAZE_RANGE && y <= rect.height + GAZE_RANGE;
+        if (near) {
+          resting = false;
+          motion.current.updatePointer(x, y);
+          reportGaze("pointer");
+        } else if (!resting) {
+          resting = true;
+          focusDefault();
+        }
+      };
+      window.addEventListener("pointermove", onMove, { passive: true });
+      return () => {
+        window.removeEventListener("pointermove", onMove);
+        focusDefaultRef.current = () => {};
+      };
+    }, [ready]);
+
+    // ---- imperative actions -------------------------------------------
+    // Every manual play is a one-shot through the controller: it stops the
+    // previous motion, forces the new one past the priority gate, and returns
+    // to idle afterwards even when the motion is flagged Loop.
+    const playMotion = useCallback((group, index) => {
+      motion.current.playOnce(group, index, { kind: "panel" });
+    }, []);
+
+    // The pinned expression is re-layered after every motion start: a motion
+    // resets expression parameters as it takes over, so a pinned face would
+    // otherwise be wiped the moment the pet plays a reaction.
+    const applyExpressions = useCallback((next) => {
+      setPinned(next);
+      pinnedRef.current = next;
+      const model = modelRef.current;
+      if (model === null) return;
+      const manager = model.internalModel?.expressionManager;
+      const names = Object.keys(next);
+      if (names.length === 0) manager?.resetExpression?.();
+      else void model.expression(names[names.length - 1]);
+    }, []);
+
+    // One funnel for expression changes: state, the pinned mirror the
+    // controller re-layers after each motion start, and the live model all
+    // move together.
+    const toggleExpression = useCallback((expressionName) => {
+      const next = Object.assign({}, pinnedRef.current);
+      if (next[expressionName] === true) delete next[expressionName];
+      else next[expressionName] = true;
+      applyExpressions(next);
+    }, [applyExpressions]);
+
+    const resetAll = useCallback(() => {
+      applyExpressions({});
+      motion.current.playIdle();
+      say(pick(LINES.reset));
+    }, [applyExpressions, say]);
+
+    // ---- session activity (#4) -----------------------------------------
+    // The host pushes the agent's coarse phase over same-origin SSE; each
+    // transition drives a motion + expression so the pet visibly follows what
+    // the assistant is doing. EventSource reconnects on its own.
+    useEffect(() => {
+      if (!ready || typeof window.EventSource === "undefined") return undefined;
+      let source;
+      try {
+        source = new window.EventSource(API + "/events");
+      } catch {
+        return undefined;
+      }
+      /** Drive the motion + expression for one session phase. */
+      const applyPhase = (phase) => {
+        const group = phaseMotionRef.current[phase];
+        if (phase === "idle" || group === undefined) {
+          motion.current.playIdle();
+        } else {
+          const groups = motion.current.groups();
+          if (Array.isArray(groups[group])) motion.current.playOnce(group, 0, { kind: "phase" });
+        }
+        const expression = phaseExpressionRef.current[phase];
+        if (expression === undefined) applyExpressions({});
+        else applyExpressions({ [expression]: true });
+      };
+      // The motion subscription (declared above) flushes a deferred phase here.
+      flushPhaseRef.current = applyPhase;
+      const onMessage = (event) => {
+        let payload;
+        try {
+          payload = JSON.parse(event.data);
+        } catch {
+          return;
+        }
+        const phase = payload?.phase;
+        if (typeof phase !== "string") return;
+        setPhaseState(phase);
+        if (phase === phaseRef.current) return;
+        phaseRef.current = phase;
+        // A phase animation may replace another phase animation, but must never
+        // cut off something the user just triggered (tap / fidget / panel).
+        const owner = motion.current.kind();
+        if (motion.current.isPlaying() && owner !== "phase") {
+          // Defer rather than drop: onDeferRedPhase re-applies it once the
+          // current animation finishes, so the mirror never goes stale.
+          pendingPhase.current = phase;
+          return;
+        }
+        applyPhase(phase);
+      };
+      // A phase that persists would otherwise be re-applied after every
+      // reaction; the ref remembers where we are so refires are no-ops.
+      source.addEventListener("message", onMessage);
+      return () => {
+        source.close();
+        phaseRef.current = "idle";
+      };
+    }, [ready, applyExpressions]);
+
+    // ---- idle fidget (#6) ----------------------------------------------
+    // After the pet has been left alone for a while it plays a random
+    // non-idle motion once, "摸鱼" style, then drops back to its idle loop.
+    // Only ever fires from a genuinely idle machine, so it cannot interrupt a
+    // reaction or a session-driven animation, and any interaction resets it.
+    useEffect(() => {
+      if (!ready) return undefined;
+      let timer = 0;
+      const schedule = () => {
+        window.clearTimeout(timer);
+        const wait = IDLE_FIDGET_MIN_MS + Math.random() * (IDLE_FIDGET_MAX_MS - IDLE_FIDGET_MIN_MS);
+        timer = window.setTimeout(fire, wait);
+      };
+      const fire = () => {
+        const quietFor = Date.now() - lastInteraction.current;
+        const busy = motion.current.isPlaying() || dragState.current !== null;
+        if (busy || quietFor < IDLE_FIDGET_MIN_MS) {
+          schedule();
+          return;
+        }
+        // Pick a random group that is not the idle loop itself.
+        const groups = motion.current.groups();
+        const idleName = motion.current.idleName();
+        const names = Object.keys(groups).filter((group) => group !== idleName);
+        if (names.length > 0) {
+          const group = names[Math.floor(Math.random() * names.length)];
+          const count = groups[group].length;
+          lastInteraction.current = Date.now();
+          motion.current.playOnce(group, Math.floor(Math.random() * count), { kind: "fidget" });
+        }
+        schedule();
+      };
+      schedule();
+      return () => window.clearTimeout(timer);
+    }, [ready]);
+
+    // ---- click + drag -------------------------------------------------
+    // Interaction bookkeeping lives above the effects that read it, so the
+    // idle-fidget scheduler can tell "left alone" from "being handled".
+    const dragState = useRef(null);
+    // Last time the user touched the pet; the idle-fidget timer (#6) measures
+    // quiet time from here so a fidget never fires under the user's cursor.
+    const lastInteraction = useRef(Date.now());
+    // Session-phase plumbing (declared here so the SSE effect can read it).
+    const phaseRef = useRef("idle");
+    const phaseMotionRef = useRef(PHASE_MOTION);
+    const phaseExpressionRef = useRef(PHASE_EXPRESSION);
+    // Gaze target, mirrored onto the pet root as data-gaze.
+    const [gaze, setGaze] = useState("center");
+    gazeSinkRef.current = setGaze;
+    // Last session phase the stream delivered, mirrored as data-phase, and a
+    // phase that arrived while another animation held the body (re-applied on
+    // the next idle so a busy moment cannot make the mirror go stale).
+    const [phase, setPhaseState] = useState("idle");
+    const pendingPhase = useRef(null);
+    // Published by the stream effect so the (earlier-declared) subscription can
+    // flush a deferred phase; a ref avoids a declaration-order dependency.
+    const pendingPhaseRef = pendingPhase;
+    const flushPhaseRef = useRef(() => {});
+
+    /**
+     * Whether the press landed on the model itself rather than on the
+     * transparent part of its canvas.
+     *
+     * The canvas is a full square but the character occupies only part of it,
+     * so a raw bounding-box click made every empty corner clickable. The model
+     * declares real hit areas (Head / Body here), and the engine hit-tests in
+     * world space, which is exactly the model's local space because it sits at
+     * the stage centre unscaled by any container transform.
+     */
+    const hitsModel = useCallback((clientX, clientY) => {
+      const stage = stageRef.current;
+      if (stage === null) return false;
+      const rect = stage.getBoundingClientRect();
+      // Decide against the rendered silhouette, so the transparent margin of
+      // the square canvas is not clickable while the character itself is.
+      return motion.current.hitsMask(clientX - rect.left, clientY - rect.top, rect.width, rect.height);
+    }, []);
+
+    const onPointerDown = useCallback((event) => {
+      if (event.button !== 0) return;
+      // A press on a transparent corner only ever starts a drag: it must not
+      // arm a click reaction, which is what made the whole square feel live.
+      dragState.current = {
+        startX: event.clientX,
+        startY: event.clientY,
+        right: posRef.current.right,
+        bottom: posRef.current.bottom,
+        moved: false,
+        onModel: hitsModel(event.clientX, event.clientY),
+      };
+      setDragging(true);
+      try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* not capturable */ }
+    }, [hitsModel]);
+
+    useEffect(() => {
+      const onMove = (event) => {
+        const state = dragState.current;
+        if (state === null) return;
+        const dx = event.clientX - state.startX;
+        const dy = event.clientY - state.startY;
+        if (!state.moved && Math.abs(dx) < DRAG_SLOP_PX && Math.abs(dy) < DRAG_SLOP_PX) return;
+        state.moved = true;
+        const width = sizeRef.current;
+        setPos({
+          right: Math.max(0, Math.min(window.innerWidth - width, state.right - dx)),
+          bottom: Math.max(0, Math.min(window.innerHeight - 60, state.bottom - dy)),
+        });
+      };
+      const onUp = () => {
+        const state = dragState.current;
+        if (state === null) return;
+        dragState.current = null;
+        setDragging(false);
+        if (state.moved) {
+          lastInteraction.current = Date.now();
+          setPos((current) => {
+            saveStored({ right: Math.round(current.right), bottom: Math.round(current.bottom) });
+            return current;
+          });
+        } else if (state.onModel) {
+          // A motionless press that landed on the character is a tap; one on a
+          // transparent corner is ignored entirely.
+          const groups = motion.current.groups();
+          // Prefer a dedicated tap group; the DS whale girl has none, so the
+          // "重锤出击" group stands in as its physical reaction.
+          const tap = ["TapBody", "tap_body", "Hammer"].find((group) => Array.isArray(groups[group]));
+          if (tap !== undefined) motion.current.playOnce(tap, 0, { kind: "tap" });
+          toggleExpression("脸红");
+          say(pick(LINES.click));
+          lastInteraction.current = Date.now();
+        }
+      };
+      window.addEventListener("pointermove", onMove, { passive: true });
+      window.addEventListener("pointerup", onUp);
+      window.addEventListener("pointercancel", onUp);
+      return () => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        window.removeEventListener("pointercancel", onUp);
+      };
+    }, [toggleExpression, say]);
+
+    // ---- persistence ---------------------------------------------------
+    useEffect(() => { saveStored({ size }); }, [size]);
+    useEffect(() => { saveStored({ petId }); if (petId !== undefined) applyExpressions({}); }, [petId, applyExpressions]);
+
+    if (catalog !== null && catalog.pets.length === 0) {
+      return h("div", { [PET_ATTR]: "", style: rootStyle(size, pos) },
+        h("div", { "data-hint": "" },
+          h("div", null, "还没有可用的 Live2D 宠物。"),
+          h("div", { style: { marginTop: 6 } }, "把宠物目录放到："),
+          h("code", null, "%DSH_HOME%\\pets\\<id>\\pet.json"),
+        ),
+      );
+    }
+
+    let overlay = null;
+    if (coreMissing) {
+      overlay = h("div", { "data-hint": "" },
+        h("div", null, h("b", null, "缺少 Live2D Cubism Core 运行时")),
+        h("div", { style: { marginTop: 6 } }, "请把官方 live2dcubismcore.min.js 放到："),
+        h("code", null, "%DSH_HOME%\\pets\\.runtime\\live2dcubismcore.min.js"),
+      );
+    } else if (error !== null) {
+      overlay = h("div", { "data-hint": "" },
+        h("div", null, h("b", null, "加载失败")),
+        h("div", { style: { marginTop: 6, opacity: .8, fontSize: 11 } }, error),
+      );
+    } else if (!ready) {
+      overlay = h("div", { "data-hint": "", style: { opacity: .65 } }, "加载模型…");
+    }
+
+    const panel = panelOpen && pet !== undefined
+      ? h("div", { "data-panel": "" },
+          h("header", null,
+            catalog.pets.length > 1
+              ? h("select", {
+                  value: pet.id,
+                  onChange: (event) => setPetId(event.target.value),
+                }, catalog.pets.map((entry) => h("option", { key: entry.id, value: entry.id }, entry.displayName)))
+              : h("span", null, pet.displayName),
+          ),
+          h("div", { "data-tabs": "" },
+            h("button", { type: "button", ...(tab === "motions" ? { "data-on": "" } : {}), onClick: () => setTab("motions") }, "动作 " + pet.motions.length),
+            h("button", { type: "button", ...(tab === "expressions" ? { "data-on": "" } : {}), onClick: () => setTab("expressions") }, "表情 " + pet.expressions.length),
+          ),
+          h("div", { "data-body": "" }, tab === "motions"
+            ? pet.motions.map((entry) => h("div", { "data-group": "", key: entry.group },
+                h("span", null, entry.label),
+                h("div", { "data-chips": "" },
+                  Array.from({ length: entry.count }, (_, index) => h("button", {
+                    key: index,
+                    type: "button",
+                    ...(motionGroup === entry.group ? { "data-on": "" } : {}),
+                    "data-motion-group": entry.group,
+                    onClick: () => playMotion(entry.group, index),
+                  }, entry.count > 1 ? "第 " + (index + 1) + " 段" : "播放")),
+                ),
+              ))
+            : groupExpressions(pet.expressions).map((bucket) => h("div", { "data-group": "", key: bucket.category },
+                h("span", null, bucket.label),
+                h("div", { "data-chips": "" },
+                  bucket.items.map((entry) => h("button", {
+                    key: entry.name,
+                    type: "button",
+                    ...(pinned[entry.name] === true ? { "data-on": "" } : {}),
+                    onClick: () => toggleExpression(entry.name),
+                  }, entry.label)),
+                ),
+              )),
+          ),
+          h("footer", null,
+            h("span", null, size + "px"),
+            h("input", {
+              type: "range", min: MIN_SIZE, max: MAX_SIZE, step: 20, value: size,
+              onChange: (event) => setSize(Number(event.target.value)),
+            }),
+            h("button", { type: "button", onClick: resetAll }, "归位"),
+          ),
+        )
+      : null;
+
+    return h("div", {
+      [PET_ATTR]: "",
+      style: rootStyle(size, pos),
+      // Observability: the committed action of the motion state machine
+      // ('idle' while resting) and the current gaze target, so the pet's
+      // behaviour is inspectable without reaching into engine internals.
+      "data-motion": motionGroup === "" ? "idle" : motionGroup,
+      "data-gaze": gaze,
+      "data-phase": phase,
+    },
+      overlay !== null ? overlay : null,
+      h("div", {
+        ref: stageRef,
+        "data-stage": "",
+        ...(dragging ? { "data-dragging": "" } : {}),
+        onPointerDown,
+      }),
+      bubble === null ? null : h("div", { "data-bubble": "" }, bubble),
+      h("div", { "data-bar": "", ...(panelOpen ? { "data-open": "" } : {}) },
+        h("button", { type: "button", onClick: () => setPanelOpen((open) => !open) }, panelOpen ? "收起" : "面板"),
+        h("button", { type: "button", onClick: resetAll }, "归位"),
+        h("button", { type: "button", onClick: () => setSize((current) => Math.max(MIN_SIZE, current - 40)) }, "－"),
+        h("button", { type: "button", onClick: () => setSize((current) => Math.min(MAX_SIZE, current + 40)) }, "＋"),
+      ),
+      panel,
+    );
+  }
+
+  const CATEGORY_LABELS = {
+    emotion: "情绪",
+    accessory: "配件",
+    prop: "道具",
+    action: "动作",
+    other: "其他",
+  };
+
+  /** Bucket expressions by category, preserving catalog order. */
+  function groupExpressions(expressions) {
+    const buckets = [];
+    const index = new Map();
+    for (const entry of expressions) {
+      const category = entry.category ?? "other";
+      if (!index.has(category)) {
+        index.set(category, buckets.length);
+        buckets.push({ category, label: CATEGORY_LABELS[category] ?? category, items: [] });
+      }
+      buckets[index.get(category)].items.push(entry);
+    }
+    return buckets;
+  }
+
+  /** Positioning lives on the pet's own root div, so it works whether it is
+   * reached through the React container or not. */
+  function rootStyle(size, pos) {
+    return { width: size, height: size, right: pos.right, bottom: pos.bottom };
+  }
+
+  // --------------------------------------------------------------- mount
+
+  let mounted = null;
+
+  function teardown() {
+    if (mounted === null) return;
+    const current = mounted;
+    mounted = null;
+    try { current.root.unmount(); } catch { /* already gone */ }
+    current.container.remove();
+  }
+
+  function apply(ctx) {
+    ensureStyle();
+    // Takeover: an earlier instance — a hot reload, or one left behind by a
+    // crashed reload — must not leave a second floating pet on the page.
+    teardown();
+    // Sweep containers AND any orphaned pet root an earlier instance left
+    // behind, so this apply body is the page's only floating pet.
+    for (const stale of Array.from(document.querySelectorAll(
+      "[" + ROOT_ATTR + "],[" + LEGACY_ATTR + "],[" + PET_ATTR + "]",
+    ))) stale.remove();
+
+    const container = document.createElement("div");
+    container.setAttribute(ROOT_ATTR, "");
+    document.body.appendChild(container);
+
+    const root = require("react-dom/client").createRoot(container);
+    mounted = { root, container };
+    root.render(h(Pet, null));
+
+    ctx.effect(() => () => teardown(), "live2d-pet: client lifecycle");
+  }
+
+  exports.name = name;
+  exports.inject = inject;
+  exports.apply = apply;
+  return module.exports;
+}});

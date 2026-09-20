@@ -1,0 +1,80 @@
+{
+  "petManifestVersion": 2,
+  "id": "ds-whale-girl",
+  "displayName": "DS鲸鱼娘",
+  "description": "氵六青的 DS 鲸鱼娘 Live2D 桌宠：8 组动作 + 44 个表情/道具，点她会有反应。",
+  "version": "1.0.1",
+  "author": "模型：B站@氵六青 · 插件：A8Chann",
+  "license": "Free-share (无偿分享). Model by B站@氵六青 (交流群 645169617, https://space.bilibili.com/11272072). The author has granted permission to open-source and redistribute this model as part of this project. Original terms: livestreaming and personal printing allowed; resale or for-profit redistribution prohibited.",
+  "homepage": "https://space.bilibili.com/11272072",
+  "renderer": "live2d",
+  "live2d": {
+    "model": "c_0120.model3.json",
+    "scale": 1,
+    "translate": {
+      "x": 0,
+      "y": 0
+    },
+    "motions": {
+      "idle": "Idle",
+      "waiting": "Idle",
+      "thinking": "Idle",
+      "tool": "Hammer",
+      "review": "SelfieQuick",
+      "done": "BubbleGum",
+      "failed": "SprayWater"
+    },
+    "expressions": {
+      "idle": "脸红",
+      "waiting": "问号",
+      "thinking": "呆呆眼",
+      "tool": "流汗",
+      "review": "星星眼",
+      "done": "情绪花花",
+      "failed": "大哭"
+    },
+    "motionOptions": {
+      "OpenCase": {
+        "hold": true
+      },
+      "Selfie": {
+        "prepend": "OpenCase"
+      },
+      "SelfieQuick": {
+        "prepend": "OpenCase"
+      },
+      "SprayWater": {
+        "preset": {
+          "jingyu": 1
+        }
+      }
+    }
+  },
+  "remarks": {
+    "pet": [
+      "摸摸头～",
+      "鲸鱼娘咕噜咕噜～",
+      "再摸一下嘛",
+      "嘿嘿，好舒服"
+    ],
+    "petCooldown": [
+      "让我缓缓……",
+      "头要被摸秃啦",
+      "先歇一会儿嘛"
+    ],
+    "feed": [
+      "小鱼干！",
+      "唔姆唔姆～",
+      "还有吗还有吗",
+      "谢谢投喂～"
+    ],
+    "feedCooldown": [
+      "刚吃过啦，有点撑",
+      "等会儿再喂我嘛"
+    ],
+    "noTreats": [
+      "小鱼干库存告急了……",
+      "没有小鱼干了吗"
+    ]
+  }
+}

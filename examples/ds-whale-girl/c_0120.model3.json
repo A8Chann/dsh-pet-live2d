@@ -1,0 +1,249 @@
+{
+  "Version": 3,
+  "FileReferences": {
+    "Moc": "model/c_0120.moc3",
+    "Textures": [
+      "textures/texture_00.png",
+      "textures/texture_01.png"
+    ],
+    "Physics": "model/c_0120.physics3.json",
+    "DisplayInfo": "model/c_0120.cdi3.json",
+    "Motions": {
+      "Idle": [
+        {
+          "File": "motions/idle.motion3.json"
+        }
+      ],
+      "Hammer": [
+        {
+          "File": "motions/hammer.motion3.json"
+        }
+      ],
+      "BubbleGum": [
+        {
+          "File": "motions/bubble-gum.motion3.json"
+        }
+      ],
+      "SprayWater": [
+        {
+          "File": "motions/spray-water.motion3.json"
+        }
+      ],
+      "OpenCase": [
+        {
+          "File": "motions/open-case.motion3.json"
+        }
+      ],
+      "Selfie": [
+        {
+          "File": "motions/selfie.motion3.json"
+        }
+      ],
+      "SelfieQuick": [
+        {
+          "File": "motions/selfie-quick.motion3.json"
+        }
+      ],
+      "Ketchup": [
+        {
+          "File": "motions/ketchup.motion3.json"
+        }
+      ]
+    },
+    "Expressions": [
+      {
+        "Name": "脸红",
+        "File": "expressions/facial-red.exp3.json"
+      },
+      {
+        "Name": "爱心眼",
+        "File": "expressions/love-eyes.exp3.json"
+      },
+      {
+        "Name": "星星眼",
+        "File": "expressions/star-eyes.exp3.json"
+      },
+      {
+        "Name": "情绪花花",
+        "File": "expressions/sparkle.exp3.json"
+      },
+      {
+        "Name": "心跳",
+        "File": "expressions/heartbeat.exp3.json"
+      },
+      {
+        "Name": "开心兴奋",
+        "File": "expressions/excited.exp3.json"
+      },
+      {
+        "Name": "悲伤",
+        "File": "expressions/sad.exp3.json"
+      },
+      {
+        "Name": "大哭",
+        "File": "expressions/cry.exp3.json"
+      },
+      {
+        "Name": "生气",
+        "File": "expressions/angry.exp3.json"
+      },
+      {
+        "Name": "晕晕",
+        "File": "expressions/dizzy.exp3.json"
+      },
+      {
+        "Name": "流汗",
+        "File": "expressions/sweat.exp3.json"
+      },
+      {
+        "Name": "问号",
+        "File": "expressions/question.exp3.json"
+      },
+      {
+        "Name": "感叹号",
+        "File": "expressions/exclaim.exp3.json"
+      },
+      {
+        "Name": "阴暗",
+        "File": "expressions/gloomy.exp3.json"
+      },
+      {
+        "Name": "调皮",
+        "File": "expressions/naughty.exp3.json"
+      },
+      {
+        "Name": "闭眼口水",
+        "File": "expressions/drool.exp3.json"
+      },
+      {
+        "Name": "吐魂",
+        "File": "expressions/soul-out.exp3.json"
+      },
+      {
+        "Name": "吐舌",
+        "File": "expressions/tongue-out.exp3.json"
+      },
+      {
+        "Name": "呆呆眼",
+        "File": "expressions/blank-eyes.exp3.json"
+      },
+      {
+        "Name": "冒爱心",
+        "File": "expressions/heart-pop.exp3.json"
+      },
+      {
+        "Name": "圆眼镜",
+        "File": "expressions/glasses-round.exp3.json"
+      },
+      {
+        "Name": "方眼镜",
+        "File": "expressions/glasses-square.exp3.json"
+      },
+      {
+        "Name": "椭圆眼镜",
+        "File": "expressions/glasses-oval.exp3.json"
+      },
+      {
+        "Name": "墨镜",
+        "File": "expressions/sunglasses.exp3.json"
+      },
+      {
+        "Name": "头箍",
+        "File": "expressions/headband.exp3.json"
+      },
+      {
+        "Name": "单边马尾",
+        "File": "expressions/ponytail.exp3.json"
+      },
+      {
+        "Name": "蝴蝶结贴纸",
+        "File": "expressions/sticker-bow.exp3.json"
+      },
+      {
+        "Name": "猫猫贴纸",
+        "File": "expressions/sticker-cat.exp3.json"
+      },
+      {
+        "Name": "兔兔贴纸",
+        "File": "expressions/sticker-rabbit.exp3.json"
+      },
+      {
+        "Name": "头顶鲸",
+        "File": "expressions/whale.exp3.json"
+      },
+      {
+        "Name": "鲸鱼放桌上",
+        "File": "expressions/whale-on-desk.exp3.json"
+      },
+      {
+        "Name": "桌面巴菲",
+        "File": "expressions/parfait.exp3.json"
+      },
+      {
+        "Name": "蛋包饭",
+        "File": "expressions/omurice.exp3.json"
+      },
+      {
+        "Name": "桌面粉魔爪",
+        "File": "expressions/claw.exp3.json"
+      },
+      {
+        "Name": "魔爪换色",
+        "File": "expressions/claw-recolor.exp3.json"
+      },
+      {
+        "Name": "双手比耶",
+        "File": "expressions/hands-peace.exp3.json"
+      },
+      {
+        "Name": "喵喵手",
+        "File": "expressions/cat-paws.exp3.json"
+      },
+      {
+        "Name": "手机换色",
+        "File": "expressions/phone-recolor.exp3.json"
+      },
+      {
+        "Name": "深色桌布",
+        "File": "expressions/dark-tablecloth.exp3.json"
+      },
+      {
+        "Name": "画笔",
+        "File": "expressions/draw-brush.exp3.json"
+      },
+      {
+        "Name": "橡皮",
+        "File": "expressions/draw-eraser.exp3.json"
+      },
+      {
+        "Name": "撤回",
+        "File": "expressions/draw-undo.exp3.json"
+      },
+      {
+        "Name": "点菜按下",
+        "File": "expressions/menu-press.exp3.json"
+      },
+      {
+        "Name": "挤番茄酱",
+        "File": "expressions/ketchup-squeeze.exp3.json"
+      }
+    ]
+  },
+  "Groups": [
+    {
+      "Target": "Parameter",
+      "Name": "EyeBlink",
+      "Ids": [
+        "ParamEyeLOpen",
+        "ParamEyeROpen"
+      ]
+    },
+    {
+      "Target": "Parameter",
+      "Name": "LipSync",
+      "Ids": [
+        "ParamMouthOpenY"
+      ]
+    }
+  ]
+}

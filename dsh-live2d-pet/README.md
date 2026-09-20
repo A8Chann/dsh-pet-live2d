@@ -1,0 +1,240 @@
+# dsh-live2d-pet — Live2D 桌宠插件
+
+给 DSH Web GUI 挂一只 **Live2D 桌宠**：会呼吸、会眨眼、眼睛和脑袋跟着鼠标转，能拖着换位置，点一下有反应，右键面板里能播模型自带的**全部动作与表情**。
+
+自带 **DS鲸鱼娘**（氵六青 的无偿分享模型）：8 组动作 + 44 个表情/道具。
+
+![桌宠](docs/preview.png)
+
+## 功能
+
+| 功能 | 说明 |
+|---|---|
+| Live2D 渲染 | PixiJS v8 + untitled-pixi-live2d-engine（Cubism 3/4/5），WebGL 透明画布，$O(1)$ 开销的常驻浮层 |
+| 鼠标跟随 | 指针在窗口内移动时，模型的眼球/头部实时朝向指针；移开后视线自然回到中心 |
+| 拖动与缩放 | 按住拖走；位置与尺寸存 localStorage，刷新后原样恢复 |
+| 点击反应 | 点一下 → 播放反应动作 + 表情 + 气泡台词 |
+| 动作面板 | 读取模型自己声明的 motion group，8 个动作一键播放 |
+| 表情面板 | 44 个表情按「情绪 / 配件 / 道具」分类，可叠加、可一键归位 |
+| 多宠物 | `%DSH_HOME%\pets\` 下所有 `renderer: live2d` 的宠物都会被扫描，面板里可切换 |
+| 零配置宠物 | 宠物 = 一个目录 + `pet.json`；插件不硬编码任何模型 |
+
+## 安装
+
+```pwsh
+dsh plugin --profile web add "link:D:\HTML\DSH_Pet_Live2d\dsh-live2d-pet"
+# 或从目录安装
+dsh plugin --profile web add "link:<本目录绝对路径>"
+```
+
+装完 **重启 `dsh web`**（新 bundle 不参与热重载）。
+
+## 前置：Cubism Core 运行时（必做）
+
+Live2D 的专有许可**不允许再分发** Core 运行时，所以本插件**永不内置、永不代下**它。请自行从 [Live2D 官方 Cubism SDK for Web](https://www.live2d.com/download/cubism-sdk/download-web/) 取得 `live2dcubismcore.min.js`，放到：
+
+```
+%DSH_HOME%\pets\.runtime\live2dcubismcore.min.js
+```
+
+缺这个文件时，宠物位置会显示一张安装指引卡（不会崩，也不影响其它插件）。本机已放好。
+
+## v1.2 交互与渲染优化
+
+| 问题 | 原因 | 处理 |
+|---|---|---|
+| 放大后画面模糊 | 渲染缓冲固定 1x，画面被 CSS 拉伸 | `resolution = max(2, devicePixelRatio)`；实测 backing store 恒为 CSS 尺寸的 2–3 倍 |
+| **缩小后线条发虚**（v1.2.1） | 两道叠加：① 2048² 图集被直接缩到 160–760px，而 `lod:"single-auto"` 只在 effectiveScale < 0.5 时才做 LOD——300px 时约 0.59，**这个分支根本没触发**，等于每个屏幕像素只从图集里抽 1 个纹素，细笔画被整根抽掉；② 画布 backing store 在 1x 屏上只有 160–760²，细线本身就落在采样点之间 | ① `lod:"full"` 建完整 mip 链（注意：`lod:false` 是"全分辨率但**不建** mip"，比 `"single-auto"` 更糟）+ `maxAnisotropy: 8`；② 渲染倍率下限提到 **2x** 做超采样。面部细笔画像素占比实测（300px）：原始 8.16% → 仅建 mip 3.89% → mip+2x 超采样 5.27%，断线/锯齿消失，细线恢复连续 |
+| 画布空白处也能点到 | 整个方形 canvas 都在吃点击 | 从**实际渲染出的像素**提取 64×64 透明度网格，只有落在角色轮廓上才算点击；拖拽仍可按住任意位置 |
+| 鼠标移开后视线不回正 | 视线停在"最后一个指针位置" | 超出注视范围即回到**模型默认中心位**（`data-gaze="center"`） |
+| 不接会话状态 | 只响应点击 | 宿主订阅 `agent/status` / `agent/turn-stopping` / `agent/error` / `approval/request`，经同源 SSE 推送；客户端按相位切换动作与表情 |
+| 打开设置面板宠物被放大 | **真 bug**：`layout()` 用了 `model.width`，而 Pixi 的 `Container.width` 返回的是**当前缩放后**的尺寸，于是每次重排都把缩放自乘一次 | 启动时缓存**未缩放**原始尺寸，之后一律由它计算；面板开合不再影响画面 |
+| 待机太死板 | 没有随机行为 | 静置 12–26 秒后随机播一个非待机动作（"摸鱼"），播完自动回待机；任何交互都会重置计时 |
+
+### 缩小时的锐度（v1.2.1）
+
+![缩小前后的面部细节对比](docs/downscale-fix.png)
+
+上图为 3 倍最近邻放大的面部区域，顺序是 **旧 160px ｜ 新 160px ｜ 旧 300px ｜ 新 300px**。旧的渲染里发丝是断续的虚线状、轮廓边上有明显的方块感；新的渲染线条连续、边界干净。
+
+三处改动：
+
+| 项 | 旧 | 新 | 为什么 |
+|---|---|---|---|
+| 纹理采样 | `lod: "single-auto"` | `lod: "full"` | `"single-auto"` 只有 effectiveScale < 0.5 才生效；300px 宠物约 0.59，**这条分支从未触发**，等于只做双线性点采样。`"full"` 才会让资源加载器生成完整 mip 链（注意 `lod:false` 是"全分辨率但**不建** mip"，比 `"single-auto"` 更差） |
+| 各向异性过滤 | 无 | 各向异性 8x | 引擎不会把 `textureOptions.maxAnisotropy` 传给采样器，必须在加载后写到每张纹理的 style 上；它负责斜向线条（刘海、缎带边缘）在斜视时不糊成一片 |
+| 渲染倍率 | `min(3, devicePixelRatio)`，1x 屏就是 1x | `min(3, max(2, devicePixelRatio))` | 这是最有效的一招：1x 屏上 300px 画布只有 300² 采样点，无论纹理怎么筛，输出就只有这么多样本。下限提到 2x 等于**超采样**（每个显示像素 4 个渲染样本），再由浏览器缩回 CSS 尺寸 |
+
+实测（300px，面部细笔画像素占该区域的比例）：**旧 8.16% → 仅建 mip 3.89% → mip + 2x 超采样 5.27%**。纯 mip 化会把细线"抹平"（数字反而比旧的低），所以两者必须一起上；超采样把细节拉回来，mip 链保证缩小时不出现摩尔纹和闪烁。
+
+### 表情（v1.2.2）
+
+44 个表情此前**全部加载失败**：`model3.json` 里指向的是中文文件名（`expressions/脸红.exp3.json`），而磁盘上按 manifest 路径校验的要求已经改成了 ASCII slug（`facial-red.exp3.json`）——生成器改过，但改完没有重新跑，装到 `%DSH_HOME%` 的那份是旧的。`build-pet.mjs` 现在会**保留手写文件**（`pet.json` / `catalog.json` / `README.md` / `voice.json`），重跑不会再把这些删掉，可以安全地反复执行。
+
+还有一处命名不一致：`哭.exp3.json` 在 `model3.json` 里声明的 `Name` 是 **"大哭"**。表情查找按 `Name` 而非文件名匹配，所以 `failed` 相位原本写的 `"哭"` 永远查不到、静默什么都不做。现已修正为 `大哭`。
+
+### 会话状态映射
+
+宿主把 DSH 的真实事件折叠成一个粗粒度相位并推送：
+
+| 事件 | 相位 | 默认动作 | 默认表情 |
+|---|---|---|---|
+| `agent/status` → running | thinking | 待机 | 呆呆眼 |
+| `approval/request` | waiting | 待机 | 问号 |
+| `tool/call` | tool | 重锤出击 | 流汗 |
+| `agent/turn-stopping` | done | 吹泡泡糖 | 情绪花花 |
+| `agent/error` | failed | 鲸鱼喷水 | 哭 |
+
+可被宠物自己在 `pet.json` 的 `live2d.motions` / `live2d.expressions` 里覆盖（键就是这些相位名）。相位到达时若宠物正在演用户触发的反应，会**延后到回待机再补播**，不会丢掉状态。
+
+### 观测契约
+
+宠物根节点上有三个属性，便于排查与自动化测试：
+
+- `data-motion` — 当前动作组（待机为 `idle`）
+- `data-gaze` — `center`（回默认位）/ `pointer`（跟随鼠标）
+- `data-phase` — 最近一次会话相位
+
+另外 `window.__dshLive2dPet` 暴露了动作控制器（`maskInfo()` 可查看点击轮廓、`playOnce()` / `playIdle()` 可手动驱动），方便在控制台排查。
+
+### 关于 HitAreas
+
+本模型**没有**声明 Cubism HitAreas，所以点击判定不依赖引擎的 `hitTest`，而是从渲染结果的 alpha 通道提取轮廓——因此任何模型都能用，无需作者额外导出命中区。
+
+## 动作状态机
+
+Live2D 的 `MotionManager` 有三处反直觉行为，直接裸调 `model.motion()` 会出现「点一下就一直循环播放」这类问题。插件用一个状态机统一接管动作生命周期：
+
+| 引擎行为 | 后果 | 处理 |
+|---|---|---|
+| 同 group+index 正在播放时拒绝再次启动 | 连点没反应 / 只能播一次 | 每次启动前先 `stopAllMotions()` |
+| `NORMAL` 优先级不能打断 `NORMAL` | 第一次动作后宠物「死」了，后续全被静默拒绝 | 互动与面板动作用 `FORCE`，待机用 `IDLE` |
+| `motion()` 是**异步**的：先 `stopAllMotions()` 再加载入队，这中间 `MotionManager.update` 会看到 `playing && isFinished()` 并**误发 `motionFinish`** | 新动作刚开始就被判定「播完了」，瞬间弹回待机 | 忽略启动后 250ms 内到达的 `motionFinish` |
+| 动作自带 `"Loop": true` 时永不结束，也就永不触发 `motionFinish` | 动作无限循环，回不到待机 | 宿主从 `motion3.json` 读出 `Duration`/`Loop`，按声明的时长定时收尾 |
+
+因此状态机只做三件事：**常驻待机循环** → **播一次动作** → **自动回待机**，且每一步都可被打断。
+
+宿主半区会把每个动作的 `duration`（毫秒）、`loop` 以及**该动作写了哪些参数**（来自模型自己的 `motion3.json`）随 catalog 下发，所以换任何模型都能自适应，不需要改插件代码。
+
+### 动作语义（v1.2.2）
+
+引擎还有一条更隐蔽的行为，是「吹泡泡吹完嘴不还原」的根因：
+
+> **动作结束后，它写过的参数没有任何人负责还原。** 引擎在动作播放期间往模型参数里写值，停下就只是「不写了」——参数留在最后一帧的值上。平时看不出问题，是因为待机循环恰好也在驱动这些参数；而本模型的动作专属参数（`chuipaopao*`、`phone*`、`pengshui`…）**待机完全不碰**，于是动作一停，最后的嘴形就永久留在脸上。
+
+插件现在的做法：动作启动前把它会写的参数**快照**下来，回待机时**还原**。参数名单由宿主从 `motion3.json` 的 `Curves` 里读出并下发。
+
+另外全部动作现在都以 `loop: false` 启动。引擎的合并方式是 `setLoop(调用方的 loop ?? 动作自带的 Meta.Loop)`，而本包**所有** `motion3.json` 都写着 `"Loop": true`，所以不显式传 `false` 的话动作永远不结束，也就永远摆不出「定格」姿势。
+
+剩下三件事是模型作者才知道的意图，写在 `pet.json` 的 `live2d.motionOptions` 里：
+
+| 声明 | 含义 | 解决的问题 |
+|---|---|---|
+| `{"hold": true}` | 动作播完**定格**在最后一帧，不回待机 | 掏出手机后手机能一直拿在手里 |
+| `{"prepend": "OpenCase"}` | 先播前置动作，再播真正的动作 | 自拍的 `phone` 第一帧就是 1（作者假定手机已在手），不先掏手机就是在对着空气自拍 |
+| `{"preset": {"jingyu": 1}}` | 动作本身没写、但这个动作需要被一起点亮的参数 | 鲸鱼喷水这个动作只写了 `pengshui`（碰水），真正负责「喷」的鲸鱼是另一个参数 `jingyu`，不点它看起来就是毫无反应 |
+
+定格姿势**不算「忙」**（`isPlaying()` 返回 false）：否则点一次掏出手机就会永久压住待机摸鱼和会话相位，宠物就此卡死。它只是「看起来不一样的待机」，任何新动作都能接管。
+
+宠物根节点带 `data-motion` 属性（待机时为 `idle`），方便直接观察当前状态。
+
+## 宠物契约
+
+一个宠物目录长这样：
+
+```
+%DSH_HOME%\pets\<id>\
+  pet.json          # 清单（renderer: live2d）
+  c_0120.model3.json
+  model\            # .moc3 / physics3 / cdi3
+  textures\         # 贴图
+  motions\          # .motion3.json
+  expressions\      # .exp3.json
+  catalog.json      # 可选：动作/表情的中文名与分类
+```
+
+`pet.json`：
+
+```jsonc
+{
+  "petManifestVersion": 2,
+  "id": "ds-whale-girl",
+  "displayName": "DS鲸鱼娘",
+  "renderer": "live2d",
+  "license": "...",                  // 资产授权声明
+  "live2d": {
+    "model": "c_0120.model3.json",   // 相对于本目录
+    "scale": 1,                      // 在自适应缩放上乘算
+    "translate": { "x": 0, "y": 0 }, // 像素偏移
+    "motions":  { "idle": "Idle" },  // 可选；插件主要用模型自带列表
+    "expressions": { "idle": "脸红" },
+    // 可选；模型自己表达不了的「作者意图」，见《动作语义》
+    "motionOptions": {
+      "OpenCase":   { "hold": true },
+      "Selfie":     { "prepend": "OpenCase" },
+      "SprayWater": { "preset": { "jingyu": 1 } }
+    }
+  }
+}
+```
+
+`motionOptions` 的三个键都可以组合；不写就是默认行为（播一次然后回待机）。`prepend` 的前置动作同样受该动作自己的 `motionOptions` 约束。
+
+`catalog.json`（可选，只影响显示名）：
+
+```jsonc
+{
+  "motions":     [{ "key": "Hammer", "label": "重锤出击", "category": "action" }],
+  "expressions": [{ "key": "脸红",   "label": "脸红",     "category": "emotion" }]
+}
+```
+
+**动作和表情列表以 `c_0120.model3.json` 里声明的为准**，插件启动时从模型读出，所以换模型 / 改模型文件立刻生效，不用改插件代码。
+
+## 宿主 HTTP 接口
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/live2d-pet/catalog` | 已安装宠物 + 各自的动作/表情清单 + 运行时 URL |
+| GET | `/api/live2d-pet/asset/<id>/<path>` | 只服务 `model3.json` **引用闭包**内的文件（白名单 Set 比对 + realpath 包含，`..` 永远匹配不上） |
+| GET | `/api/live2d-pet/runtime/live2dcubismcore.min.js` | 用户自备的 Cubism Core |
+| GET | `/api/live2d-pet/runtime/live2d-vendor.js` | 插件内置的 MIT vendor 分包（pixi.js + 引擎），按需懒加载 |
+
+API 与资产路由默认只答本机回环请求。
+
+## 架构
+
+```
+dsh-live2d-pet/
+  package.json          dsh.client.platform = web -> 双半区包
+  cordis.patch.yml      bundle patch：插一行 live2d-pet
+  lib/
+    index.js            宿主半区：宠物发现 / 引用闭包资产路由 / 运行时分发
+    client.js           浏览器半区：手写 __ModuleLoader__ 工厂，无构建步骤
+    live2d-vendor.js    pixi.js + untitled-pixi-live2d-engine 的 IIFE（esbuild 产物）
+  src/vendor-entry.ts   vendor 分包入口（npm run build:vendor 重新生成）
+```
+
+Vendor 分包**懒加载**：只有真正挂载 Live2D 宠物时才注入 `live2d-vendor.js`，页面首屏不为它买单。
+
+## 二次开发
+
+```pwsh
+npm install                 # pixi.js / untitled-pixi-live2d-engine / esbuild
+npm run build:vendor        # 重新生成 lib/live2d-vendor.js
+```
+
+改完 `lib/client.js` 后**重启 `dsh web`**（bundle 不做热重载）。
+
+回归测试在仓库的 `tools/browser-test/`：无头 Edge + CDP，在真实 WebGL 里跑完整契约。
+```bash
+cd ../../tools/browser-test && npm install && npm run suite
+```
+
+## 许可
+
+- 插件代码：MIT
+- vendor 分包：pixi.js（MIT）+ untitled-pixi-live2d-engine（MIT），可随包分发
+- Cubism Core：Live2D 专有，**用户自备，本插件不内置**
+- DS鲸鱼娘模型：版权归 **B站@氵六青**，无偿分享 —— 商用直播 ✓、自印物料 ✓、**禁止盗用与出售**。
+  已获作者转载授权，随本仓库一起分发。模型版权与本插件许可无关。

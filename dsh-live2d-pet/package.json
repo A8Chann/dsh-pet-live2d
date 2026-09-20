@@ -1,0 +1,60 @@
+{
+  "name": "dsh-live2d-pet",
+  "version": "1.2.2",
+  "description": "Live2D 桌宠插件：为 DSH Web GUI 挂一只可拖动、会跟随鼠标、能换动作与表情的 Live2D 宠物。",
+  "type": "module",
+  "main": "lib/index.js",
+  "license": "MIT",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "live2d",
+    "desktop-pet",
+    "桌宠"
+  ],
+  "files": [
+    "lib",
+    "src",
+    "docs",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": "./lib/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build:vendor": "esbuild src/vendor-entry.ts --bundle --format=iife --outfile=lib/live2d-vendor.js --minify --target=es2020"
+  },
+  "dsh": {
+    "engines": {
+      "dsh": ">=0.1.5-rc.1"
+    },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [],
+      "platform": "web"
+    }
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.10",
+    "pixi.js": "8.19.0",
+    "untitled-pixi-live2d-engine": "1.3.5"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/A8Chann/dsh-pet-live2d.git"
+  },
+  "homepage": "https://github.com/A8Chann/dsh-pet-live2d#readme",
+  "bugs": {
+    "url": "https://github.com/A8Chann/dsh-pet-live2d/issues"
+  }
+}
