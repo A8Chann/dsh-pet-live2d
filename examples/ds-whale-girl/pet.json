@@ -113,10 +113,10 @@
       {
         "id": "cloth",
         "label": "桌布",
-        "none": "不用",
+        "none": "白色",
         "options": [
           {
-            "label": "深色",
+            "label": "黑色",
             "expression": "深色桌布"
           }
         ]
