@@ -582,6 +582,15 @@ export class ActivityHub {
 }
 
 /**
+ * How long the pet stays in the 'tool' phase after the last tool returns.
+ *
+ * Long enough to bridge the gap between consecutive tool calls in one turn
+ * (otherwise the phase flaps and the animation restarts constantly), short
+ * enough that the pet visibly settles once the work really stops.
+ */
+const TOOL_IDLE_MS = 1200
+
+/**
  * Fold the official DSH events into hub phases. Every subscription is optional
  * at runtime: an older host that lacks one simply keeps mirroring the others.
  */
@@ -630,14 +639,28 @@ export function attachActivityEvents(ctx, hub) {
   // lifecycle event — subscribing to it never fires, which is why the pet
   // appeared to ignore tool activity entirely. The live hooks are the
   // 'tools/*' waterfall events, which carry the ToolExecution itself.
+  //
+  // A turn usually runs MANY tools back to back, so reverting the instant one
+  // returns would flap tool -> thinking -> tool several times a second, and each
+  // transition restarts the pet's animation. The revert is therefore debounced:
+  // it only happens once the tools actually stop arriving.
+  let toolIdleTimer
   onWaterfall('tools/pre-execute', (exec, next) => {
+    if (toolIdleTimer !== undefined) {
+      clearTimeout(toolIdleTimer)
+      toolIdleTimer = undefined
+    }
     const name = exec?.name
     hub.set('tool', typeof name === 'string' ? name : '')
     return next()
   })
-  // Back to plain thinking once the tool returns, so the pet stops "working".
   onWaterfall('tools/post-execute', (_exec, _result, next) => {
-    if (hub.phase === 'tool') hub.set('thinking', '')
+    if (toolIdleTimer !== undefined) clearTimeout(toolIdleTimer)
+    toolIdleTimer = setTimeout(() => {
+      toolIdleTimer = undefined
+      // Only step down if nothing else has taken over in the meantime.
+      if (hub.phase === 'tool') hub.set('thinking', '')
+    }, TOOL_IDLE_MS)
     return next()
   })
 }

@@ -66,11 +66,32 @@ check('the sustained pet still reports kind=phase', (await ev('window.__dshLive2
   'kind=' + await ev('window.__dshLive2dPet.kind()'))
 
 // --- returning from the tool must drop back to the idle loop ---------------
-const after = await api('/__emit?event=tools/post-execute&name=read')
-check('tools/post-execute leaves the tool phase', after.phase === 'thinking', 'phase=' + after.phase)
+// The revert is debounced (TOOL_IDLE_MS) so consecutive tools in one turn do
+// not flap the phase and restart the animation.
+const post = await api('/__emit?event=tools/post-execute&name=read')
+check('tools/post-execute does not revert instantly', post.phase === 'tool', 'phase=' + post.phase)
+await sleep(2000)
+check('the tool phase steps down once tools stop', (await attr('data-phase')) === 'thinking', 'data-phase=' + await attr('data-phase'))
 await sleep(1500)
 check('pet stops sustaining once the tool returns', (await ev('window.__dshLive2dPet.sustained()')) === null,
   'sustained=' + await ev('window.__dshLive2dPet.sustained()'))
+
+// --- consecutive tool calls must not flap the phase ------------------------
+// Drive three calls back to back with a gap shorter than the debounce and
+// require the phase to have stayed on 'tool' the whole way.
+let flapped = false
+for (let i = 0; i < 3; i++) {
+  await api('/__emit?event=tools/pre-execute&name=read')
+  await api('/__emit?event=tools/post-execute&name=read')
+  await sleep(300)
+  if ((await attr('data-phase')) !== 'tool') { flapped = true; break }
+}
+check('consecutive tools do not flap the phase', !flapped, 'data-phase=' + await attr('data-phase'))
+await sleep(2000)
+await api('/__emit?event=tools/pre-execute&name=read')
+await api('/__emit?event=tools/post-execute&name=read')
+await sleep(2000)
+check('a lone tool still steps down afterwards', (await attr('data-phase')) === 'thinking', 'data-phase=' + await attr('data-phase'))
 
 // --- a turn ending celebrates, then settles --------------------------------
 const turn = await api('/__emit?event=agent/turn-stopping&name=done')
