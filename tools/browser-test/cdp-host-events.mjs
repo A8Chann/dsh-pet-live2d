@@ -59,19 +59,30 @@ check('a tool call moves the hub to the tool phase', emitTool.phase === 'tool', 
 // --- and the pet must follow it --------------------------------------------
 await sleep(1200)
 check('pet reports the tool phase', (await attr('data-phase')) === 'tool', 'data-phase=' + await attr('data-phase'))
-const motionDuringTool = await attr('data-motion')
-check('pet plays its tool motion', motionDuringTool === 'Ketchup', 'data-motion=' + motionDuringTool)
+// The tool look, not the Ketchup motion: Ketchup also drives 蛋包饭 and 挤压, so
+// it painted omurice and ketchup on screen during every tool call. The hand
+// writing on the tablet is what shows now.
+const toolFaces = await ev('JSON.stringify(window.__dshLive2dPet.expressions())')
+// Assert on the pinned set, not on slotSelections: the phase layer is what put
+// the brush there, and slotSelections only tracks the user's own picks.
+check('pet takes the tool look', toolFaces.includes('点菜按下'), 'expressions=' + toolFaces)
+check('the tool look never shows 蛋包饭 or 挤番茄酱',
+  !toolFaces.includes('蛋包饭') && !toolFaces.includes('挤番茄酱'), toolFaces)
+check('the tool look keeps a brush or eraser in hand', /画笔|橡皮/.test(toolFaces), toolFaces)
 
 // --- a long phase keeps animating instead of falling back to idle ----------
-// Ketchup's own duration is a few seconds; watch well past it and require that
-// the pet is STILL on the phase motion rather than parked on the idle loop.
-let stillBusy = true
-for (let i = 0; i < 14; i++) {
+// Sample where the pen is, well past any one-shot's length. The sweep is a
+// generated curve, so a hand that stopped is the failure being looked for.
+let stillMoving = false
+let previous = null
+for (let i = 0; i < 12; i++) {
   await sleep(1000)
-  if ((await attr('data-motion')) !== 'Ketchup') { stillBusy = false; break }
+  const pen = await ev('JSON.stringify(window.__dshLive2dPet.sweepPosition())')
+  if (previous !== null && pen !== previous) { stillMoving = true; break }
+  previous = pen
 }
-check('the tool phase sustains its animation past one motion length', stillBusy,
-  'data-motion after 14s = ' + await attr('data-motion'))
+check('the tool phase sustains its animation past one motion length', stillMoving,
+  'pen samples ended at ' + previous)
 check('the sustained pet still reports kind=phase', (await ev('window.__dshLive2dPet.kind()')) === 'phase',
   'kind=' + await ev('window.__dshLive2dPet.kind()'))
 
@@ -92,12 +103,20 @@ check('pet stops sustaining once the tool returns', (await ev('window.__dshLive2
 // --- consecutive tool calls must not flap the phase ------------------------
 // Drive three calls back to back with a gap shorter than the debounce and
 // require the phase to have stayed on 'tool' the whole way.
-let flapped = false
-for (let i = 0; i < 3; i++) {
+// First pair: wait for the phase to actually ARRIVE before judging anything.
+// Polling a fixed 300ms sampled the value from before the SSE hop landed and
+// reported that latency as a flap.
+await api('/__emit?event=tools/pre-execute&name=read')
+await api('/__emit?event=tools/post-execute&name=read')
+const arrived = await until(async () => (await attr('data-phase')) === 'tool', 10000)
+check('a tool call reaches the pet', arrived, 'data-phase=' + await attr('data-phase'))
+// Now two more back-to-back pairs. The 1200ms debounce must absorb them, so
+// every sample taken right after a pair is still on 'tool'.
+let flapped = !arrived
+for (let i = 0; i < 2 && !flapped; i++) {
   await api('/__emit?event=tools/pre-execute&name=read')
   await api('/__emit?event=tools/post-execute&name=read')
-  await sleep(300)
-  if ((await attr('data-phase')) !== 'tool') { flapped = true; break }
+  if ((await attr('data-phase')) !== 'tool') flapped = true
 }
 check('consecutive tools do not flap the phase', !flapped, 'data-phase=' + await attr('data-phase'))
 await sleep(2000)

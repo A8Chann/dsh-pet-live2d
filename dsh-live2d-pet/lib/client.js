@@ -358,6 +358,8 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
      * the "a tool is running" state needed.
      */
     let sweepSpec = null;
+    /** Last pen position, for diagnostics. */
+    let sweepLast = null;
 
     const applyExpressionLayers = (core) => {
       if (expressionLayers.length === 0 && sweepSpec === null) return;
@@ -377,6 +379,7 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
           const stroke = (now % spec.strokeMs) / spec.strokeMs;
           // The "page" advances slowly, so successive lines sit lower down.
           const line = (now % spec.lineMs) / spec.lineMs;
+          sweepLast = { x: spec.ampX * (2 * stroke - 1), y: spec.ampY * (1 - 2 * line) };
           add(spec.x, spec.ampX * (2 * stroke - 1));
           add(spec.y, spec.ampY * (1 - 2 * line));
           // A small wobble so a stroke is not a perfectly straight ruler line,
@@ -794,6 +797,10 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       setSweep(spec) {
         sweepSpec = spec === undefined || spec === null ? null : spec;
       },
+      /** Diagnostic: where the procedural sweep currently has the pen. */
+      sweepPosition: () => (sweepSpec === null ? null : sweepLast),
+      /** Diagnostic: slot id -> chosen option label, as the panel shows it. */
+      slotSelections: () => slotSelectionsRef.current,
       /** Diagnostic: how many parameter writes the pinned set contributes. */
       expressionLayerCount: () => expressionLayers.length,
       /** Install the phase -> group resolver the sustain loop needs. */
@@ -1178,8 +1185,6 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
    */
   const FIDGET_SLOTS = ["rhand", "lhand", "mood", "cheek", "mouth"];
 
-  /** How long a fidget look lasts before the user's own choices come back. */
-  const FIDGET_HOLD_MS = 7000;
 
   /**
    * What a head pat may answer with (requirement #5).
@@ -1259,7 +1264,10 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
   const PHASE_MOTION = {
     thinking: "Idle",
     waiting: "Idle",
-    tool: "Ketchup",
+    // NOT Ketchup: that motion drives 蛋包饭 and 挤压 as well as the squeeze, so
+    // it painted omurice and ketchup during every tool call. The tool phase is
+    // carried by the 写本本 sweep instead.
+    tool: "Idle",
     done: "BubbleGum",
     failed: "SprayWater",
   };
@@ -1283,13 +1291,13 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
    * file name: this pack's 哭.exp3.json is declared as "大哭", so the obvious
    * "哭" never resolves and the failed phase silently pinned nothing.
    */
-  const PHASE_EXPRESSION = {
-    thinking: "呆呆眼",
-    waiting: "问号",
-    tool: "流汗",
-    done: "情绪花花",
-    failed: "大哭",
-  };
+  /**
+   * Built-in phase -> single expression. Empty on purpose: a phase now drives a
+   * whole LOOK (looksByPhase), and the old defaults fought it — 呆呆眼 for
+   * thinking survived the merge and stayed on screen through every session.
+   * Pets without looksByPhase simply get no phase expression.
+   */
+  const PHASE_EXPRESSION = {};
 
   /**
    * How many device pixels the canvas backing store gets per CSS pixel.
@@ -1477,12 +1485,17 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
      * parked the phone forever after any fidget.
      */
     const slotMotionRef = useRef(null);
+    /** slot id -> chosen option label, for the panel highlight and diagnostics. */
+    const slotSelectionsRef = useRef({});
     /**
      * Procedural sweeps, layered like the pins: what the user's slots ask for,
      * and what a live session phase asks for (the phase wins while it lasts).
      */
     const userSweepRef = useRef(null);
     const phaseSweepRef = useRef(null);
+    /** Slot ids the live phase owns; their user pins are dropped while it lasts. */
+    const phaseSlotsRef = useRef([]);
+    const slotByIdRef = useRef(new Map());
     const applySweep = useCallback(() => {
       motion.current.setSweep(phaseSweepRef.current ?? userSweepRef.current);
     }, []);
@@ -1633,6 +1646,7 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       phaseMotionRef.current = Object.assign({}, PHASE_MOTION, pet.motionsByPhase || {});
       phaseExpressionRef.current = Object.assign({}, PHASE_EXPRESSION, pet.expressionsByPhase || {});
       looksByPhaseRef.current = pet.looksByPhase || {};
+      slotByIdRef.current = new Map((pet.expressionSlots ?? []).map((slot) => [slot.id, slot]));
       phaseRef.current = "idle";
 
       fitRef.scale = typeof pet.scale === "number" && pet.scale > 0 ? pet.scale : 1;
@@ -1924,7 +1938,17 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
      * outfit comes straight back, without having been destroyed in between.
      */
     commitPinsRef.current = () => {
-      applyExpressions(Object.assign({}, userPinsRef.current, phasePinsRef.current));
+      const merged = Object.assign({}, userPinsRef.current);
+      // A phase owns the slots it names. Overriding key-by-key is not enough:
+      // 蛋包饭 and 画笔 are DIFFERENT expressions, so a user-chosen 蛋包饭 would
+      // stay pinned through the whole session and put omurice on screen.
+      for (const slotId of phaseSlotsRef.current) {
+        const slot = slotByIdRef.current.get(slotId);
+        for (const option of slot?.options ?? []) {
+          for (const name of option.expressions) delete merged[name];
+        }
+      }
+      applyExpressions(Object.assign(merged, phasePinsRef.current));
     };
 
     /**
@@ -1970,6 +1994,7 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
      * of asking the engine (which holds a single expression) to switch.
      * The 'none' option clears just this slot.
      */
+    const chooseSlotOptionRef = useRef(() => {});
     const chooseSlotOption = useCallback((slot, option) => {
       const next = Object.assign({}, pinnedRef.current);
       for (const candidate of slot.options) {
@@ -1999,6 +2024,10 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       applyExpressions(next);
       // A motion attached to a slot plays and PARKS on its last frame, so the
       // chosen look stays put instead of dropping back to the idle loop.
+      const chosen = Object.assign({}, slotSelectionsRef.current);
+      if (option === null) delete chosen[slot.id];
+      else chosen[slot.id] = option.label;
+      slotSelectionsRef.current = chosen;
       slotMotionRef.current = option !== null && typeof option.motion === "string" ? option.motion : null;
       if (option === null || option.sweep === undefined) userSweepRef.current = null;
       else userSweepRef.current = option.sweep;
@@ -2021,6 +2050,7 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       window.clearTimeout(expressionTimer.current);
       userPinsRef.current = {};
       phasePinsRef.current = {};
+      slotSelectionsRef.current = {};
       commitPinsRef.current();
       motion.current.resetToRest();
       say(pick(LINES.reset));
@@ -2062,6 +2092,7 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
           }
         }
         phasePinsRef.current = pins;
+        phaseSlotsRef.current = Object.keys(look ?? {});
         // A phase may also need a generated animation (the tool phase writes).
         let sweep = null;
         if (look !== undefined) {
@@ -2129,6 +2160,7 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
         source.close();
         phaseRef.current = "idle";
         phasePinsRef.current = {};
+        phaseSlotsRef.current = [];
         phaseSweepRef.current = null;
         applySweep();
         commitPinsRef.current();
@@ -2139,75 +2171,53 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
     }, [ready, applyExpressions]);
 
     // ---- idle fidget (#6) ----------------------------------------------
-    // After the pet has been left alone for a while it picks one or two
-    // SLOT options at random — a hand pose, a mood, a blush, a mouth — plays
-    // them, then puts back whatever the user had chosen. "摸鱼" is meant to look
-    // like the pet amusing itself, so it is drawn from the same vocabulary the
-    // panel exposes rather than from raw motion groups.
+    // After the pet has been left alone for a while it picks one or two SLOT
+    // options at random — a hand pose, a mood, a blush, a mouth — and KEEPS
+    // them. A 摸鱼 is the pet changing what it is doing, not a brief animation
+    // that snaps back: the next fidget switches again from wherever this one
+    // left off, and the look drifts while nobody is watching.
     //
-    // It never fires while a session phase is live: the pet is supposed to be
-    // following the assistant then, and a random fidget would read as it losing
-    // track.
+    // It goes through the ordinary slot path, so a fidget choice is
+    // indistinguishable from one the user made — same pins, same parked motion,
+    // same sweep — and the panel highlights it.
+    //
+    // It never fires while a session phase is live: the pet is following the
+    // assistant then, and the phase's look is fixed. A random fidget would read
+    // as the pet losing track of the conversation.
     useEffect(() => {
       if (!ready) return undefined;
       let timer = 0;
-      let revert = 0;
       const schedule = () => {
         window.clearTimeout(timer);
         const wait = IDLE_FIDGET_MIN_MS + Math.random() * (IDLE_FIDGET_MAX_MS - IDLE_FIDGET_MIN_MS);
         timer = window.setTimeout(fire, wait);
       };
-      /** The slot options the fidget is allowed to draw from (requirement #4). */
-      const pool = () => (pet?.expressionSlots ?? []).filter((slot) => FIDGET_SLOTS.includes(slot.id));
       const fire = () => {
         const quietFor = Date.now() - lastInteraction.current;
         const busy = motion.current.isPlaying() || dragState.current !== null;
+        // 'fixed' means a session owns the look; leave it alone.
         if (busy || quietFor < IDLE_FIDGET_MIN_MS || phaseRef.current !== "idle") {
           schedule();
           return;
         }
-        const slots = pool().filter((slot) => slot.options.length > 0);
+        const slots = (pet?.expressionSlots ?? [])
+          .filter((slot) => FIDGET_SLOTS.includes(slot.id) && slot.options.length > 0);
         if (slots.length === 0) {
           schedule();
           return;
         }
-        const restore = Object.assign({}, pinnedRef.current);
-        const next = Object.assign({}, restore);
-        // One or two slots at a time: "可以只选其中一个或者多个".
+        lastInteraction.current = Date.now();
+        // "可以只选其中一个或者多个": one or two slots at a time.
         const count = 1 + Math.floor(Math.random() * 2);
         const picked = slots.slice().sort(() => Math.random() - 0.5).slice(0, count);
-        let played = null;
         for (const slot of picked) {
           const option = slot.options[Math.floor(Math.random() * slot.options.length)];
-          for (const candidate of slot.options) {
-            for (const name of candidate.expressions) delete next[name];
-          }
-          for (const name of option.expressions) next[name] = true;
-          for (const name of option.requires ?? []) next[name] = true;
-          if (typeof option.motion === "string") played = option.motion;
+          chooseSlotOptionRef.current(slot, option);
         }
-        lastInteraction.current = Date.now();
-        applyExpressionsRef.current(next);
-        if (played !== null) {
-          // Parks on its last frame like any other slot motion, so hold on.
-          motion.current.playOnce(played, 0, { kind: "fidget", hold: true, persist: true });
-        }
-        window.clearTimeout(revert);
-        revert = window.setTimeout(() => {
-          revert = 0;
-          applyExpressionsRef.current(restore);
-          // Hand the body back to whatever the restored slots ask for; with no
-          // slot motion among them that is the idle loop.
-          if (slotMotionRef.current === null) motion.current.playIdle();
-          else motion.current.playOnce(slotMotionRef.current, 0, { kind: "slot", hold: true, persist: true });
-        }, FIDGET_HOLD_MS);
         schedule();
       };
       schedule();
-      return () => {
-        window.clearTimeout(timer);
-        window.clearTimeout(revert);
-      };
+      return () => window.clearTimeout(timer);
     }, [ready, pet]);
 
     // ---- click + drag -------------------------------------------------

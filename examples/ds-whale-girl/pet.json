@@ -19,7 +19,7 @@
       "idle": "Idle",
       "waiting": "Idle",
       "thinking": "Idle",
-      "tool": "Ketchup",
+      "tool": "Idle",
       "done": "BubbleGum",
       "failed": "SprayWater"
     },
@@ -458,24 +458,28 @@
     "looksByPhase": {
       "thinking": {
         "whale": "头顶鲸",
-        "eyes": "呆呆眼"
+        "lhand": "画笔"
       },
       "tool": {
         "whale": "放桌上",
         "rhand": "写本本",
+        "lhand": "画笔",
         "symbol": "流汗"
       },
       "waiting": {
         "whale": "头顶鲸",
+        "lhand": "橡皮",
         "symbol": "问号"
       },
       "done": {
         "whale": "头顶鲸",
+        "lhand": "橡皮",
         "mood": "开心兴奋",
         "ambient": "情绪花花"
       },
       "failed": {
         "whale": "放桌上",
+        "lhand": "画笔",
         "mood": "大哭",
         "symbol": "流汗"
       }
