@@ -14,4 +14,5 @@
 - 写验证 driver、断言"某效果是否真的生效"时，调用 skill：verification-signals
 - 改 Cubism 参数读写、动作/表达式、模型加载路径时，调用 skill：cubism-engine
 - 用 CDP 驱动浏览器、做点击穿透、等待模型加载、做 A/B 变体时，调用 skill：browser-cdp
+- 改 lib/client.js 的组件状态、加 useEffect/useCallback、出现"功能没反应但不报错"时，调用 skill：client-state
 - 改插件行为需同步文档，或要跑验证 / 提交前检查 / 重启服务时，调用 skill：docs-and-workflow
