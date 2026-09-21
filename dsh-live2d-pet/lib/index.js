@@ -20,10 +20,10 @@
  * DSH web server (apply) and by tests.
  */
 
-import { existsSync, readFileSync, realpathSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, realpathSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { extname, join, sep } from 'node:path'
+import { dirname, extname, join, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 export const name = 'live2d-pet'
@@ -649,6 +649,51 @@ function assetRoute() {
   }
 }
 
+/**
+ * Live2D 官方托管的 Cubism Core。
+ *
+ * 这份运行时是 Live2D 的专有软件，插件**不内置也不代下**（授权要求），但
+ * **用户的机器可以从 Live2D 自己的 CDN 取** —— 官方 SDK 文档就是让使用者在页面里
+ * 引这一行。取到之后缓存进 runtimeDir()，之后离线也能用。
+ *
+ * 有了这条兜底，从插件市场装完就能直接用，不必先去找 Cubism Core 放哪。
+ */
+const CORE_CDN = 'https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js'
+
+/** 本地没有 Core 时：去 Live2D 官方 CDN 拿一份，顺手缓存到本地。 */
+async function fetchCoreFromCdn(response, cachePath) {
+  try {
+    const upstream = await fetch(CORE_CDN, { redirect: 'follow' })
+    if (!upstream.ok) throw new Error('HTTP ' + upstream.status)
+    const bytes = Buffer.from(await upstream.arrayBuffer())
+    // 拿回来的必须真是一份 JS：否则多半是被网关/登录页替换了。
+    if (bytes.length < 10000 || !bytes.includes('Live2DCubismCore')) {
+      throw new Error('unexpected payload: ' + bytes.length + ' bytes')
+    }
+    try {
+      mkdirSync(dirname(cachePath), { recursive: true })
+      writeFileSync(cachePath, bytes)
+    } catch {
+      /* 缓存写不进去不影响这一次：直接把它发出去 */
+    }
+    response.writeHead(200, {
+      'content-type': 'text/javascript; charset=utf-8',
+      'content-length': String(bytes.length),
+      'cache-control': 'public, max-age=86400',
+      'x-live2d-core-source': 'cdn',
+    })
+    response.end(bytes)
+  } catch (error) {
+    sendJson(response, 502, {
+      ok: false,
+      error: 'cubism-core-unavailable',
+      detail: String(error?.message ?? error),
+      hint: 'Cubism Core 是 Live2D 的专有运行时，本插件不内置。可以让这台机器能访问 '
+        + CORE_CDN + '，或自行下载后放到 ' + join(runtimeDir(), 'live2dcubismcore.min.js'),
+    })
+  }
+}
+
 /** The runtime route (user-supplied Cubism Core + plugin vendor bundle). */
 function runtimeRoute() {
   const vendorBase = join(pluginRoot(), 'lib')
@@ -688,6 +733,11 @@ function runtimeRoute() {
       }
       const file = join(base, runtimeName)
       if (!existsSync(file)) {
+        // Cubism Core 走官方 CDN 兜底：用户不用再自己找文件。
+        if (runtimeName === 'live2dcubismcore.min.js') {
+          void fetchCoreFromCdn(response, file)
+          return
+        }
         sendJson(response, 404, { ok: false, error: 'runtime-file-missing', file: runtimeName })
         return
       }

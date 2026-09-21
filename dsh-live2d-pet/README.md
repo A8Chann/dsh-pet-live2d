@@ -33,15 +33,21 @@ dsh plugin --profile web add "link:<本目录绝对路径>"
 
 装完 **重启 `dsh web`**（新 bundle 不参与热重载）。
 
-## 前置：Cubism Core 运行时（必做）
+## Cubism Core 运行时（一般不用管）
 
-Live2D 的专有许可**不允许再分发** Core 运行时，所以本插件**永不内置、永不代下**它。请自行从 [Live2D 官方 Cubism SDK for Web](https://www.live2d.com/download/cubism-sdk/download-web/) 取得 `live2dcubismcore.min.js`，放到：
+Live2D 的专有许可**不允许再分发** Core 运行时，所以本插件**不内置**它 ——
+但也不需要你去找文件：**宿主半区会在本地缺失时，向 Live2D 自己的 CDN 取一份**
+（`https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js`，
+官方 SDK 文档就是让使用者在页面里引这一行；这个地址带 `Access-Control-Allow-Origin: *`），
+取到后**缓存到本地**，之后离线也能用：
 
 ```
 %DSH_HOME%\pets\.runtime\live2dcubismcore.min.js
 ```
 
-缺这个文件时，宠物位置会显示一张安装指引卡（不会崩，也不影响其它插件）。本机已放好。
+想完全离线就自己从 [Live2D 官方 Cubism SDK for Web](https://www.live2d.com/download/cubism-sdk/download-web/)
+下载后放到上面那个路径，插件会优先用它。两边都拿不到时（无网络 + 无本地文件），
+宠物位置会显示一张安装指引卡，接口返回 502 并带上该地址和落盘路径（不会崩，也不影响其它插件）。
 
 ## v1.4 UI 重构
 
