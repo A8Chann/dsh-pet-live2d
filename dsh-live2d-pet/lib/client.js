@@ -2145,6 +2145,18 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
 
     const [pinned, setPinned] = useState({});
     const [dragging, setDragging] = useState(false);
+    /**
+     * 宠物最多能往视口下边沉多少。
+     *
+     * 下界原来是 0（脚一贴到屏幕底边就不许再往下）。可模型的画布有透明边距，
+     * 角色看起来是"悬空"的，用户要把它再往下压一点、让脚真的压出屏幕底边。
+     * 按尺寸取比例：大的宠物能压出去更多，小的不至于被推没。
+     */
+    const BOTTOM_OVERHANG_RATIO = 0.4;
+    const BOTTOM_OVERHANG_MAX = 400;
+    const clampBottom = (value, width) =>
+      Math.max(-Math.round(width * BOTTOM_OVERHANG_RATIO), Math.min(window.innerHeight - 60, value));
+
     const [petId, setPetId] = useState(() => loadStored().petId);
     const [size, setSize] = useState(() => {
       const stored = loadStored().size;
@@ -2154,7 +2166,8 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       const stored = loadStored();
       return {
         right: typeof stored.right === "number" ? Math.max(0, stored.right) : 24,
-        bottom: typeof stored.bottom === "number" ? Math.max(0, stored.bottom) : 0,
+        // 存档里可能是负的（用户把它压到了屏幕下边），别把它夹回 0。
+        bottom: typeof stored.bottom === "number" ? Math.max(-BOTTOM_OVERHANG_MAX, stored.bottom) : 0,
       };
     });
 
@@ -3215,7 +3228,7 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
         const width = sizeRef.current;
         setPos({
           right: Math.max(0, Math.min(window.innerWidth - width, state.right - dx)),
-          bottom: Math.max(0, Math.min(window.innerHeight - 60, state.bottom - dy)),
+          bottom: clampBottom(state.bottom - dy, width),
         });
       };
       const onUp = () => {

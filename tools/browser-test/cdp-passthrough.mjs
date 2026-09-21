@@ -94,6 +94,19 @@ await sleep(400)
 const afterCornerDrag = await ev('document.querySelector("[data-dsh-live2d-pet]").style.right')
 check('dragging from the transparent margin does not move the pet', before === afterCornerDrag, before + ' -> ' + afterCornerDrag)
 
+// 从角色身上往下拖：必须能拖到屏幕下边（原来下界是 0，脚一贴底就动不了了）。
+// 模型的画布有透明边距，角色看着悬空，用户要把它再往下压一点。
+const bottomBefore = await ev('document.querySelector("[data-dsh-live2d-pet]").style.bottom')
+for (let i = 1; i <= 6; i += 1) {
+  await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: info.x + inside.lx, y: info.y + inside.ly, button: 'left', buttons: 1, clickCount: 1 })
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: info.x + inside.lx, y: info.y + inside.ly + i * 60, button: 'left', buttons: 1 })
+  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: info.x + inside.lx, y: info.y + inside.ly + i * 60, button: 'left', buttons: 0, clickCount: 1 })
+  await sleep(160)
+}
+const bottomAfter = await ev('document.querySelector("[data-dsh-live2d-pet]").style.bottom')
+check('可以把宠物往下拖到屏幕底边之外', Number.parseFloat(bottomAfter) < -20,
+  'bottom ' + bottomBefore + ' -> ' + bottomAfter)
+
 const bad = results.filter(r => !r.ok)
 console.log((bad.length === 0 ? 'OK' : 'FAILED') + '  ' + (results.length - bad.length) + '/' + results.length + ' checks passed')
 ws.close()
