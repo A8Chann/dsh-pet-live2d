@@ -510,7 +510,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         const dt = mouthEasedAt === 0 ? 16 : Math.max(1, now - mouthEasedAt);
         mouthEasedAt = now;
         // Exponential, so it is smooth and frame-rate independent.
-        const k = 1 - Math.exp(-dt / MOUTH_EASE_MS);
+        const k = 1 - Math.exp(-dt / TUNING.mouthEaseMs);
         mouthFollow += (mouthTargetFollow - mouthFollow) * k;
         mouthLean += (mouthTargetLean - mouthLean) * k;
         if (Math.abs(mouthTargetFollow - mouthFollow) < 0.002) mouthFollow = mouthTargetFollow;
@@ -524,7 +524,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         const left = parameterIndex(core, EYE_L_PARAM);
         const right = parameterIndex(core, EYE_R_PARAM);
         const now = (typeof performance !== "undefined" ? performance.now() : Date.now());
-        if (blinkAt === 0) blinkAt = now + BLINK_MIN_MS + Math.random() * (BLINK_MAX_MS - BLINK_MIN_MS);
+        if (blinkAt === 0) blinkAt = now + TUNING.blinkMinMs + Math.random() * (TUNING.blinkMaxMs - TUNING.blinkMinMs);
         if (blinkStart === 0 && now >= blinkAt) { blinkStart = now; blinkCount += 1; }
         if (blinkStart !== 0) {
           const elapsed = now - blinkStart;
@@ -535,7 +535,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           else if (elapsed < shut + BLINK_OPEN_MS) open = (elapsed - shut) / BLINK_OPEN_MS;
           else {
             blinkStart = 0;
-            blinkAt = now + BLINK_MIN_MS + Math.random() * (BLINK_MAX_MS - BLINK_MIN_MS);
+            blinkAt = now + TUNING.blinkMinMs + Math.random() * (TUNING.blinkMaxMs - TUNING.blinkMinMs);
           }
           if (open < 1) {
             // Multiply rather than assign: a pinned expression may already have
@@ -583,17 +583,17 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           const openAt = parameterIndex(core, MOUTH_OPEN_PARAM);
           const formAt = parameterIndex(core, MOUTH_FORM_PARAM);
           if (openAt >= 0) {
-            add(MOUTH_OPEN_PARAM, mouthFollow * (params.maximumValues[openAt] - params.minimumValues[openAt]) * MOUTH_FOLLOW);
+            add(MOUTH_OPEN_PARAM, mouthFollow * (params.maximumValues[openAt] - params.minimumValues[openAt]) * TUNING.mouthFollow);
           }
           // Scale the author's own open-mouth direction by how high the pointer
           // is: up leans the shape the way selfie.motion3.json does, down leans
           // it the other way.
-          add(MOUTH_FORM_PARAM, mouthLean * MOUTH_DROP);
+          add(MOUTH_FORM_PARAM, mouthLean * TUNING.mouthDrop);
           // The CONTRIBUTION, not the absolute value: the absolute one also
           // carries the pose's own resting shape, which is not ours to assert.
           mouthWritten = {
-            open: Number((mouthFollow * MOUTH_FOLLOW).toFixed(3)),
-            form: Number((mouthLean * MOUTH_DROP).toFixed(3)),
+            open: Number((mouthFollow * TUNING.mouthFollow).toFixed(3)),
+            form: Number((mouthLean * TUNING.mouthDrop).toFixed(3)),
           };
         }
         if (sweepSpec !== null) {
@@ -1279,8 +1279,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           // A small dead zone, so hand tremor near the centre does not make the
           // eyes wander, and a linear ramp beyond it up to full deflection.
           const size = Math.abs(value);
-          if (size <= GAZE_DEADZONE) return 0;
-          const t = Math.min(1, (size - GAZE_DEADZONE) / (1 - GAZE_DEADZONE));
+          if (size <= TUNING.gazeDeadzone) return 0;
+          const t = Math.min(1, (size - TUNING.gazeDeadzone) / (1 - TUNING.gazeDeadzone));
           return value < 0 ? -t : t;
         };
         const nx = shape((x - half.x) / half.x);
@@ -1646,8 +1646,48 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   /** The active pet's fit adjustments (manifest live2d.scale / translate). */
   const fitRef = { scale: 1, x: 0, y: 0 };
 
-  /** How far outside the stage the pointer still steers the gaze, in px. */
-  const GAZE_RANGE = 240;
+  /**
+   * 可调参数：设置面板能改的都在这里，默认值就是原来写死的那些。
+   *
+   * 放模块作用域是故意的 —— 控制器每帧读它，组件（设置面板）直接改它，
+   * 不需要再穿一层 setter。写进去下一帧就生效。
+   */
+  const TUNING = {
+    /** 指针离舞台多远仍能牵引视线，px。 */
+    gazeRange: 240,
+    /** 中心附近被忽略的比例（死区）：没有它，手抖一像素眼珠就动。 */
+    gazeDeadzone: 0.12,
+    /** 嘴部：跟随强度 / 形状强度 / 缓动时间常数（ms）。 */
+    mouthFollow: 0.65,
+    mouthDrop: 0.7,
+    mouthEaseMs: 170,
+    /** 眨眼间隔范围（ms）。 */
+    blinkMinMs: 2200,
+    blinkMaxMs: 6400,
+  };
+
+  /** 出厂值快照（「恢复默认」用）。 */
+  const TUNING_DEFAULTS = Object.freeze(Object.assign({}, TUNING));
+
+  /**
+   * 可调项的描述：设置面板按它渲染，读写都按 key 走。
+   *
+   * min/max 也是**校验边界** —— 本地存档里的值会被夹进来，免得一个坏值
+   * （比如死区 5）把宠物彻底冻住。
+   */
+  const TUNING_FIELDS = [
+    { key: "gazeDeadzone", label: "注视死区", min: 0, max: 0.6, step: 0.01 },
+    { key: "gazeRange", label: "注视范围 px", min: 0, max: 800, step: 10 },
+    { key: "mouthFollow", label: "嘴跟随意", min: 0, max: 1, step: 0.05 },
+    { key: "mouthDrop", label: "嘴形强度", min: -1, max: 1, step: 0.05 },
+    { key: "mouthEaseMs", label: "嘴缓动 ms", min: 30, max: 800, step: 10 },
+    { key: "blinkMinMs", label: "眨眼最短 ms", min: 600, max: 20000, step: 100 },
+    { key: "blinkMaxMs", label: "眨眼最长 ms", min: 800, max: 40000, step: 100 },
+  ];
+  const TUNING_KEY = "dsh-pet-live2d.settings.v1";
+
+  /** 把存档里的值夹进合法区间 —— 坏值不能让宠物动不了。 */
+  const clampSetting = (field, value) => Math.min(field.max, Math.max(field.min, value));
 
   /** How long a tap may move, in px, before it counts as a drag. */
   const DRAG_SLOP_PX = 4;
@@ -1669,7 +1709,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
    * Without it the eyes twitch on every pixel of hand tremor; with it the gaze
    * only starts moving once the pointer has genuinely left the middle.
    */
-  const GAZE_DEADZONE = 0.12;
+
 
   /** The model's mouth-opening parameter. */
   const MOUTH_OPEN_PARAM = "ParamMouthOpenY";
@@ -1689,7 +1729,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   const MOUTH_FORM_PARAM = "ParamMouthForm";
 
   /** How far POSITIVE the form is driven at full mouth opening. */
-  const MOUTH_DROP = 0.7;
+
 
   /**
    * Time constant for the mouth easing, in milliseconds.
@@ -1699,7 +1739,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
    * out of range snapped it open and shut. ~170ms reads as a reaction rather
    * than a cut.
    */
-  const MOUTH_EASE_MS = 170;
+
 
   /**
    * Blinking, driven by US rather than by the engine.
@@ -1722,8 +1762,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   const EYE_L_PARAM = "ParamEyeLOpen";
   const EYE_R_PARAM = "ParamEyeROpen";
   /** Gap between blinks: a random interval in this range. */
-  const BLINK_MIN_MS = 2200;
-  const BLINK_MAX_MS = 6400;
+
+
   /** Closing, shut, and opening durations. */
   const BLINK_CLOSE_MS = 70;
   const BLINK_HOLD_MS = 45;
@@ -1735,7 +1775,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
    * Deliberately not 1: the mouth should read as following the cursor, not as
    * being permanently wide open whenever the pointer leaves the middle.
    */
-  const MOUTH_FOLLOW = 0.65;
+
 
   const FIDGET_SLOTS = ["rhand", "lhand", "mood", "cheek", "mouth", "eyes"];
 
@@ -2146,6 +2186,13 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       return () => window.cancelAnimationFrame(id);
     }, [panelOpen]);
     const [tab, setTab] = useState("motions");
+    /**
+     * 设置面板的改动版本号。
+     *
+     * 真正的值写在 TUNING 上（控制器每帧直接读它，不走 React 状态），
+     * 这里只用来**触发重渲染**，让面板上的数字跟着动。
+     */
+    const [settingsRev, setSettingsRev] = useState(0);
 
     const [pinned, setPinned] = useState({});
     const [dragging, setDragging] = useState(false);
@@ -2235,6 +2282,49 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         if (alive) setError(String((reason && reason.message) || reason));
       });
       return () => { alive = false; };
+    }, []);
+
+    /**
+     * 启动时把存档里的可调项读回来。
+     *
+     * 每个值都按 TUNING_FIELDS 的区间夹一遍：手改坏了存档也只是回到合法范围，
+     * 不会出现「死区 5」这种把宠物彻底冻住的配置。
+     */
+    useEffect(() => {
+      let saved = null;
+      try {
+        saved = JSON.parse(window.localStorage.getItem(TUNING_KEY) ?? "null");
+      } catch {
+        saved = null;
+      }
+      if (saved === null || typeof saved !== "object") return;
+      let restored = false;
+      for (const field of TUNING_FIELDS) {
+        const value = saved[field.key];
+        if (typeof value !== "number" || !Number.isFinite(value)) continue;
+        TUNING[field.key] = clampSetting(field, value);
+        restored = true;
+      }
+      if (restored) setSettingsRev((n) => n + 1);
+    }, []);
+
+    /**
+     * 改一项可调参数：写进 TUNING（下一帧生效）、存档、重渲染。
+     *
+     * 直接改 TUNING 而不是走 React 状态是刻意的：控制器每帧读它，几百毫秒的
+     * 状态传播延迟会让滑杆手感很黏。
+     */
+    const applyTuning = useCallback((patch) => {
+      for (const [key, value] of Object.entries(patch)) {
+        const field = TUNING_FIELDS.find((entry) => entry.key === key);
+        TUNING[key] = field === undefined ? value : clampSetting(field, value);
+      }
+      try {
+        window.localStorage.setItem(TUNING_KEY, JSON.stringify(TUNING));
+      } catch {
+        /* 无痕模式之类：这次改动仍然生效，只是下次不记得 */
+      }
+      setSettingsRev((n) => n + 1);
     }, []);
 
     // ---- model boot ---------------------------------------------------
@@ -2492,8 +2582,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         const rect = stage.getBoundingClientRect();
         const x = event.clientX - rect.left;
         const y = event.clientY - rect.top;
-        const near = x >= -GAZE_RANGE && y >= -GAZE_RANGE
-          && x <= rect.width + GAZE_RANGE && y <= rect.height + GAZE_RANGE;
+        const near = x >= -TUNING.gazeRange && y >= -TUNING.gazeRange
+          && x <= rect.width + TUNING.gazeRange && y <= rect.height + TUNING.gazeRange;
         if (near) {
           resting = false;
           motion.current.updatePointer(x, y, rect.width, rect.height);
@@ -3398,6 +3488,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
             // (glasses, stickers, hair, cloth, claws, desk, hands, then eyes,
             // mood, mouth, symbols, ambience, blush, desk actions).
             h("button", { type: "button", ...(tab === "slots" ? { "data-on": "" } : {}), onClick: () => setTab("slots") }, "装扮 " + (pet.expressionSlots ?? []).length),
+            h("button", { type: "button", ...(tab === "settings" ? { "data-on": "" } : {}), onClick: () => setTab("settings") }, "设置"),
           ),
           h("div", { "data-body": "" }, tab === "slots"
             // Dress-up slots: one choice each, and choices in different slots
@@ -3431,6 +3522,38 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
                   ),
                 );
               })
+            : tab === "settings"
+            // 可调项。值是 TUNING 上的活值，滑杆直接写它（见 applyTuning）。
+            ? h("div", { "data-settings": "", "data-rev": String(settingsRev) },
+                h("div", { "data-group": "", "data-setting": "tuning" },
+                  h("span", null, "手感（指针 / 嘴 / 眨眼）"),
+                  h("div", { "data-chips": "" },
+                    TUNING_FIELDS.map((field) => h("label", {
+                      key: field.key,
+                      "data-field": field.key,
+                      style: { display: "flex", alignItems: "center", gap: 6, width: "100%", fontSize: 11, padding: "2px 0" },
+                    },
+                    h("span", { style: { flex: "0 0 96px", opacity: .85 } }, field.label),
+                    h("input", {
+                      type: "range",
+                      min: field.min,
+                      max: field.max,
+                      step: field.step,
+                      value: TUNING[field.key],
+                      "data-input": field.key,
+                      style: { flex: 1 },
+                      onChange: (event) => applyTuning({ [field.key]: Number(event.target.value) }),
+                    }),
+                    h("code", { "data-value": field.key, style: { flex: "0 0 52px", textAlign: "right" } }, String(TUNING[field.key])),
+                    )),
+                    h("button", {
+                      type: "button",
+                      "data-reset": "tuning",
+                      onClick: () => applyTuning(Object.assign({}, TUNING_DEFAULTS)),
+                    }, "恢复默认"),
+                  ),
+                ),
+              )
             : tab === "motions"
             ? pet.motions.filter((entry) => !(pet.hiddenMotions ?? []).includes(entry.group))
               .map((entry) => h("div", { "data-group": "", key: entry.group },

@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { rmSync } from 'node:fs'
 import { browserPath, PROFILES, BASE } from './paths.mjs'
-import { waitReady } from './ready.mjs'
+import { waitReady, openPanel } from './ready.mjs'
 import { join } from 'node:path'
 const EDGE = browserPath()
 const PORT = 9381
@@ -264,6 +264,35 @@ check('嘴也跟着回到中位', mouthAfterLeave.open < 0.05 && Math.abs(mouthA
 // 再动一下就恢复跟随。
 await gazeAt(0.75, 0.5)
 check('指针回来后重新跟随', (await gaze()) === 'pointer', 'data-gaze=' + await gaze())
+
+// --- 设置面板：改「注视死区」必须立刻改变手感，并记进 localStorage -----------
+await openPanel(ev)
+await sleep(700)
+await ev('(() => { const bs = Array.from(document.querySelectorAll("[data-dsh-live2d-pet] [data-tabs] button"));'
+  + ' const b = bs.find((x) => x.textContent === "设置"); if (b) b.click(); return !!b })()')
+await sleep(600)
+const hasSlider = await ev('!!document.querySelector("[data-dsh-live2d-pet] [data-input=\'gazeDeadzone\']")')
+check('设置页有「注视死区」滑杆', hasSlider === true)
+// React 的受控 input 认的是原生 setter 派发的 input 事件，直接改 .value 会被它忽略。
+const setSlider = (key, value) => ev('(() => {'
+  + ' const el = document.querySelector("[data-dsh-live2d-pet] [data-input=\'' + key + '\']");'
+  + ' if (!el) return false;'
+  + ' const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;'
+  + ' setter.call(el, ' + JSON.stringify(String(value)) + ');'
+  + ' el.dispatchEvent(new Event("input", { bubbles: true }));'
+  + ' return true })()')
+check('把死区拉到 0.5', (await setSlider("gazeDeadzone", 0.5)) === true)
+await sleep(400)
+const stored = JSON.parse(await ev('window.localStorage.getItem("dsh-pet-live2d.settings.v1") ?? "null"'))
+check('改动写进了 localStorage', stored !== null && stored.gazeDeadzone === 0.5, JSON.stringify(stored))
+// 死区 0.5 之后，之前能动的那一下现在应该纹丝不动。
+const nudgedAfter = await gazeAt(0.60, 0.5)
+check('死区生效：同一个位置现在不再牵引视线', Math.abs(nudgedAfter.x) < 0.01, JSON.stringify(nudgedAfter))
+// 恢复默认之后再拉一下，应该又能动了。
+await ev('(() => { const b = document.querySelector("[data-dsh-live2d-pet] [data-reset=\'tuning\']"); if (b) b.click(); return !!b })()')
+await sleep(400)
+const restored = await gazeAt(0.60, 0.5)
+check('「恢复默认」把死区放回 0.12（又能动了）', Math.abs(restored.x) > 0.01, JSON.stringify(restored))
 
 const bad = results.filter((r) => !r.ok)
 console.log((bad.length === 0 ? 'OK' : 'FAILED') + '  ' + (results.length - bad.length) + '/' + results.length + ' checks passed')

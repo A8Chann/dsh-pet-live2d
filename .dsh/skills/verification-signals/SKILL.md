@@ -94,6 +94,18 @@ if (wanted.every(([k, v]) => at(now, k) === v)) return now
 这条是 2026-09 花了整整一轮才钉死的：同一个"吹泡泡糖切不回去"的现象，
 两次都因为**量错地方**而得出错误结论。
 
+## 驱动 React 的受控输入：先改值再派发 input
+
+想从 driver 里推动滑杆/文本框，直接 el.value = x 会被 React 忽略（它的 value tracker
+认为值没变）。绕过 tracker 的标准写法：
+
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+    setter.call(el, '0.5')
+    el.dispatchEvent(new Event('input', { bubbles: true }))
+
+而且别只断言「值变了」——**要断言行为跟着变了**：改完注视死区之后，同一个指针位置的
+gazeTarget() 必须从「有值」变成 0。只验 UI 状态的话，改了没接上线照样绿。
+
 ## 状态切换要连做两轮
 
 "还原/快照"这类逻辑第一轮经常是对的，**第二轮才炸**：第一轮快照记的是初始值，
