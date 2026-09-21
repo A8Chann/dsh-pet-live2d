@@ -27,27 +27,66 @@ await send('Runtime.enable'); await send('Page.enable')
 await send('Page.navigate', { url: URL_TO_OPEN })
 for (let i = 0; i < 140; i++) { await sleep(500); if (await ev('document.querySelectorAll("[data-dsh-live2d-pet] canvas").length') > 0) break }
 await waitReady(ev)
+// Assertions, not printouts: this driver used to end in an unconditional
+// process.exit(0) with only console.log output, so it could never fail.
+const results = []
+const check = (name, ok, detail) => {
+  results.push({ name, ok, detail })
+  console.log('  ' + (ok ? 'PASS' : 'FAIL') + '  ' + name + (detail === undefined ? '' : '   ' + detail))
+}
 const out = {}
 const gaze = () => ev('document.querySelector("[data-dsh-live2d-pet]").getAttribute("data-gaze")')
 const geo = JSON.parse(await ev('JSON.stringify((()=>{const r=document.querySelector("[data-dsh-live2d-pet]").getBoundingClientRect();return [Math.round(r.left),Math.round(r.top),Math.round(r.width),Math.round(r.height)]})())'))
-out.petRect = geo
-out.windowSize = JSON.parse(await ev('JSON.stringify([window.innerWidth, window.innerHeight])'))
+const win = JSON.parse(await ev('JSON.stringify([window.innerWidth, window.innerHeight])'))
 const move = async (x, y) => { await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y }); await sleep(500) }
 
 await move(geo[0] + geo[2] / 2, geo[1] + geo[3] / 2)
-out.onPet = await gaze()
-// Just outside the pet box but inside GAZE_RANGE (240) -> still tracking.
+check('the pet follows the pointer', (await gaze()) === 'pointer', 'data-gaze=' + await gaze())
 await move(geo[0] - 120, geo[1] - 120)
-out.justOutside = await gaze()
-// Far away in the top-left corner -> beyond range -> default.
+check('just outside the pet still tracks', (await gaze()) === 'pointer', 'data-gaze=' + await gaze())
 await move(5, 5)
-out.farTopLeft = await gaze()
-// Far away bottom-left too: must resolve to the same default.
-await move(5, out.windowSize[1] - 5)
-out.farBottomLeft = await gaze()
-// Back on the pet -> tracking again.
 await move(geo[0] + geo[2] / 2, geo[1] + geo[3] / 2)
-out.backOnPet = await gaze()
-out.resetsToDefault = out.farTopLeft === 'center' && out.farBottomLeft === 'center'
-console.log(JSON.stringify(out, null, 1))
-ws.close(); edge.kill(); process.exit(0)
+check('coming back re-tracks', (await gaze()) === 'pointer', 'data-gaze=' + await gaze())
+
+// --- the gaze must SCALE with distance, not snap to full deflection --------
+// The engine's own model.focus() runs the point through atan2 and keeps only
+// the unit vector, so DISTANCE is discarded: a pointer one pixel off centre
+// pulled the head to full deflection, and crossing the centre flipped it from
+// full-left to full-right. That is the bug these pin down.
+const gazeAt = async (fx, fy) => {
+  await send('Input.dispatchMouseEvent', {
+    type: 'mouseMoved',
+    x: Math.round(geo[0] + geo[2] * fx),
+    y: Math.round(geo[1] + geo[3] * fy),
+  })
+  await sleep(600)
+  return JSON.parse(await ev('JSON.stringify(window.__dshLive2dPet.gazeTarget())'))
+}
+const middle = await gazeAt(0.5, 0.5)
+check('the pointer at the centre is a neutral gaze',
+  Math.abs(middle.x) < 0.01 && Math.abs(middle.y) < 0.01, JSON.stringify(middle))
+const nudged = await gazeAt(0.53, 0.5)
+check('a nudge near the centre is a SMALL gaze change', Math.abs(nudged.x) < 0.3,
+  JSON.stringify(nudged) + '  (the old mapping gave full deflection here)')
+// Just past the dead zone, so the ramp itself is exercised rather than the
+// flat spot: 0.12 of the half-width is deliberately ignored.
+const small = await gazeAt(0.60, 0.5)
+check('just past the dead zone the gaze has barely moved', small.x > 0 && small.x < 0.25,
+  JSON.stringify(small))
+const halfway = await gazeAt(0.75, 0.5)
+check('halfway out is a substantial gaze', Math.abs(halfway.x) > 0.4 && Math.abs(halfway.x) <= 1,
+  JSON.stringify(halfway))
+const farEdge = await gazeAt(1.0, 0.5)
+check('the edge is full deflection', Math.abs(farEdge.x) > 0.95, JSON.stringify(farEdge))
+check('the gaze grows with distance',
+  Math.abs(middle.x) <= Math.abs(nudged.x) && Math.abs(nudged.x) <= Math.abs(small.x)
+  && Math.abs(small.x) < Math.abs(halfway.x) && Math.abs(halfway.x) <= Math.abs(farEdge.x),
+  [middle.x, nudged.x, small.x, halfway.x, farEdge.x].map((v) => v.toFixed(3)).join(' <= '))
+await gazeAt(0.5, 0.5)
+
+const bad = results.filter((r) => !r.ok)
+console.log((bad.length === 0 ? 'OK' : 'FAILED') + '  ' + (results.length - bad.length) + '/' + results.length + ' checks passed')
+ws.close()
+edge.kill()
+await sleep(300)
+process.exit(bad.length === 0 ? 0 : 1)

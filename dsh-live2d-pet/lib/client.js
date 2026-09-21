@@ -358,6 +358,8 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
      * the "a tool is running" state needed.
      */
     let sweepSpec = null;
+    /** Last normalized gaze target, for diagnostics. */
+    let gazeTarget = { x: 0, y: 0 };
     /** Last pen position, for diagnostics. */
     let sweepLast = null;
 
@@ -836,9 +838,50 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       resetToRest,
       /** Diagnostic: the session phase currently being sustained, if any. */
       sustained: () => sustainPhase,
-      updatePointer(x, y) {
-        if (model !== null) model.focus(x, y);
+      /**
+       * Aim the gaze at a point given in stage pixels.
+       *
+       * The engine's own model.focus(x, y) CANNOT be used for this. Its
+       * implementation is:
+       *
+       *   const i = x / originalWidth * 2 - 1
+       *   const n = y / originalHeight * 2 - 1
+       *   const o = Math.atan2(n, i)
+       *   focusController.focus(Math.cos(o), -Math.sin(o))
+       *
+       * It converts the point into a DIRECTION and then takes the unit vector, so
+       * the DISTANCE from the centre is thrown away entirely. Every position,
+       * however close to the middle, pulls the head to full deflection — and
+       * crossing the centre flips the direction by 180 degrees, snapping the gaze
+       * from full-left to full-right. That is why a millimetre of mouse movement
+       * near the middle swung the whole body.
+       *
+       * Passing the normalized offset straight to the focus controller keeps the
+       * magnitude, so the gaze is proportional to how far the pointer actually is.
+       */
+      updatePointer(x, y, width, height) {
+        if (model === null) return;
+        const half = { x: Math.max(1, width / 2), y: Math.max(1, height / 2) };
+        const shape = (value) => {
+          // A small dead zone, so hand tremor near the centre does not make the
+          // eyes wander, and a linear ramp beyond it up to full deflection.
+          const size = Math.abs(value);
+          if (size <= GAZE_DEADZONE) return 0;
+          const t = Math.min(1, (size - GAZE_DEADZONE) / (1 - GAZE_DEADZONE));
+          return value < 0 ? -t : t;
+        };
+        const nx = shape((x - half.x) / half.x);
+        // Screen y grows downward; the controller wants up-positive.
+        const ny = shape((y - half.y) / half.y);
+        gazeTarget = { x: nx, y: ny };
+        try {
+          model.internalModel?.focusController?.focus(nx, -ny);
+        } catch {
+          /* an engine without a focus controller simply does not follow */
+        }
       },
+      /** Diagnostic: the normalized gaze target the pointer last produced. */
+      gazeTarget: () => gazeTarget,
       setExpressionApplier(fn) {
         applyExpression = typeof fn === "function" ? fn : null;
       },
@@ -1190,6 +1233,14 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
    * NOT the outfit slots: a random 摸鱼 that swapped her glasses or put a whale
    * on her head would undo a choice the user made on purpose.
    */
+  /**
+   * Fraction of the half-width/height around the centre that is ignored.
+   *
+   * Without it the eyes twitch on every pixel of hand tremor; with it the gaze
+   * only starts moving once the pointer has genuinely left the middle.
+   */
+  const GAZE_DEADZONE = 0.12;
+
   const FIDGET_SLOTS = ["rhand", "lhand", "mood", "cheek", "mouth"];
 
 
@@ -1876,7 +1927,7 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
         const rect = stage.getBoundingClientRect();
         // The DEFAULT resting target is the model's own centre — not the last
         // pointer position — so the pet always settles back to a neutral gaze.
-        motion.current.updatePointer(rect.width / 2, rect.height / 2);
+        motion.current.updatePointer(rect.width / 2, rect.height / 2, rect.width, rect.height);
         reportGaze("center");
       };
       let resting = false;
@@ -1890,7 +1941,7 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
           && x <= rect.width + GAZE_RANGE && y <= rect.height + GAZE_RANGE;
         if (near) {
           resting = false;
-          motion.current.updatePointer(x, y);
+          motion.current.updatePointer(x, y, rect.width, rect.height);
           reportGaze("pointer");
         } else if (!resting) {
           resting = true;
