@@ -1625,38 +1625,58 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
    * 跟着宿主走才不会一边好看一边瞎。
    */
   const SETTINGS_SEL = "[data-pet-settings]";
-  const SETTINGS_CSS = [
-    SETTINGS_SEL + "{font:400 12px/1.7 inherit;color:inherit;max-width:600px}",
-    SETTINGS_SEL + " h3{margin:12px 0 4px;font-size:13px;font-weight:600;opacity:.9}",
-    SETTINGS_SEL + " [data-setting]{margin:0 0 16px}",
+  /**
+   * 同一套表格在两个地方渲染，样式也就得有两份作用域。
+   *
+   * 早先只给了 `[data-pet-settings]`：DSH 设置页好看了，右键面板里那同一张表
+   * 仍然是一列没对齐的裸控件（它挂在 `[data-panel] [data-settings]` 下）。
+   * 规则只写一遍、作用域各来一份，两个地方就不会再走岔。
+   */
+  const SETTINGS_SCOPES = [SETTINGS_SEL, ROOT_SEL + " [data-settings]"];
+  const SETTINGS_CSS = [].concat(...SETTINGS_SCOPES.map((scope) => [
+    scope + "{font:400 12px/1.7 inherit;color:inherit;max-width:600px}",
+    scope + " h3{margin:12px 0 4px;font-size:13px;font-weight:600;opacity:.9}",
+    scope + " [data-setting]{margin:0 0 16px}",
     // 布局**必须在样式表里**：行内样式优先级更高，之前把 flex 写在行上，
     // 结果这一节在 DSH 设置页里怎么调都还是"没对齐的小控件"。
-    SETTINGS_SEL + " [data-setting]>[data-chips]{display:block}",
-    SETTINGS_SEL + " [data-field],"
-      + SETTINGS_SEL + " [data-fidget-slot]>div:first-child,"
-      + SETTINGS_SEL + " [data-fidget-row]{display:grid;grid-template-columns:132px 60px 30px;"
+    scope + " [data-setting]>[data-chips]{display:block}",
+    // 池子/条目表的两种行：表头（槽位名 + ＋）和条目（名字 + 权重 + ×）。
+    scope + " [data-field],"
+      + scope + " [data-pool-head],"
+      + scope + " [data-pool-row]{display:grid;grid-template-columns:132px 60px 30px;"
       + "align-items:center;gap:8px;padding:2px 0}",
-    SETTINGS_SEL + " [data-field]{grid-template-columns:132px 1fr 52px}",
-    SETTINGS_SEL + " [data-phase]{display:grid;grid-template-columns:132px 1fr 1fr 30px;"
+    scope + " [data-field]{grid-template-columns:132px 1fr 52px}",
+    // 相位是一整块（相位名 + 它下面每槽位一张表），不是一行。
+    scope + " [data-phase-head]{display:grid;grid-template-columns:132px 1fr 30px;"
       + "align-items:center;gap:8px;padding:2px 0}",
-    SETTINGS_SEL + " [data-fidget-row]," + SETTINGS_SEL + " [data-phase]{padding-left:14px}",
-    SETTINGS_SEL + " button{width:auto;justify-self:start}",
-    SETTINGS_SEL + " [data-fidget-remove]," + SETTINGS_SEL + " [data-phase-remove]"
+    scope + " [data-pool]{padding-left:14px}",
+    // 「＋ 添加」贴着文字，不要把 1fr 那一列撑满（截图里它宽得像个输入框）。
+    scope + " [data-phase-head] select," + scope + " [data-pool-head] select{justify-self:start;max-width:190px}",
+    // 关系块是条目行里的**整行**：它是 grid 的第四个子元素，不跨列的话会被塞进
+    // 第一列，和下一个条目的标签挤在一格里。
+    scope + " [data-relations]{grid-column:1/-1}",
+    scope + " [data-relation]{display:flex;align-items:center;gap:4px}",
+    scope + " [data-relations] select{font-size:10px;max-width:190px}",
+    scope + " button{width:auto;justify-self:start}",
+    scope + " [data-fidget-remove]," + scope + " [data-phase-pool-remove],"
+      + scope + " [data-phase-remove]"
       + "{justify-self:center;border:0;opacity:.45;font-size:14px;padding:0 4px}",
-    SETTINGS_SEL + " [data-fidget-remove]:hover," + SETTINGS_SEL + " [data-phase-remove]:hover"
-      + "{opacity:1;border:0}",
-    SETTINGS_SEL + " input[type=number]{width:60px;text-align:center}",
-    SETTINGS_SEL + " input[type=number]," + SETTINGS_SEL + " select{font:inherit;color:inherit;"
+    scope + " [data-relation-remove]{border:0;opacity:.45;font-size:12px;padding:0 3px;line-height:1}",
+    scope + " [data-fidget-remove]:hover," + scope + " [data-phase-pool-remove]:hover,"
+      + scope + " [data-phase-remove]:hover,"
+      + scope + " [data-relation-remove]:hover{opacity:1;border:0}",
+    scope + " input[type=number]{width:60px;text-align:center}",
+    scope + " input[type=number]," + scope + " select{font:inherit;color:inherit;"
       + "background:transparent;border:1px solid rgba(127,127,127,.35);border-radius:5px;padding:1px 5px;max-width:100%}",
-    SETTINGS_SEL + " input[type=range]{flex:1;min-width:80px;accent-color:currentColor}",
-    SETTINGS_SEL + " input[type=checkbox]{accent-color:currentColor}",
-    SETTINGS_SEL + " button{font:inherit;color:inherit;background:transparent;"
+    scope + " input[type=range]{flex:1;min-width:80px;accent-color:currentColor}",
+    scope + " input[type=checkbox]{accent-color:currentColor}",
+    scope + " button{font:inherit;color:inherit;background:transparent;"
       + "border:1px solid rgba(127,127,127,.35);border-radius:5px;padding:1px 7px;cursor:pointer}",
-    SETTINGS_SEL + " button:hover{border-color:currentColor}",
-    SETTINGS_SEL + " label{display:flex;align-items:center;gap:6px}",
-    SETTINGS_SEL + " code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;opacity:.85}",
-    SETTINGS_SEL + " [data-fidget-slot],[data-phase]{border-top:1px solid rgba(127,127,127,.16);padding-top:4px}",
-  ];
+    scope + " button:hover{border-color:currentColor}",
+    scope + " label{display:flex;align-items:center;gap:6px}",
+    scope + " code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;opacity:.85}",
+    scope + " [data-pool]," + scope + " [data-phase]{border-top:1px solid rgba(127,127,127,.16);padding-top:4px}",
+  ]));
   // CSS 是一整个字符串（上面已经 join 过），不是数组 —— 别对它 concat 数组。
   const STYLE_TEXT = CSS + "\n" + SETTINGS_CSS.join("\n");
 
@@ -1769,7 +1789,99 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   /** 当前宠物的清单，给设置界面用（DSH 设置页拿不到组件里的 pet）。 */
   const MANIFEST = { current: null };
 
-  const PHASE_OVERRIDES = { phases: {}, fidget: {} };
+  /**
+   * 选项的**关系**覆盖，键 `<槽位>:<选项标签>`。
+   *
+   *   pairs:    { <槽位>: <选项标签> }   —— 「同时」：选了它就一起点亮
+   *   requires: [ { slot, label } ]      —— 「前提」：必须先处于那个状态才播得出来
+   *
+   * 关系的**归属是选项，不是池子里的某一条**：`喵喵手` 会带出猫猫贴纸，这是这个
+   * 姿势本身的性质 —— 在摸鱼表里改它，右键面板点同一个姿势、相位池里抽到它，
+   * 行为必须一致。所以它单独存一层，而不是挂在条目上。
+   */
+  const PHASE_OVERRIDES = { phases: {}, fidget: {}, relations: {} };
+
+  /** 槽位 id -> 中文标签（关系行显示「贴纸」而不是 `sticker`）。 */
+  const slotLabelOf = (slotId) =>
+    (MANIFEST.current?.expressionSlots ?? []).find((slot) => slot.id === slotId)?.label ?? slotId;
+
+  /** 某个选项标签属于哪个槽位；找不到返回 null（前提可以只写标签）。 */
+  const slotOfLabel = (label) =>
+    (MANIFEST.current?.expressionSlots ?? [])
+      .find((slot) => (slot.options ?? []).some((option) => option.label === label))?.id ?? null;
+
+  /**
+   * 一个选项最终生效的关系：pet.json 声明 <- 用户覆盖。
+   *
+   * `requires` 在 pet.json 里是**标签数组**（历史形状），显示与前提检查都需要知道
+   * 它属于哪个槽位，所以统一归一成 `[{ slot, label }]`。
+   */
+  const relationsOf = (slotId, label) => {
+    const override = PHASE_OVERRIDES.relations[slotId + ":" + label];
+    const option = (MANIFEST.current?.expressionSlots ?? [])
+      .find((slot) => slot.id === slotId)?.options?.find((o) => o.label === label);
+    const pairs = override?.pairs ?? option?.pairs ?? {};
+    const requires = override?.requires
+      ?? (option?.requires ?? []).map((name) => ({ slot: slotOfLabel(name), label: name }));
+    return { pairs, requires };
+  };
+
+  /**
+   * 把选项合成成运行时认的那一个对象：关系走上面那层覆盖。
+   *
+   * 运行时（面板点选、摸鱼抽中、相位抽中）只认这一个函数的结果，所以三处的行为
+   * 不可能不一致 —— 这是"改一处、到处生效"的唯一入口。
+   */
+  const effectiveOption = (slotId, option) => {
+    if (option === null || option === undefined) return option;
+    const { pairs, requires } = relationsOf(slotId, option.label);
+    const ownPairs = option.pairs ?? {};
+    const samePairs = Object.keys(pairs).length === Object.keys(ownPairs).length
+      && Object.entries(pairs).every(([id, label]) => ownPairs[id] === label);
+    const ownRequires = (option.requires ?? []).map((name) => ({ slot: slotOfLabel(name), label: name }));
+    const sameRequires = ownRequires.length === requires.length
+      && ownRequires.every((row, at) => requires[at]?.label === row.label && requires[at]?.slot === row.slot);
+    if (samePairs && sameRequires) return option;
+    return Object.assign({}, option, {
+      pairs: Object.assign({}, pairs),
+      requires: requires.map((row) => row.label),
+    });
+  };
+
+  /** 写一条关系（增/改）。kind 是 "pairs" 或 "requires"。 */
+  const setRelation = (key, kind, row) => {
+    const current = PHASE_OVERRIDES.relations[key] ?? {};
+    const [slotId, label] = key.split(":");
+    // 先物化当前生效的关系，再改一条 —— 否则「加一条」会把原有的关系抹掉。
+    const base = relationsOf(slotId, label);
+    const next = {
+      pairs: Object.assign({}, current.pairs ?? base.pairs),
+      requires: (current.requires ?? base.requires).slice(),
+    };
+    if (kind === "pairs") next.pairs[row.slot] = row.label;
+    else if (!next.requires.some((item) => item.slot === row.slot && item.label === row.label)) {
+      next.requires.push(row);
+    }
+    PHASE_OVERRIDES.relations[key] = next;
+    saveOverrides();
+    notifySettings();
+  };
+
+  /** 删一条关系（按 kind + 目标槽位 + 标签）。 */
+  const removeRelation = (key, kind, row) => {
+    const [slotId, label] = key.split(":");
+    const base = relationsOf(slotId, label);
+    const current = PHASE_OVERRIDES.relations[key] ?? {};
+    const next = {
+      pairs: Object.assign({}, current.pairs ?? base.pairs),
+      requires: (current.requires ?? base.requires).slice(),
+    };
+    if (kind === "pairs") delete next.pairs[row.slot];
+    else next.requires = next.requires.filter((item) => !(item.slot === row.slot && item.label === row.label));
+    PHASE_OVERRIDES.relations[key] = next;
+    saveOverrides();
+    notifySettings();
+  };
 
   /**
    * 开关类设置（数字之外的那些）。
@@ -1805,6 +1917,26 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     notifySettings();
   };
 
+  /**
+   * 条目表校验：一条 = `{ label, weight }`，label 为 null 表示「保持不变 / 空着」。
+   *
+   * 返回 null 表示"这里根本不是一张表"（老版本的存档形状），空数组则是**合法的**——
+   * 整张表被删空，就是一个不出手的池子。
+   */
+  const sanitizeEntries = (raw) => {
+    if (!Array.isArray(raw)) return null;
+    const out = [];
+    for (const item of raw) {
+      if (item === null || typeof item !== "object") continue;
+      const label = typeof item.label === "string" && item.label !== "" ? item.label : null;
+      const weight = typeof item.weight === "number" && Number.isFinite(item.weight)
+        ? Math.min(99, Math.max(0, item.weight))
+        : 1;
+      out.push({ label, weight });
+    }
+    return out;
+  };
+
   /** 读回存档；值只做类型校验，范围由调用方按权重语义处理。 */
   const restoreOverrides = () => {
     let saved = null;
@@ -1819,8 +1951,16 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       for (const [phase, entry] of Object.entries(phases)) {
         if (entry === null || typeof entry !== "object") continue;
         const next = {};
-        if (typeof entry.motion === "string" || entry.motion === null) next.motion = entry.motion;
-        if (typeof entry.expression === "string" || entry.expression === null) next.expression = entry.expression;
+        // 相位 = 每个槽位一张条目表（老版本的 motion/expression 单选已经拆掉，
+        // 读不出来的旧字段直接忽略，不会把宠物弄坏）。
+        if (entry.pools !== null && typeof entry.pools === "object") {
+          const pools = {};
+          for (const [slotId, list] of Object.entries(entry.pools)) {
+            const entries = sanitizeEntries(list);
+            if (entries !== null) pools[slotId] = entries;
+          }
+          next.pools = pools;
+        }
         if (Object.keys(next).length > 0) PHASE_OVERRIDES.phases[phase] = next;
       }
     }
@@ -1829,6 +1969,11 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       for (const [slotId, entry] of Object.entries(fidget)) {
         if (entry === null || typeof entry !== "object") continue;
         const next = {};
+        // 条目表是摸鱼池的**本体**（增删条目就是改池子），而这里原来只读了老的
+        // none/options —— 于是"删掉的条目下次刷新会自己长回来"，改动看着生效、
+        // 其实一次都没存住。
+        const entries = sanitizeEntries(entry.entries);
+        if (entries !== null) next.entries = entries;
         if (typeof entry.none === "number" && Number.isFinite(entry.none)) {
           next.none = Math.min(99, Math.max(0, entry.none));
         }
@@ -1840,6 +1985,31 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           if (Object.keys(options).length > 0) next.options = options;
         }
         if (Object.keys(next).length > 0) PHASE_OVERRIDES.fidget[slotId] = next;
+      }
+    }
+    // 选项关系（同时 / 前提）的覆盖。
+    const relations = saved.relations;
+    if (relations !== null && typeof relations === "object") {
+      for (const [key, entry] of Object.entries(relations)) {
+        if (entry === null || typeof entry !== "object") continue;
+        const next = {};
+        if (entry.pairs !== null && typeof entry.pairs === "object") {
+          const pairs = {};
+          for (const [slotId, label] of Object.entries(entry.pairs)) {
+            if (typeof label === "string" && label !== "") pairs[slotId] = label;
+          }
+          next.pairs = pairs;
+        }
+        if (Array.isArray(entry.requires)) {
+          const requires = [];
+          for (const row of entry.requires) {
+            if (row === null || typeof row !== "object") continue;
+            if (typeof row.label !== "string" || row.label === "") continue;
+            requires.push({ slot: typeof row.slot === "string" ? row.slot : null, label: row.label });
+          }
+          next.requires = requires;
+        }
+        if (Object.keys(next).length > 0) PHASE_OVERRIDES.relations[key] = next;
       }
     }
     const flags = saved.flags;
@@ -1870,17 +2040,33 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     notifySettings();
   };
 
-  /** 相位最终取值：默认（pet.json / 内置） <- 用户覆盖。 */
-  const phaseMotionFor = (base, phase) => {
+  /**
+   * 一个相位的**池子**：`{ <槽位>: 条目表 }`，和摸鱼同一套条目表。
+   *
+   * 用户的原话是"相位跟摸鱼是一样的功能"：配多个条目、各有权重、到点了在池子里
+   * 随机抽。默认值来自 pet.json 的 `looksByPhase`（那本来是"每个槽位一个选择"，
+   * 现在读成"每个槽位一条、权重 1"的池子）—— 没定制过的宠物行为一字不变。
+   */
+  const phasePoolsFor = (phase) => {
     const override = PHASE_OVERRIDES.phases[phase];
-    if (override !== undefined && override.motion !== undefined) return override.motion;
-    return base[phase];
+    if (override !== undefined && override.pools !== undefined) return override.pools;
+    const pools = {};
+    for (const [slotId, label] of Object.entries(MANIFEST.current?.looksByPhase?.[phase] ?? {})) {
+      pools[slotId] = [{ label, weight: 1 }];
+    }
+    return pools;
   };
-  const phaseExpressionFor = (base, phase) => {
-    const override = PHASE_OVERRIDES.phases[phase];
-    if (override !== undefined && override.expression !== undefined) return override.expression;
-    return base[phase];
+
+  /** 写入某个相位某个槽位的条目表（增删都走这里）。 */
+  const setPhasePool = (phase, slotId, entries) => {
+    // 先把当前**全部**池子物化出来再改这一张：只存被改的那张的话，其余槽位会退回
+    // pet.json 的默认，用户刚删掉的条目下次刷新就又长回来了。
+    const pools = {};
+    for (const [id, list] of Object.entries(phasePoolsFor(phase))) pools[id] = list.map((item) => Object.assign({}, item));
+    pools[slotId] = entries;
+    applyOverride({ phases: { [phase]: { pools } } });
   };
+
   /**
    * 摸鱼池的**条目表**：一条 = 一个候选（label=null 表示「保持不变」）。
    *
@@ -2457,6 +2643,12 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       api.fidgetEnabled = () => fidgetEnabledRef.current;
       api.fidgetTally = () => fidgetTallyRef.current;
       api.resetFidgetTally = () => { fidgetTallyRef.current.picked = {}; fidgetTallyRef.current.drawn = {}; };
+      // 相位池和摸鱼池是同一套抽签，所以诊断也照抄摸鱼的形状：`phaseNow` 立刻重抽
+      // 一次（不用等真的相位切换），`phaseTally` 给出每个相位各抽中了什么。
+      // 没有这两个的话，"池子里是随机的"就只能靠反复推 SSE 再数，慢且会抖。
+      api.phaseNow = (phase) => { if (typeof phase === "string") flushPhaseRef.current?.(phase); };
+      api.phaseTally = () => phaseTallyRef.current;
+      api.resetPhaseTally = () => { phaseTallyRef.current = {}; };
     }, []);
     /**
      * The pins the USER owns (slot choices, flashes) and the pins the SESSION
@@ -2655,17 +2847,22 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     /**
      * 相位映射随设置变化重算。
      *
-     * 基线（内置 + pet.json）由 model boot 那段填，这里只把用户覆盖叠上去；
-     * 两个设置界面共用同一份 store，所以哪边改都会广播到这里。
+     * 基线（内置 + pet.json）由 model boot 那段填；用户改的是**池子**
+     * （phasePoolsFor 每次现取），动作组仍然是基线上的一份只读映射。
      */
     useEffect(() => {
       const base = phaseBaseRef.current;
-      const motions = {};
-      for (const phase of Object.keys(base.motions)) motions[phase] = phaseMotionFor(base.motions, phase);
-      const expressions = {};
-      for (const phase of Object.keys(base.expressions)) expressions[phase] = phaseExpressionFor(base.expressions, phase);
-      phaseMotionRef.current = motions;
-      phaseExpressionRef.current = expressions;
+      phaseMotionRef.current = Object.assign({}, base.motions);
+      phaseExpressionRef.current = Object.assign({}, base.expressions);
+      // 正在跑的那个相位，池子被改过就**当场重抽一次** —— 否则用户删掉的条目要等到
+      // 下一次相位切换才消失，看起来像"设置没生效"。比对签名而不是直接重放：调滑杆
+      // 也会触发 settingsRev，每次都重抽的话宠物会在会话中不断换姿势。
+      const live = phaseRef.current;
+      if (live === "idle") return;
+      const signature = JSON.stringify(phasePoolsFor(live));
+      if (signature === phasePoolsRev.current) return;
+      phasePoolsRev.current = signature;
+      flushPhaseRef.current?.(live);
     }, [settingsRev]);
 
     // ---- model boot ---------------------------------------------------
@@ -2687,7 +2884,6 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       };
       phaseMotionRef.current = Object.assign({}, phaseBaseRef.current.motions);
       phaseExpressionRef.current = Object.assign({}, phaseBaseRef.current.expressions);
-      looksByPhaseRef.current = pet.looksByPhase || {};
       // 设置界面（含 DSH 设置页那个独立组件）需要清单里有哪些动作/表情/槽位。
       MANIFEST.current = pet;
       slotByIdRef.current = new Map((pet.expressionSlots ?? []).map((slot) => [slot.id, slot]));
@@ -3020,7 +3216,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       for (const id of OUTFIT_SLOTS) {
         const label = slotSelectionsRef.current[id];
         if (label === undefined) continue;
-        const option = slotByIdRef.current.get(id)?.options.find((o) => o.label === label);
+        const option = effectiveOption(id, slotByIdRef.current.get(id)?.options.find((o) => o.label === label));
         for (const name of option?.expressions ?? []) pins[name] = true;
         for (const name of option?.requires ?? []) pins[name] = true;
       }
@@ -3115,6 +3311,9 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     petRef.current = pet;
     const chooseSlotOptionRef = useRef(() => {});
     const chooseSlotOption = useCallback((slot, option) => {
+      // 关系（同时 / 前提）是按**选项**生效的：用户在这里改过的内容必须对面板点选、
+      // 摸鱼抽中、相位抽中同时成立，所以统一在这一个入口合成。
+      option = effectiveOption(slot.id, option);
       const next = Object.assign({}, pinnedRef.current);
       for (const candidate of slot.options) {
         for (const name of candidate.expressions) delete next[name];
@@ -3323,43 +3522,129 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         return undefined;
       }
       /**
-       * Drive the motion + expression for one session phase.
+       * 一个相位的**抽签**：每个槽位在自己的池子里各掷一次，和摸鱼同一套。
        *
-       * A phase is a STATE, not a one-shot event: 'waiting', 'tool' and 'done'
-       * can each last many seconds, so they are handed to the controller's
-       * sustain loop, which re-triggers the motion until the phase changes
-       * (requirement #4). Everything else simply plays once and settles.
+       * 用户的原话是"相位跟摸鱼是一样的功能"，所以数据结构和抽法都照搬摸鱼：
+       *   - 每个槽位一张条目表，条目有权重；权重 0 / 被删掉的条目不参与；
+       *   - 抽中的条目把它自己的表情点亮，并且**先把 `pairs` 一起点亮**；
+       *   - `requires` 是"播放的前提"：前提不成立的条目不参与这一轮抽（跳过）。
+       *
+       * 前提可能要靠**别的槽位这一轮的选择**才成立（挤番茄酱 要 蛋包饭），所以抽到
+       * 稳定为止：第一轮把没有前提、或前提已经成立的槽位抽出来，第二轮再看剩下的，
+       * 三轮不动就收手。
        */
       const applyPhase = (phase) => {
-        // A phase is a whole LOOK, expressed in the panel's own vocabulary
-        // (requirement #10), so it drives several slots at once — and every one
-        // of them includes a whale, so the pet is never idle-looking mid-session.
-        const look = looksByPhaseRef.current[phase];
         const slotById = new Map((pet?.expressionSlots ?? []).map((slot) => [slot.id, slot]));
-        const pins = {};
-        if (look !== undefined) {
-          for (const [slotId, label] of Object.entries(look)) {
-            const option = slotById.get(slotId)?.options.find((o) => o.label === label);
-            if (option === undefined) continue;
-            for (const name of option.expressions) pins[name] = true;
-            for (const name of option.requires ?? []) pins[name] = true;
+        const pools = phasePoolsFor(phase);
+        // 从**空**开始，而不是继承上一个相位的答案：相位是接管，不是叠加。
+        // 每个槽位在抽中之前都还不归相位管，问"现在是什么"就退回用户自己的选择。
+        phaseChoicesRef.current = {};
+        const chosen = {};
+        const optionAt = (slotId, label) =>
+          effectiveOption(slotId, slotById.get(slotId)?.options.find((o) => o.label === label));
+        // 一个槽位此刻"是什么"：这一轮已经抽中的优先，其次用户自己的选择。
+        // 抽空的槽位记成 null —— 那时候不能退回用户的选择（相位说了这里空着）。
+        const owns = (slotId) => Object.prototype.hasOwnProperty.call(chosen, slotId);
+        const current = (slotId) => (owns(slotId) ? chosen[slotId] : slotSelectionsRef.current[slotId]);
+        const premiseOk = (row) => {
+          const want = row.label;
+          if (row.slot === null || row.slot === undefined) {
+            // 没指明槽位的前提：任意一个槽位此刻是它就算成立。
+            return (MANIFEST.current?.expressionSlots ?? []).some((slot) => current(slot.id) === want);
           }
+          return current(row.slot) === want;
+        };
+        const take = (slotId, option) => {
+          chosen[slotId] = option === null ? null : option.label;
+          if (option === null) return;
+          // 「同时」：抽中它就把配对的槽位一起点亮。配对只是**填空**：那个槽位自己
+          // 的池子随后抽中的结果优先，用户手选的那些也在下一轮被相位接管。
+          for (const [targetSlot, label] of Object.entries(option.pairs ?? {})) {
+            if (owns(targetSlot)) continue;
+            const target = slotById.get(targetSlot);
+            if (target === undefined) continue;
+            if (!(target.options ?? []).some((item) => item.label === label)) continue;
+            chosen[targetSlot] = label;
+          }
+          // 抽一步就把这一轮的答案同步给守卫（canPlay 读的是这里），否则下一轮
+          // 判断"自拍能不能播"看的还是上一个相位的选择。
+          phaseChoicesRef.current = Object.assign({}, chosen);
+        };
+        const pending = Object.keys(pools);
+        for (let round = 0; round < 3 && pending.length > 0; round += 1) {
+          let progressed = false;
+          for (const slotId of pending.slice()) {
+            const slot = slotById.get(slotId);
+            if (slot === undefined) {
+              pending.splice(pending.indexOf(slotId), 1);
+              continue;
+            }
+            const rows = [];
+            for (const entry of pools[slotId] ?? []) {
+              if (!(entry.weight > 0)) continue;
+              if (entry.label === null || entry.label === undefined) {
+                // 「空着」：这个相位明确要求这个槽位不放东西。
+                rows.push({ entry, option: null });
+                continue;
+              }
+              const option = optionAt(slotId, entry.label);
+              if (option === undefined) continue;
+              // 动作的前提（自拍要手机、喷水要鲸鱼）走引擎那套守卫；表达式的前提
+              // 走条目关系。两者都不是"先放上去再说"，放不出来的就不进池子。
+              if (typeof option.motion === "string" && !motion.current.canPlay(option.motion)) continue;
+              if (!relationsOf(slotId, option.label).requires.every(premiseOk)) continue;
+              rows.push({ entry, option });
+            }
+            // 这一轮没有能抽的：留到下一轮（可能被别的槽位的前提解开）。
+            if (rows.length === 0) continue;
+            let total = 0;
+            for (const row of rows) total += row.entry.weight;
+            let roll = Math.random() * total;
+            let picked = rows[rows.length - 1];
+            for (const row of rows) {
+              roll -= row.entry.weight;
+              if (roll <= 0) { picked = row; break; }
+            }
+            take(slotId, picked.option);
+            pending.splice(pending.indexOf(slotId), 1);
+            progressed = true;
+          }
+          if (!progressed) break;
+        }
+        const pins = {};
+        let sweep = null;
+        for (const [slotId, label] of Object.entries(chosen)) {
+          if (label === null || label === undefined) continue;
+          const option = optionAt(slotId, label);
+          if (option === undefined) continue;
+          for (const name of option.expressions ?? []) pins[name] = true;
+          for (const name of option.requires ?? []) pins[name] = true;
+          if (option.sweep !== undefined) sweep = option.sweep;
+        }
+        // 抽屉数：和摸鱼的 tally 一样，用来判断"池子真的在随机"而不是每次都同一套。
+        const tally = phaseTallyRef.current[phase] ?? (phaseTallyRef.current[phase] = {});
+        for (const [slotId, label] of Object.entries(chosen)) {
+          const key = slotId + ":" + (label === null || label === undefined ? "无" : label);
+          tally[key] = (tally[key] ?? 0) + 1;
         }
         phasePinsRef.current = pins;
-        phaseSlotsRef.current = Object.keys(look ?? {});
-        phaseChoicesRef.current = Object.assign({}, look ?? {});
-        // A phase may also need a generated animation (the tool phase writes).
-        let sweep = null;
-        if (look !== undefined) {
-          for (const [slotId, label] of Object.entries(look)) {
-            const option = slotById.get(slotId)?.options.find((o) => o.label === label);
-            if (option?.sweep !== undefined) sweep = option.sweep;
-          }
-        }
+        // 只有**真的抽到了东西**的槽位才归相位管：池子里一条都放不出来时不接管，
+        // 用户自己的选择留着（和摸鱼里"池子空了的槽位不参与"是同一条规矩）。
+        phaseSlotsRef.current = Object.keys(chosen);
+        phaseChoicesRef.current = Object.assign({}, chosen);
         phaseSweepRef.current = sweep;
         applySweep();
         commitPinsRef.current();
-        const group = phaseMotionRef.current[phase];
+        // 池子里抽到动作就用它；没抽到就退回这个相位在 pet.json 里的动作
+        // （done 吹泡泡糖、failed 鲸鱼喷水都是这么来的）。
+        let group = phaseMotionRef.current[phase];
+        for (const [slotId, label] of Object.entries(chosen)) {
+          if (label === null || label === undefined) continue;
+          const option = optionAt(slotId, label);
+          if (typeof option?.motion === "string") group = option.motion;
+        }
+        phaseGroupRef.current[phase] = group;
+        phasePoolsRev.current = JSON.stringify(pools);
         const sustained = PHASE_SUSTAIN.indexOf(phase) !== -1;
         if (phase === "idle" || group === undefined) {
           // No motion for this phase: stop sustaining and return to rest.
@@ -3381,8 +3666,9 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         }
       };
       // The sustain loop lives in the controller, but the phase -> group map
-      // comes from the pet manifest, so hand the resolver over.
-      motion.current.setPhaseResolver((phase) => phaseMotionRef.current[phase]);
+      // comes from the pet manifest, so hand the resolver over. 池子里抽到过动作的
+      // 相位优先用它自己那一轮的结果，否则重播的会是另一套动作。
+      motion.current.setPhaseResolver((phase) => phaseGroupRef.current[phase] ?? phaseMotionRef.current[phase]);
       // Premise check for a motion group. Evaluated against the CURRENT slot
       // selections, so it stays true while the look keeps the phone out and goes
       // false the moment the slot changes.
@@ -3390,8 +3676,10 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         const guard = guardsRef.current[group];
         if (guard === undefined) return true;
         return Object.entries(guard).every(([slotId, labels]) => {
-          const chosen = phaseChoicesRef.current[slotId] ?? slotSelectionsRef.current[slotId];
-          return chosen !== undefined && labels.includes(chosen);
+          // 相位"抽空了"这个槽位时不能退回用户的选择：owns 为真且值是 null 就是空。
+          const owns = Object.prototype.hasOwnProperty.call(phaseChoicesRef.current, slotId);
+          const chosen = owns ? phaseChoicesRef.current[slotId] : slotSelectionsRef.current[slotId];
+          return chosen !== undefined && chosen !== null && labels.includes(chosen);
         });
       });
       // The motion subscription (declared above) flushes a deferred phase here.
@@ -3588,8 +3876,12 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     const phaseExpressionRef = useRef(PHASE_EXPRESSION);
     /** 相位的「出厂 + pet.json」基线；用户覆盖叠在上面（见 phaseMotionFor）。 */
     const phaseBaseRef = useRef({ motions: PHASE_MOTION, expressions: PHASE_EXPRESSION });
-    /** phase -> slot-vocabulary look, from the pet manifest (requirement #10). */
-    const looksByPhaseRef = useRef({});
+    /** 上一次应用过的池子签名，用来判断"池子真的变了没有"。 */
+    const phasePoolsRev = useRef("");
+    /** phase -> 这一轮抽中的动作组（池子里抽到动作时用它，见 setPhaseResolver）。 */
+    const phaseGroupRef = useRef({});
+    /** 每个相位各抽中了什么，给诊断用（形状和 fidgetTally 一样是抽屉数）。 */
+    const phaseTallyRef = useRef({});
     // Gaze target, mirrored onto the pet root as data-gaze.
     const [gaze, setGaze] = useState("center");
     gazeSinkRef.current = setGaze;
@@ -3996,20 +4288,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
    *
    * 右键面板里那份设置只是过渡（用户明说的），正牌入口在这里。
    */
-  /** 清单里全部可用的表情名（槽位选项里出现过的去重）。 */
-  function manifestExpressions(pet) {
-    const names = new Set();
-    for (const slot of pet.expressionSlots ?? []) {
-      for (const option of slot.options ?? []) {
-        for (const name of option.expressions ?? []) names.add(name);
-      }
-    }
-    return Array.from(names).sort();
-  }
-
-
   const labelStyle = { flex: "0 0 88px", opacity: .85 };
-  const selectStyle = { flex: 1, minWidth: 0, fontSize: 11 };
   /** 行尾的 ×（删掉这一条）。 */
   const removeStyle = { flex: "0 0 auto", border: 0, background: "transparent", color: "#9fb0cf", cursor: "pointer", fontSize: 13, lineHeight: 1, padding: "0 4px" };
   /** 分组里的 ＋（加一条）。 */
@@ -4018,56 +4297,84 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   const relationStyle = { paddingLeft: 26, fontSize: 10, opacity: .6, lineHeight: "1.5" };
 
   /**
-   * 会话相位 → 动作 / 表情。
+   * 会话相位：**每个相位一组池子**（每个槽位一张条目表）。
    *
-   * 覆盖存在 store 里（键按名字），换宠物时对不上的会被忽略。
+   * 用户的原话是"相位现在是单选的，其实本意也是跟摸鱼一样的可以配多个，然后在池子里
+   * 随机，所以说跟摸鱼是一样的功能"。所以这里不再是"动作 / 表情两个下拉"，而是和摸鱼
+   * 一模一样的条目表 —— 区别只有一层嵌套：摸鱼是 槽位→条目，相位是 相位→槽位→条目。
+   *
+   * 列表里只出现**被定制过**的相位（一行 = 一条定制）；新增一个相位会先按 pet.json
+   * 的 `looksByPhase` 把默认池子显示出来，改哪张表就物化哪张表。
    */
   function PhaseControls() {
     useSettings();
     const pet = MANIFEST.current;
     if (pet === null) return h("div", { "data-empty": "phases" }, "宠物还没加载好");
-    const known = Array.from(new Set([...Object.keys(PHASE_MOTION), ...Object.keys(pet.motionsByPhase ?? {})])).sort();
-    // 列表里只出现**被覆盖过**的相位：一行 = 一条定制。删掉一行就回到内置行为。
+    const slots = pet.expressionSlots ?? [];
+    const known = Array.from(new Set([
+      ...Object.keys(PHASE_MOTION),
+      ...Object.keys(pet.looksByPhase ?? {}),
+      ...Object.keys(PHASE_OVERRIDES.phases),
+    ])).sort();
     const rows = known.filter((phase) => PHASE_OVERRIDES.phases[phase] !== undefined);
     const missing = known.filter((phase) => PHASE_OVERRIDES.phases[phase] === undefined);
-    const groups = (pet.motions ?? []).map((entry) => entry.group);
-    const expressions = manifestExpressions(pet);
-    const base = { motions: Object.assign({}, PHASE_MOTION, pet.motionsByPhase ?? {}), expressions: Object.assign({}, PHASE_EXPRESSION, pet.expressionsByPhase ?? {}) };
-    const current = (phase) => ({
-      motion: phaseMotionFor(base.motions, phase) ?? "",
-      expression: phaseExpressionFor(base.expressions, phase) ?? "",
-    });
-    const pick = (phase, key, value) => applyOverride({ phases: { [phase]: { [key]: value === "" ? null : value } } });
     return h("div", { "data-settings": "", "data-setting": "phases" },
+      rows.length === 0
+        ? h("div", { "data-empty": "phases" }, "还没有定制过的相位 —— 在下面加一个")
+        : null,
       rows.map((phase) => {
-        const now = current(phase);
+        const pools = phasePoolsFor(phase);
+        const used = Object.keys(pools);
+        const free = slots.filter((slot) => used.indexOf(slot.id) === -1);
         return h("div", { key: phase, "data-phase": phase },
-          h("span", { style: labelStyle }, phase),
-          h("select", {
-            "data-phase-motion": phase,
-            style: selectStyle,
-            value: now.motion,
-            onChange: (event) => pick(phase, "motion", event.target.value),
-          },
-          h("option", { value: "" }, "（默认）"),
-          groups.map((group) => h("option", { key: group, value: group }, group)),
+          h("div", { "data-phase-head": "" },
+            h("span", { style: labelStyle }, phase),
+            free.length === 0 ? null : h("select", {
+              "data-phase-slot-add": phase,
+              value: "",
+              style: addStyle,
+              onChange: (event) => {
+                const slotId = event.target.value;
+                if (slotId === "") return;
+                // 新加的槽位先给一张**空表**：空表 = 这个槽位在这个相位下不出手。
+                // 想让它清空，就加一条「空着」。
+                setPhasePool(phase, slotId, []);
+              },
+            },
+            h("option", { value: "" }, "＋ 添加槽位"),
+            free.map((slot) => h("option", { key: slot.id, value: slot.id }, slot.label)),
+            ),
+            h("button", {
+              type: "button",
+              "data-phase-remove": phase,
+              title: "删掉整个相位（回到 pet.json 的默认）",
+              style: removeStyle,
+              onClick: () => removePhaseRow(phase),
+            }, "×"),
           ),
-          h("select", {
-            "data-phase-expression": phase,
-            style: selectStyle,
-            value: now.expression,
-            onChange: (event) => pick(phase, "expression", event.target.value),
-          },
-          h("option", { value: "" }, "（默认）"),
-          expressions.map((expr) => h("option", { key: expr, value: expr }, expr)),
-          ),
-          h("button", {
-            type: "button",
-            "data-phase-remove": phase,
-            title: "删掉这一行（回到内置行为）",
-            style: removeStyle,
-            onClick: () => removePhaseRow(phase),
-          }, "×"),
+          used.length === 0
+            ? h("div", { "data-phase-empty": phase, style: relationStyle }, "空相位：什么都不改（用「＋ 添加槽位」加一张表）")
+            : null,
+          used.map((slotId) => {
+            // 槽位 id 来自池子的键：清单里没有它（换了宠物）就退化成一个空槽位，
+            // 至少让用户看得到、删得掉。
+            const slot = slots.find((item) => item.id === slotId)
+              ?? { id: slotId, label: slotId, none: "无", options: [] };
+            return h(PoolTable, {
+              key: slotId,
+              slot,
+              entries: pools[slotId],
+              noneLabel: "空着",
+              allowAll: true,
+              owner: "phase:" + phase,
+              idPrefix: phase + ":",
+              rowAttr: "data-phase-pool-row",
+              addAttr: "data-phase-pool-add",
+              weightAttr: "data-phase-pool-weight",
+              removeAttr: "data-phase-pool-remove",
+              setEntries: (entries) => setPhasePool(phase, slotId, entries),
+            });
+          }),
         );
       }),
       missing.length === 0 ? null : h("select", {
@@ -4076,6 +4383,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         style: addStyle,
         onChange: (event) => {
           if (event.target.value === "") return;
+          // 只登记一行，池子先不落盘 —— 这样"加一行再删掉"不会留下任何覆盖，
+          // 而打开它时看到的就是 pet.json 原本的默认样子。
           applyOverride({ phases: { [event.target.value]: {} } });
         },
       },
@@ -4092,30 +4401,189 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
    * 移出池子；整张表空了，这个槽位就彻底不参与摸鱼。
    */
   /**
-   * 一条目下面的「关系」行（缩进一级）。
+   * 一条目下面的「关系」行（缩进一级）：每一行能删，行尾能加。
    *
    * 两种关系刻意用不同前缀，别让它们看起来像同一件事：
    *   同时 → pairs（选了它就一起点亮）
    *   前提 → requires（必须已经在该状态，否则这个条目根本播不出来）
-   * 数据来自 pet.json 的槽位选项（options[].pairs / options[].requires），
-   * 这里只做**只读展示** —— 增删关系等池子那块一起做。
+   *
+   * 关系的归属是**选项**（键 `<槽位>:<标签>`，见 relationsOf）：同一个姿势在摸鱼表、
+   * 相位池、右键面板里看到的是同一份关系，改一处三处一起变 —— 这正是"模块化"要的。
    */
-  function relationRows(slot, entry) {
-    const option = (slot.options ?? []).find((o) => o.label === entry.label);
-    if (option === undefined) return [];
-    // 显示**槽位标签**（贴纸）而不是 id（sticker）：这是给人看的。
-    const labelOfSlot = (slotId) => (MANIFEST.current?.expressionSlots ?? [])
-      .find((s) => s.id === slotId)?.label ?? slotId;
-    const rows = [];
-    for (const [slotId, label] of Object.entries(option.pairs ?? {})) {
-      rows.push(h("div", { key: "pair:" + slotId, "data-relation": "pair", "data-relation-of": slot.id + ":" + entry.label, style: relationStyle },
-        "同时：" + labelOfSlot(slotId) + " = " + label));
+  function relationRows(slot, entry, owner) {
+    if (entry.label === null || entry.label === undefined) return [];
+    const key = slot.id + ":" + entry.label;
+    const { pairs, requires } = relationsOf(slot.id, entry.label);
+    const row = (kind, targetSlot, label) => h("div", {
+      key: kind + ":" + (targetSlot ?? "") + ":" + label,
+      "data-relation": kind,
+      "data-relation-of": key,
+      "data-relation-key": (targetSlot ?? "") + ":" + label,
+      // 同一个选项会同时出现在摸鱼表和相位池里（关系是选项的属性），所以行上
+      // 再标一下"这是在哪张表里显示的"，测试才能分别寻址。
+      "data-relation-in": owner,
+      style: relationStyle,
+    },
+    (kind === "pair" ? "同时：" : "前提：")
+      + (targetSlot === null || targetSlot === undefined
+        ? label
+        : slotLabelOf(targetSlot) + " = " + label),
+    h("button", {
+      type: "button",
+      "data-relation-remove": "",
+      title: "删掉这条关系",
+      style: removeStyle,
+      onClick: () => removeRelation(key, kind === "pair" ? "pairs" : "requires", { slot: targetSlot ?? null, label }),
+    }, "×"),
+    );
+    const out = [];
+    for (const [targetSlot, label] of Object.entries(pairs)) out.push(row("pair", targetSlot, label));
+    for (const item of requires) out.push(row("require", item.slot, item.label));
+    return out;
+  }
+
+  /**
+   * 给一条目加关系：一个下拉里放两种关系，用 `<optgroup>` 分开。
+   *
+   * 不拆成"先选槽位再选选项"两个控件：那要两步 change 事件，测试和用户都会点错。
+   * 值的形状是 `pair|<槽位>|<标签>` / `require|<槽位>|<标签>`。
+   */
+  function relationAdd(slot, entry, owner) {
+    if (entry.label === null || entry.label === undefined) return null;
+    const key = slot.id + ":" + entry.label;
+    const { pairs, requires } = relationsOf(slot.id, entry.label);
+    // 自己槽位的选项不能当关系：`同时` 指向本槽位 = 把自己换成另一个，没意义；
+    // `前提` 指向自己 = 永远满足不了。
+    const others = [];
+    for (const other of MANIFEST.current?.expressionSlots ?? []) {
+      if (other.id === slot.id) continue;
+      for (const option of other.options ?? []) {
+        if (option.label === entry.label) continue;
+        others.push({ slot: other.id, slotLabel: other.label, label: option.label });
+      }
     }
-    for (const label of option.requires ?? []) {
-      rows.push(h("div", { key: "req:" + label, "data-relation": "require", "data-relation-of": slot.id + ":" + entry.label, style: relationStyle },
-        "前提：" + label));
-    }
-    return rows;
+    const options = (kind) => others
+      .filter((item) => (kind === "pair"
+        ? pairs[item.slot] !== item.label
+        : !requires.some((row) => row.slot === item.slot && row.label === item.label)))
+      .map((item) => h("option", {
+        key: item.slot + ":" + item.label,
+        value: kind + "|" + item.slot + "|" + item.label,
+      }, item.slotLabel + " = " + item.label));
+    const pairOptions = options("pair");
+    const requireOptions = options("require");
+    if (pairOptions.length === 0 && requireOptions.length === 0) return null;
+    return h("select", {
+      "data-relation-add": key,
+      "data-relation-in": owner,
+      value: "",
+      style: addStyle,
+      onChange: (event) => {
+        const value = event.target.value;
+        if (value === "") return;
+        const at = value.indexOf("|");
+        const at2 = value.indexOf("|", at + 1);
+        const kind = value.slice(0, at);
+        setRelation(key, kind === "pair" ? "pairs" : "requires", {
+          slot: value.slice(at + 1, at2),
+          label: value.slice(at2 + 1),
+        });
+      },
+    },
+    h("option", { value: "" }, "＋ 关系"),
+    pairOptions.length === 0 ? null : h("optgroup", { label: "同时" }, pairOptions),
+    requireOptions.length === 0 ? null : h("optgroup", { label: "前提" }, requireOptions),
+    );
+  }
+
+  /** 条目表里一条的唯一键：`保持不变 / 空着` 统一记成 `__none`。 */
+  const entryKeyOf = (entry) => (entry.label === null || entry.label === undefined ? "__none" : entry.label);
+
+  /**
+   * 一张**条目表**：摸鱼池和相位池共用的那张。
+   *
+   * 两个池子本来就是同一套东西（用户原话"相位跟摸鱼是一样的功能"），差别只有三处，
+   * 所以全部做成参数：
+   *   - `setEntries` —— 存哪儿（摸鱼按槽位存，相位还要带相位名）
+   *   - `noneLabel`  —— 条目空值叫什么：摸鱼是「保持不变」，相位是「空着」
+   *   - `*Attr`      —— DOM 上的前缀，两张表要能分别寻址
+   *
+   * 条目行下面缩进的那层是**关系**（同时 / 前提），也能加能删。关系挂在选项上而不是
+   * 条目上，所以在哪张表里改都一样。
+   */
+  function PoolTable(props) {
+    const { slot, entries, setEntries, noneLabel, owner } = props;
+    const rowAttr = props.rowAttr;
+    const addAttr = props.addAttr;
+    const weightAttr = props.weightAttr;
+    const removeAttr = props.removeAttr;
+    // 属性值要不要带前缀：摸鱼表就是槽位名（`mouth:吹泡泡糖`），相位池要带相位名
+    // （`tool:rhand:写本本`）—— 两个相位可以同时开着同一张槽位表，不带前缀就没法寻址。
+    const idPrefix = props.idPrefix ?? "";
+    const labelOf = (entry) => (entry.label === null || entry.label === undefined ? noneLabel : entry.label);
+    const keyOf = (entry) => idPrefix + slot.id + ":" + entryKeyOf(entry);
+    const addKey = idPrefix + slot.id;
+    const numberInput = (value, onChange, extra) => h("input", Object.assign({
+      type: "number", min: 0, max: 99, step: 1, value: String(value),
+      style: { width: 46, fontSize: 11 },
+      onChange: (event) => onChange(Number(event.target.value)),
+    }, extra));
+    const present = new Set(entries.map((entry) => entryKeyOf(entry)));
+    const candidates = props.allowAll === true
+      ? (slot.options ?? [])
+      // 摸鱼**不碰**标了 fidget:false 的选项：吐舌、星星眼这些是"被叫出来"的，
+      // 不该在没人管的时候自己出现。相位池是另一回事，那边全都能配。
+      : (slot.options ?? []).filter((option) => option.fidget !== false);
+    const addable = [{ value: "__none", label: noneLabel }]
+      .concat(candidates.map((option) => ({ value: option.label, label: option.label })))
+      .filter((item) => !present.has(item.value));
+    return h("div", { "data-pool": owner, "data-pool-slot": slot.id, style: { padding: "3px 0" } },
+      h("div", { "data-pool-head": "" },
+        h("span", { style: labelStyle }, slot.label),
+        addable.length === 0 ? null : h("select", {
+          [addAttr]: addKey,
+          value: "",
+          style: addStyle,
+          onChange: (event) => {
+            const value = event.target.value;
+            if (value === "") return;
+            setEntries(entries.concat([{ label: value === "__none" ? null : value, weight: 1 }]));
+          },
+        },
+        h("option", { value: "" }, "＋ 添加"),
+        addable.map((item) => h("option", { key: item.value, value: item.value }, item.label)),
+        ),
+      ),
+      entries.length === 0
+        ? h("div", { "data-pool-empty": keyOf({ label: null }), style: relationStyle }, "空表：这个槽位在这个池子里不出手")
+        : null,
+      entries.map((entry, index) => h("div", {
+        key: entryKeyOf(entry) + ":" + index,
+        [rowAttr]: keyOf(entry),
+      },
+      h("span", null, labelOf(entry)),
+      numberInput(entry.weight, (value) => {
+        const next = entries.slice();
+        next[index] = { label: entry.label ?? null, weight: value };
+        setEntries(next);
+      }, { [weightAttr]: keyOf(entry) }),
+      h("button", {
+        type: "button",
+        [removeAttr]: keyOf(entry),
+        title: "删掉这一条",
+        style: removeStyle,
+        onClick: () => setEntries(entries.filter((_, at) => at !== index)),
+      }, "×"),
+      // 两种关系**必须分开显示**，它们不是一回事：
+      //   pairs    = 同时触发（选了它就一起点亮，比如 喵喵手 会带出「贴纸=猫猫」）
+      //   requires = 播放前提（必须先处于那个状态才播得出来，比如 挤番茄酱 要先有蛋包饭）
+      // 关系块整体占满这一行（`[data-relations]` 跨列），否则会被塞进标签那一格。
+      h("div", { key: "relations", "data-relations": "" },
+        ...relationRows(slot, entry, owner),
+        relationAdd(slot, entry, owner),
+      ),
+      )),
+    );
   }
 
   function FidgetControls() {
@@ -4123,62 +4591,20 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     const pet = MANIFEST.current;
     if (pet === null) return h("div", { "data-empty": "fidget" }, "宠物还没加载好");
     const slots = (pet.expressionSlots ?? []).filter((slot) => FIDGET_SLOTS.includes(slot.id));
-    const numberInput = (value, onChange, extra) => h("input", Object.assign({
-      type: "number", min: 0, max: 99, step: 1, value: String(value),
-      style: { width: 46, fontSize: 11 },
-      onChange: (event) => onChange(Number(event.target.value)),
-    }, extra));
-    const keyOf = (entry) => (entry.label === null || entry.label === undefined ? "__none" : entry.label);
-    const labelOf = (entry) => (entry.label === null || entry.label === undefined ? "保持不变" : entry.label);
     return h("div", { "data-settings": "", "data-setting": "fidget" },
-      slots.map((slot) => {
-        const entries = fidgetEntriesFor(slot);
-        const present = new Set(entries.map(keyOf));
-        const addable = [{ value: "__none", label: "保持不变" }]
-          .concat((slot.options ?? []).filter((option) => option.fidget !== false)
-            .map((option) => ({ value: option.label, label: option.label })))
-          .filter((item) => !present.has(item.value));
-        return h("div", { key: slot.id, "data-fidget-slot": slot.id, style: { padding: "3px 0" } },
-          h("div", { style: { display: "flex", alignItems: "center", gap: 6, fontSize: 11 } },
-            h("span", { style: labelStyle }, slot.label),
-            addable.length === 0 ? null : h("select", {
-              "data-fidget-add": slot.id,
-              value: "",
-              style: addStyle,
-              onChange: (event) => {
-                const value = event.target.value;
-                if (value === "") return;
-                setFidgetEntries(slot.id, entries.concat([{ label: value === "__none" ? null : value, weight: 1 }]));
-              },
-            },
-            h("option", { value: "" }, "＋ 添加"),
-            addable.map((item) => h("option", { key: item.value, value: item.value }, item.label)),
-            ),
-          ),
-          entries.map((entry, index) => h("div", {
-            key: keyOf(entry) + ":" + index,
-            "data-fidget-row": slot.id + ":" + keyOf(entry),
-          },
-          h("span", null, labelOf(entry)),
-          numberInput(entry.weight, (value) => {
-            const next = entries.slice();
-            next[index] = { label: entry.label ?? null, weight: value };
-            setFidgetEntries(slot.id, next);
-          }, { "data-fidget-weight": slot.id + ":" + keyOf(entry) }),
-          h("button", {
-            type: "button",
-            "data-fidget-remove": slot.id + ":" + keyOf(entry),
-            title: "删掉这一条",
-            style: removeStyle,
-            onClick: () => setFidgetEntries(slot.id, entries.filter((_, at) => at !== index)),
-          }, "×"),
-          // 两种关系**必须分开显示**，它们不是一回事：
-          //   pairs    = 同时触发（选了它就一起点亮，比如 喵喵手 会带出「贴纸=猫猫」）
-          //   requires = 播放前提（必须先处于那个状态才播得出来，比如 挤番茄酱 要先有蛋包饭）
-          ...relationRows(slot, entry),
-          )),
-        );
-      }),
+      slots.map((slot) => h(PoolTable, {
+        key: slot.id,
+        slot,
+        entries: fidgetEntriesFor(slot),
+        noneLabel: "保持不变",
+        allowAll: false,
+        owner: "fidget",
+        rowAttr: "data-fidget-row",
+        addAttr: "data-fidget-add",
+        weightAttr: "data-fidget-weight",
+        removeAttr: "data-fidget-remove",
+        setEntries: (entries) => setFidgetEntries(slot.id, entries),
+      })),
     );
   }
   /** DSH 设置页里的「桌宠」一节：手感 / 会话相位 / 摸鱼。 */
@@ -4190,9 +4616,9 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         heading(group.label),
         h(TuningControls, { group: group.id }),
       )),
-      heading("会话相位 → 动作 / 表情"),
+      heading("会话相位：每个相位一组池子"),
       h(PhaseControls, null),
-      heading("摸鱼：可触发项与权重"),
+      heading("摸鱼：每个槽位一张条目表"),
       h(FidgetControls, null),
       heading("装扮"),
       h(OutfitControls, null),

@@ -41,8 +41,8 @@ DSh 桌宠（`@linxin666/dsh-pet`）的 Live2D 宠物包。
 里面正好是 `point`(点菜板) / `danbaofan`(蛋包饭) / `phone`(手机手) /
 `phone7`(双手比耶) / `maoshou`(猫手) —— 一组互斥的手部状态。
 
-剩下 25 个是**可以叠加的情绪表情**（脸红 + 汗 + 问号 是合理的漫画组合），
-保持自由开关。
+剩下的是**可以叠加的情绪表情**（脸红 + 汗 + 问号 是合理的漫画组合），
+它们分别落在眼部 / 情绪 / 嘴部 / 符号 / 氛围 / 脸红这些槽位里，各槽位之间可以同时生效。
 
 引擎的表情管理器一次只持有**一个**表情（`currentExpression`），所以跨槽位叠加不能
 交给它。插件改成**自己按帧写参数**：在每个表达式 .exp3.json 声明的通道上做 Add 叠加，
@@ -55,6 +55,32 @@ DSh 桌宠（`@linxin666/dsh-pet`）的 Live2D 宠物包。
 所以**六个槽位可以同时生效**，跟参考面板一致。
 
 槽位定义写在 `pet.json` 的 `live2d.expressionSlots`，换个宠物改这里就行。
+
+## 会话相位与关系（宠物怎么声明默认值）
+
+用户在 DSH 设置页里看到的两张池子表，默认值全部来自本目录的 `pet.json`：
+
+| pet.json 字段 | 变成设置页里的什么 |
+|---|---|
+| `live2d.looksByPhase` | 每个相位的默认池子：一个槽位一个选择 = 那个槽位池子里"权重 1 的一条" |
+| `live2d.motions` | 每个相位的默认动作（`done` 吹泡泡糖、`failed` 鲸鱼喷水就是这么来的）|
+| `expressionSlots[].options[].pairs` | 该选项的「同时」关系（选了它就一起点亮哪个槽位） |
+| `expressionSlots[].options[].requires` | 该选项的「前提」关系（必须先处于哪个状态才播得出来） |
+| `expressionSlots[].fidgetNone` / `options[].fidgetWeight` | 摸鱼池的默认条目与权重 |
+
+```json
+{
+  "label": "挤番茄酱",
+  "motion": "Ketchup",
+  "expressions": ["挤番茄酱"],
+  "requires": ["蛋包饭"],          // 前提：左手得先有蛋包饭
+  "breaks": ["猫猫"],              // 选了它就把猫猫贴纸摘掉
+  "fidgetWeight": 1
+}
+```
+
+`pairs` / `requires` 在设置页里**可增删**（覆盖存在浏览器里，不改这个文件）；
+`requires` 在运行时是**抽签的闸门**：前提不成立的条目根本不会被抽中。
 
 ## 前置：Cubism Core
 
