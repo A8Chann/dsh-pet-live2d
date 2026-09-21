@@ -26,7 +26,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   const { useCallback, useEffect, useRef, useState } = react;
 
   const name = "live2d-pet";
-  const inject = [];
+  // "slots" 是 DSH 客户端界面给插件的扩展点（设置页就是这么挂进去的）。
+  const inject = ["slots"];
 
   const API = "/api/live2d-pet";
   const STORAGE_KEY = "dsh-live2d-pet.state.v1";
@@ -1689,6 +1690,113 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   /** 把存档里的值夹进合法区间 —— 坏值不能让宠物动不了。 */
   const clampSetting = (field, value) => Math.min(field.max, Math.max(field.min, value));
 
+  /**
+   * 设置的订阅者。
+   *
+   * 同一份值现在有两个界面在用：DSH 自己的设置页（正牌）和宠物的右键面板
+   * （用户说是过渡）。两边都必须立刻看到对方的改动，所以值放模块作用域，
+   * 改完广播一次。
+   */
+  const settingsListeners = new Set();
+  const notifySettings = () => {
+    for (const listener of Array.from(settingsListeners)) {
+      try {
+        listener();
+      } catch {
+        /* 某个界面挂了不该带走另一个 */
+      }
+    }
+  };
+
+  /** 订阅设置变化；返回当前版本号（用来驱动重渲染）。 */
+  const useSettings = () => {
+    const [rev, setRev] = useState(0);
+    useEffect(() => {
+      const listener = () => setRev((n) => n + 1);
+      settingsListeners.add(listener);
+      return () => settingsListeners.delete(listener);
+    }, []);
+    return rev;
+  };
+
+  /**
+   * 改一项可调参数：写进 TUNING（控制器下一帧就按新值走）、存档、广播。
+   *
+   * 直接改 TUNING 而不是走 React 状态是刻意的：控制器每帧读它，几百毫秒的
+   * 状态传播延迟会让滑杆手感很黏。
+   */
+  const applyTuning = (patch) => {
+    for (const [key, value] of Object.entries(patch)) {
+      const field = TUNING_FIELDS.find((entry) => entry.key === key);
+      TUNING[key] = field === undefined ? value : clampSetting(field, value);
+    }
+    try {
+      window.localStorage.setItem(TUNING_KEY, JSON.stringify(TUNING));
+    } catch {
+      /* 无痕模式之类：这次改动仍然生效，只是下次不记得 */
+    }
+    notifySettings();
+  };
+
+  /**
+   * 启动时把存档里的可调项读回来（每个值都按区间夹一遍）。
+   *
+   * 手改坏了存档最多回到合法范围，不会出现「死区 5」这种把宠物冻住的配置。
+   */
+  const restoreTuning = () => {
+    let saved = null;
+    try {
+      saved = JSON.parse(window.localStorage.getItem(TUNING_KEY) ?? "null");
+    } catch {
+      saved = null;
+    }
+    if (saved === null || typeof saved !== "object") return;
+    let restored = false;
+    for (const field of TUNING_FIELDS) {
+      const value = saved[field.key];
+      if (typeof value !== "number" || !Number.isFinite(value)) continue;
+      TUNING[field.key] = clampSetting(field, value);
+      restored = true;
+    }
+    if (restored) notifySettings();
+  };
+
+  /**
+   * 「手感」那一节：滑杆直接写 TUNING。
+   *
+   * 抽成独立组件是因为它要在**两个地方**渲染：DSH 设置页和宠物右键面板。
+   */
+  function TuningControls() {
+    useSettings();
+    return h("div", { "data-settings": "", "data-setting": "tuning" },
+      h("div", { "data-chips": "" },
+        TUNING_FIELDS.map((field) => h("label", {
+          key: field.key,
+          "data-field": field.key,
+          style: { display: "flex", alignItems: "center", gap: 6, width: "100%", fontSize: 11, padding: "2px 0" },
+        },
+        h("span", { style: { flex: "0 0 96px", opacity: .85 } }, field.label),
+        h("input", {
+          type: "range",
+          min: field.min,
+          max: field.max,
+          step: field.step,
+          value: TUNING[field.key],
+          "data-input": field.key,
+          style: { flex: 1 },
+          onChange: (event) => applyTuning({ [field.key]: Number(event.target.value) }),
+        }),
+        h("code", { "data-value": field.key, style: { flex: "0 0 52px", textAlign: "right" } }, String(TUNING[field.key])),
+        )),
+        h("button", {
+          type: "button",
+          "data-reset": "tuning",
+          onClick: () => applyTuning(Object.assign({}, TUNING_DEFAULTS)),
+        }, "恢复默认"),
+      ),
+    );
+  }
+
   /** How long a tap may move, in px, before it counts as a drag. */
   const DRAG_SLOP_PX = 4;
 
@@ -2186,13 +2294,9 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       return () => window.cancelAnimationFrame(id);
     }, [panelOpen]);
     const [tab, setTab] = useState("motions");
-    /**
-     * 设置面板的改动版本号。
-     *
-     * 真正的值写在 TUNING 上（控制器每帧直接读它，不走 React 状态），
-     * 这里只用来**触发重渲染**，让面板上的数字跟着动。
-     */
-    const [settingsRev, setSettingsRev] = useState(0);
+    // 设置值在模块作用域的 store 里（DSH 设置页和这里的面板共用一份），
+    // 订阅它只为重渲染。
+    useSettings();
 
     const [pinned, setPinned] = useState({});
     const [dragging, setDragging] = useState(false);
@@ -2282,49 +2386,6 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         if (alive) setError(String((reason && reason.message) || reason));
       });
       return () => { alive = false; };
-    }, []);
-
-    /**
-     * 启动时把存档里的可调项读回来。
-     *
-     * 每个值都按 TUNING_FIELDS 的区间夹一遍：手改坏了存档也只是回到合法范围，
-     * 不会出现「死区 5」这种把宠物彻底冻住的配置。
-     */
-    useEffect(() => {
-      let saved = null;
-      try {
-        saved = JSON.parse(window.localStorage.getItem(TUNING_KEY) ?? "null");
-      } catch {
-        saved = null;
-      }
-      if (saved === null || typeof saved !== "object") return;
-      let restored = false;
-      for (const field of TUNING_FIELDS) {
-        const value = saved[field.key];
-        if (typeof value !== "number" || !Number.isFinite(value)) continue;
-        TUNING[field.key] = clampSetting(field, value);
-        restored = true;
-      }
-      if (restored) setSettingsRev((n) => n + 1);
-    }, []);
-
-    /**
-     * 改一项可调参数：写进 TUNING（下一帧生效）、存档、重渲染。
-     *
-     * 直接改 TUNING 而不是走 React 状态是刻意的：控制器每帧读它，几百毫秒的
-     * 状态传播延迟会让滑杆手感很黏。
-     */
-    const applyTuning = useCallback((patch) => {
-      for (const [key, value] of Object.entries(patch)) {
-        const field = TUNING_FIELDS.find((entry) => entry.key === key);
-        TUNING[key] = field === undefined ? value : clampSetting(field, value);
-      }
-      try {
-        window.localStorage.setItem(TUNING_KEY, JSON.stringify(TUNING));
-      } catch {
-        /* 无痕模式之类：这次改动仍然生效，只是下次不记得 */
-      }
-      setSettingsRev((n) => n + 1);
     }, []);
 
     // ---- model boot ---------------------------------------------------
@@ -3523,37 +3584,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
                 );
               })
             : tab === "settings"
-            // 可调项。值是 TUNING 上的活值，滑杆直接写它（见 applyTuning）。
-            ? h("div", { "data-settings": "", "data-rev": String(settingsRev) },
-                h("div", { "data-group": "", "data-setting": "tuning" },
-                  h("span", null, "手感（指针 / 嘴 / 眨眼）"),
-                  h("div", { "data-chips": "" },
-                    TUNING_FIELDS.map((field) => h("label", {
-                      key: field.key,
-                      "data-field": field.key,
-                      style: { display: "flex", alignItems: "center", gap: 6, width: "100%", fontSize: 11, padding: "2px 0" },
-                    },
-                    h("span", { style: { flex: "0 0 96px", opacity: .85 } }, field.label),
-                    h("input", {
-                      type: "range",
-                      min: field.min,
-                      max: field.max,
-                      step: field.step,
-                      value: TUNING[field.key],
-                      "data-input": field.key,
-                      style: { flex: 1 },
-                      onChange: (event) => applyTuning({ [field.key]: Number(event.target.value) }),
-                    }),
-                    h("code", { "data-value": field.key, style: { flex: "0 0 52px", textAlign: "right" } }, String(TUNING[field.key])),
-                    )),
-                    h("button", {
-                      type: "button",
-                      "data-reset": "tuning",
-                      onClick: () => applyTuning(Object.assign({}, TUNING_DEFAULTS)),
-                    }, "恢复默认"),
-                  ),
-                ),
-              )
+            // 和 DSH 设置页共用同一个组件（值也共用一份，见模块里的 store）。
+            ? h("div", { "data-settings": "" }, h(TuningControls, null))
             : tab === "motions"
             ? pet.motions.filter((entry) => !(pet.hiddenMotions ?? []).includes(entry.group))
               .map((entry) => h("div", { "data-group": "", key: entry.group },
@@ -3639,8 +3671,45 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     current.container.remove();
   }
 
+  /**
+   * 往 DSH 自己的设置界面里挂一节「桌宠」。
+   *
+   * DSH 客户端插件通过 slot 往宿主界面插东西，设置页那一节的写法就是
+   * ctx.slots.inject("settings.section", () => ctx.slots.register(meta, render))，
+   * 字段照抄自 dsh-rule-manager 的客户端 bundle（它就是这么出现在设置里的）：
+   *   name/id/order/label  +  一个返回 React 元素的函数。
+   *
+   * 右键面板里那份设置只是过渡（用户明说的），正牌入口在这里。
+   */
+  function PetSettingsSection() {
+    useSettings();
+    return h("div", { "data-pet-settings": "" },
+      h("h3", { style: { margin: "0 0 6px", fontSize: 13 } }, "手感（指针 / 嘴 / 眨眼）"),
+      h(TuningControls, null),
+    );
+  }
+
+  function applySettings(ctx) {
+    if (ctx === null || ctx === undefined) return;
+    const slots = ctx.slots;
+    if (slots === undefined || slots === null) return;
+    try {
+      slots.inject("settings.section", () => slots.register({
+        name: "settings.section",
+        id: "pet-settings",
+        order: 40,
+        label: () => "桌宠",
+      }, () => h(PetSettingsSection, null)));
+    } catch {
+      /* 老版本 DSH 没有这个 slot：右键面板那份还在，不影响使用 */
+    }
+  }
+
   function apply(ctx) {
     ensureStyle();
+    // 设置值在模块作用域，客户端启动时读一次存档就够了。
+    restoreTuning();
+    applySettings(ctx);
     // Takeover: an earlier instance — a hot reload, or one left behind by a
     // crashed reload — must not leave a second floating pet on the page.
     teardown();

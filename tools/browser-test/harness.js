@@ -28,7 +28,18 @@ async function main() {
   const exports = window.__pluginExports && window.__pluginExports['dsh-pet-live2d'];
   if (exports === undefined) { report.error = window.__bootError || 'plugin bundle did not register'; return finish(null); }
   try {
-    exports.apply({ effect: (fn) => { try { return fn(); } catch { return () => {}; } } });
+    // 假 ctx：effect 是插件生命周期，slots 是 DSH 客户端界面的扩展点
+    // （设置页那一节就是这么挂上去的）。注册结果留在 window 上给 driver 用：
+    // 真实 DSH 里由宿主渲染，这里我们自己把它挂出来。
+    const sections = {};
+    exports.apply({
+      effect: (fn) => { try { return fn(); } catch { return () => {}; } },
+      slots: {
+        inject: (slotName, callback) => callback(),
+        register: (meta, render) => { sections[meta.id] = { meta, render }; return meta.id; },
+      },
+    });
+    window.__pluginSections = sections;
     report.applied = true;
   } catch (error) { report.error = String(error && error.stack || error); return finish(null); }
 

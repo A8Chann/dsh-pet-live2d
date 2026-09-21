@@ -294,6 +294,28 @@ await sleep(400)
 const restored = await gazeAt(0.60, 0.5)
 check('「恢复默认」把死区放回 0.12（又能动了）', Math.abs(restored.x) > 0.01, JSON.stringify(restored))
 
+// --- 设置必须挂在 DSH 自己的设置页里（右键面板那份只是过渡）-------------------
+const sectionIds = JSON.parse(await ev('JSON.stringify(Object.keys(window.__pluginSections ?? {}))'))
+check('插件往 DSH 设置页注册了一节', sectionIds.includes("pet-settings"), JSON.stringify(sectionIds))
+const mounted = await ev('(() => {'
+  + ' const slot = (window.__pluginSections ?? {})["pet-settings"];'
+  + ' if (!slot) return "NO_SLOT";'
+  + ' const host = document.createElement("div"); host.id = "dsh-settings-probe"; document.body.appendChild(host);'
+  + ' window.ReactDOM.createRoot(host).render(slot.render());'
+  + ' return slot.meta.label(); })()')
+check('那一节的标题是「桌宠」', mounted === "桌宠", String(mounted))
+await sleep(600)
+const inDsh = await ev('!!document.querySelector("#dsh-settings-probe [data-pet-settings] [data-input=\'gazeDeadzone\']")')
+check('DSH 设置页那一节里也有「注视死区」滑杆（和右键面板共用同一份值）', inDsh === true)
+// 在 DSH 设置页里改，宠物必须跟着变 —— 两处 UI 共用模块作用域的 TUNING。
+await ev('(() => {'
+  + ' const el = document.querySelector("#dsh-settings-probe [data-input=\'gazeDeadzone\']");'
+  + ' const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;'
+  + ' setter.call(el, "0.5"); el.dispatchEvent(new Event("input", { bubbles: true })); return true })()')
+await sleep(400)
+const afterDshChange = await gazeAt(0.60, 0.5)
+check('在 DSH 设置页改死区，宠物立刻跟着变', Math.abs(afterDshChange.x) < 0.01, JSON.stringify(afterDshChange))
+
 const bad = results.filter((r) => !r.ok)
 console.log((bad.length === 0 ? 'OK' : 'FAILED') + '  ' + (results.length - bad.length) + '/' + results.length + ' checks passed')
 ws.close()
