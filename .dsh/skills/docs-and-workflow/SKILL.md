@@ -42,6 +42,36 @@ whenToUse: >
   断言要对着 `gazeTarget()` 实测的偏移写。同样的错还制造过一个挂着"待调查"的
   ANOMALY：那个读数的指针其实停在右边缘，注释却写着"回到中心"。
 
+## 上架到插件市场（dsh-market）
+
+市场目录来自 **awesome-dsh-plugin**：`https://awesome-dsh-plugin.com/plugins.json`
+（4000+ 条；`dshmarket` 的 `lib/catalog*.js` 读的就是它，旁边还有一份 npm 镜像）。
+收录方式是**往人家仓库提一个文件**——不发 npm、也不是自动爬 topic：
+
+- 仓库 `awesome-dsh-plugin/awesome-dsh-plugin`，新文件 `data/plugins/<owner>__<repo>.yml`
+  （一个插件一个文件，所以 PR 之间永不冲突）
+- ```yaml
+  url: https://github.com/<owner>/<repo>   # 必须与仓库完全一致
+  name: <owner>/<repo>
+  category: fun                            # agi/ui/usage/theme/…/fun
+  description:
+    en: One line ending with a period.     # 只有这个是必填
+    zh: 一句话，以句号结尾。                 # 可选，维护者会补
+  ```
+  描述里含 `: `（冒号+空格）必须加引号，否则 YAML 当成嵌套键、解析失败。
+- 硬性要求：`package.json` 里有 **`dsh.bundle`**（**只声明 `dsh.client` 会被拒**——那样
+  `dsh plugin add` 装不上，这是最常见的退回原因）、仓库**创建满 1 天**、加了
+  `dsh-plugin` topic、描述必须与代码相符（夸大是主要打回原因）。
+- 合并前**维护者会真的读仓库**，所以"装得上"要自己先验：`git ls-files <pkg>/lib`
+  确认构建产物入库（`github:owner/repo` 装下来没有 build 步骤可用），
+  `cordis.patch.yml` 是 `- insert: [- id: …, name: …]` 那个形状。
+
+**本机拿不到非交互的 GitHub 凭据**：GCM（`credential.helper=manager`）只在 push 时
+静默给凭据，`git credential fill` / `git credential-manager get` 都会**挂住**
+（命令无输出、被工具超时杀掉），`gh` 也没装。所以开 PR 只有两条路：
+让用户点网页预填链接 `/new/main/data/plugins?filename=<owner>__<repo>.yml`，
+或者用户给 token 走 REST API（fork → ref → contents → pulls）。
+
 ## 测试环境的第一个开关：暂停摸鱼
 
 `waitReady()` 现在会自动调 `window.__dshLive2dPet.setFidgetEnabled(false)`。
