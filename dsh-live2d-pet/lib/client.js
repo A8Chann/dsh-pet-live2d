@@ -107,6 +107,8 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
      * so anything we pinned on purpose has to be un-pinned on purpose.
      */
     let heldParams = null;
+    /** Parameters a retired action wants put back, re-applied every frame. */
+    let releasedOverrides = null;
     /**
      * The session phase currently being sustained, if any (requirement #4).
      */
@@ -442,15 +444,30 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       } catch {
         /* a torn-down model */
       }
-      if (expressionLayers.length === 0 && sweepSpec === null && mouthFollow <= 0 && mouthLean === 0) {
+      if (expressionLayers.length === 0 && sweepSpec === null && mouthFollow <= 0 && mouthLean === 0
+        && releasedOverrides === null) {
         // The mouth contributes nothing at rest, and saying so is part of the
         // contract: leaving the last moving values here would report an open
         // mouth after the pointer had already come back to the centre.
         mouthWritten = { open: 0, form: 0 };
+        // The release still has to be applied — it is not tied to any of the
+        // things this guard is about.
+        if (releasedOverrides !== null) {
+          for (const [id, value] of Object.entries(releasedOverrides)) {
+            const at = parameterIndex(core, id);
+            if (at >= 0) core._model.parameters.values[at] = value;
+          }
+        }
         return;
       }
       try {
         const values = core._model.parameters.values;
+        if (releasedOverrides !== null) {
+          for (const [id, value] of Object.entries(releasedOverrides)) {
+            const at = parameterIndex(core, id);
+            if (at >= 0) values[at] = value;
+          }
+        }
         // The mouth follows the pointer too. It has to be written per frame —
         // setting it once from the pointermove handler would be overwritten by
         // the very next frame the motion system runs.
@@ -575,12 +592,23 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       for (const [id, value] of Object.entries(snapshotValues)) writeParameter(id, value);
     };
 
-    /** Undo whatever a finished one-shot action deliberately pinned. */
+    /**
+     * Undo whatever a finished one-shot action deliberately pinned.
+     *
+     * NOT a one-shot write: writing the old values straight into the core lands
+     * OUTSIDE the frame, and the very next `loadParameters()` restores them from
+     * the snapshot — which still holds the action's values, because that snapshot
+     * was taken while the action was running. The write vanished, so a parked
+     * pose could never be let go (吹泡泡糖 stayed inflated for good).
+     *
+     * Instead the saved values become a per-frame override: applied every frame
+     * at the same seam as everything else, and dropped the moment a new motion
+     * starts and takes those parameters over.
+     */
     const restoreHeld = () => {
       if (heldParams === null) return;
-      const held = heldParams;
+      releasedOverrides = heldParams.saved;
       heldParams = null;
-      restore(held.saved);
     };
 
     /**
@@ -629,6 +657,14 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       // two actions from fighting over the same parameter.
       if (keep === undefined) restoreHeld();
       const saved = keep === undefined ? snapshot(entry.params, preset) : keep;
+      // Snapshot first: it reads the OVERRIDDEN values, which is the true
+      // pre-action state. Then hand back only the parameters this motion
+      // actually drives — clearing the whole map here would wipe the release
+      // that playIdle() had just installed a line earlier, since playIdle
+      // calls restoreHeld() and then start().
+      if (releasedOverrides !== null && keep === undefined) {
+        for (const id of entry.params ?? []) delete releasedOverrides[id];
+      }
       currentGroup = entry.group;
       currentEntry = entry;
       startedAt = Date.now();
@@ -948,6 +984,13 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       },
       /** Diagnostic: blinks started since load. */
       blinkCount: () => blinkCount,
+      /** Diagnostic: the release override and the held snapshot. */
+      releaseDebug: () => ({
+        release: releasedOverrides === null ? null : Object.keys(releasedOverrides).length,
+        releaseSample: releasedOverrides === null ? null : releasedOverrides.chuipaopao,
+        held: heldParams === null ? null : Object.keys(heldParams.saved).length,
+        heldSample: heldParams === null ? null : heldParams.saved.chuipaopao,
+      }),
       /** Diagnostic: how shut the eyes were on the last frame, 0..1. */
       blinkAmount: () => blinkWrote,
       /** Force a blink now, so a test does not have to wait for one. */

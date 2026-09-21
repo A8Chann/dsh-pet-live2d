@@ -56,3 +56,25 @@ motionUpdated || this.eyeBlink?.updateParameters?.(coreModel, dt)
 - 有些效果**参数不冲突但画面冲突**：吐魂(`ParamCheek18`) 与 吹泡泡糖动作
   (`chuipaopao*`) 完全不相干，却是一张脸同时在吐魂和吹泡泡。
   需要显式的互斥声明，不能指望参数层面自动发现。
+
+## 帧外写的参数，下一帧就被 loadParameters 抹掉
+
+`restoreHeld()` 原来是"把快照直接写回参数"：
+
+```js
+const restoreHeld = () => { restore(held.saved) }   // 写 core._model.parameters.values
+```
+
+这是**帧外写**。下一帧 `loadParameters()` 会用 `saveParameters()` 的快照覆盖它，
+而那个快照是**动作运行期间**存的、里面正是动作的值。于是还原被静默丢弃：
+动作停了（`data-motion` 已经是 idle）、参数却还是动作的值。
+
+**症状**：吹泡泡糖定格后切回"闭嘴"切不回去；而掏出手机会"看起来"能回去，
+只是因为**待机循环本身会驱动 phone**，而 `chuipaopao` 不在待机驱动的
+89 个参数里 —— 一个修好了、一个没有，其实是同一个 bug。
+
+**修法**：把还原变成**每帧覆盖层**（跟表达式层同一个缝隙），
+而不是一次性的写。并且**只把新动作真正驱动的参数交接出去**
+（`for (const id of entry.params) delete overrides[id]`）——
+注意 `playIdle()` 是**先 restoreHeld() 再 start()**，如果在 start 里把整张表清空，
+等于把上一行刚装好的还原又抹掉了。
