@@ -57,7 +57,7 @@ const server = createServer(async (req, res) => {
   if (pathname === '/' || pathname === '/blank') {
     const variant = url.searchParams.get('variant')
     let page = readFileSync(join(HERE, 'index.html'), 'utf8')
-    if (variant) page = page.replace('/plugins/dsh-live2d-pet/client.js', '/variants/client-' + variant + '.js')
+    if (variant) page = page.replace('/plugins/dsh-pet-live2d/client.js', '/variants/client-' + variant + '.js')
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
     res.end(page)
     return
@@ -82,7 +82,8 @@ const server = createServer(async (req, res) => {
     res.end(readFileSync(file))
     return
   }
-  if (pathname === '/plugins/dsh-live2d-pet/client.js') {
+  // 和真实的 DSH 一样按**包名**寻址：/plugins/<包名>/client.js
+  if (pathname === '/plugins/dsh-pet-live2d/client.js') {
     res.writeHead(200, { 'content-type': 'application/javascript', 'cache-control': 'no-store' })
     res.end(readFileSync(join(PLUGIN, 'lib', 'client.js')))
     return

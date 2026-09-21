@@ -25,7 +25,7 @@ window.fetch = function (...args) {
 
 async function main() {
   for (let i = 0; i < 100 && window.__pluginExports === undefined; i++) await new Promise(r => setTimeout(r, 50));
-  const exports = window.__pluginExports && window.__pluginExports['dsh-live2d-pet'];
+  const exports = window.__pluginExports && window.__pluginExports['dsh-pet-live2d'];
   if (exports === undefined) { report.error = window.__bootError || 'plugin bundle did not register'; return finish(null); }
   try {
     exports.apply({ effect: (fn) => { try { return fn(); } catch { return () => {}; } } });
