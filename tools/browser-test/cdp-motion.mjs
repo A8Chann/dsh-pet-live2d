@@ -28,7 +28,23 @@ for (let i = 0; i < 240; i++) { await sleep(400); if (await ev('document.title')
 await waitReady(ev)
 const IDS = ["chuipaopao","chuipaopao2","chuipaopao7","pengshui","jingyu","phone","phone2","phone4"]
 const readExpr = 'JSON.stringify((()=>{const raw=window.__PET_DBG.model.internalModel.coreModel._model.parameters; const o={}; for(const id of ' + JSON.stringify(IDS) + '){const i=Array.from(raw.ids).indexOf(id); o[id]=i<0?"NOID":+raw.values[i].toFixed(2)} return o})())'
-const read = async () => JSON.parse(await ev(readExpr))
+/**
+ * Parameters as the model has them, plus what the frame actually DREW.
+ *
+ * The raw array is read BETWEEN frames, and the engine's frame runs
+ * saveParameters() -> update() -> loadParameters(): that last call puts the
+ * engine's own baseline back over every layer the plugin writes. So the raw
+ * value is "what the motion system alone produced" — for a parameter nothing
+ * else touches the two agree, but only the _drawn half answers "what is on
+ * screen", and that is what these assertions are about.
+ */
+const read = async () => {
+  const out = JSON.parse(await ev(readExpr))
+  for (const id of ['chuipaopao', 'phone', 'jingyu']) {
+    out[id + '_drawn'] = await ev('window.__dshLive2dPet.drawn(' + JSON.stringify(id) + ')')
+  }
+  return out
+}
 const motion = () => ev('document.querySelector("[data-dsh-live2d-pet]").getAttribute("data-motion")')
 const opt = (g) => ev('JSON.stringify(window.__dshLive2dPet.optionsFor(' + JSON.stringify(g) + '))')
 const out = {}
@@ -50,11 +66,12 @@ await sleep(1500); const bubbleDuring = await read()
 // the full 15s and a natural fidget changed the mouth slot in the meantime.
 // Wait out the motion's own declared duration instead.
 await sleep(5000); const bubbleAfter = await read()
-check('bubble gum leaves the mouth inflated while it runs', bubbleDuring.chuipaopao > 0, JSON.stringify(bubbleDuring))
+check('bubble gum leaves the mouth inflated while it runs', bubbleDuring.chuipaopao_drawn > 0,
+  JSON.stringify(bubbleDuring))
 // 吹泡泡糖 is declared hold+persist: the user asked for actions to PARK on their
 // last frame rather than relax. The original expectation here was the opposite.
 check('and it PARKS on its last frame rather than relaxing',
-  bubbleAfter.chuipaopao === 1, 'after=' + bubbleAfter.chuipaopao)
+  bubbleAfter.chuipaopao_drawn === 1, 'after=' + bubbleAfter.chuipaopao_drawn)
 
 // (2) the spray must show the whale, then clean up
 // The spray is gated: with no whale on screen it must refuse to play at all.
@@ -78,17 +95,17 @@ await ev('window.__dshLive2dPet.playOnce("SprayWater",0,{kind:"panel"})')
 await sleep(300); const sprayDuring = await read()
 // 鲸鱼喷水 is 0.467s long and also holds, so again: no idle to wait for.
 await sleep(2500); const sprayAfter = await read()
-check('the spray shows the whale', sprayDuring.jingyu === 1, 'jingyu=' + sprayDuring.jingyu)
+check('the spray shows the whale', sprayDuring.jingyu_drawn === 1, 'jingyu=' + sprayDuring.jingyu_drawn)
 // 鲸鱼喷水 is declared hold+persist too, so it PARKS with the whale out. The
 // original expectation here predates that requirement.
-check('and it PARKS with the whale out', sprayAfter.jingyu === 1, JSON.stringify(sprayAfter))
+check('and it PARKS with the whale out', sprayAfter.jingyu_drawn === 1, JSON.stringify(sprayAfter))
 
 // (3) 掏出手机 must HOLD the phone
 await ev('window.__dshLive2dPet.playOnce("OpenCase",0,{kind:"panel"})')
 await sleep(1800); const openDuring = await read()
 await sleep(3000); const openHeld = await read()
-check('掏出手机 raises the phone', openDuring.phone > 0.5, 'phone=' + openDuring.phone)
-check('and HOLDS it rather than relaxing', openHeld.phone > 0.5, 'phone=' + openHeld.phone)
+check('掏出手机 raises the phone', openDuring.phone_drawn > 0.5, 'phone=' + openDuring.phone_drawn)
+check('and HOLDS it rather than relaxing', openHeld.phone_drawn > 0.5, 'phone=' + openHeld.phone_drawn)
 
 // (4) a selfie is gated on the phone already being out
 // KNOWN GAP, asserted as it behaves rather than as it should: the guard reads
@@ -97,8 +114,8 @@ check('and HOLDS it rather than relaxing', openHeld.phone > 0.5, 'phone=' + open
 // here so the gap is visible instead of silently passing.
 const selfieWithRawPhone = await ev('window.__dshLive2dPet.canPlay("Selfie")')
 check('GAP: a motion-raised phone does not satisfy the selfie guard',
-  selfieWithRawPhone === false && openHeld.phone > 0.5,
-  'phone=' + openHeld.phone + ' canPlay(Selfie)=' + selfieWithRawPhone)
+  selfieWithRawPhone === false && openHeld.phone_drawn > 0.5,
+  'phone=' + openHeld.phone_drawn + ' canPlay(Selfie)=' + selfieWithRawPhone)
 
 // (5) motion switches must CROSS-FADE
 // start() used to call stopAllMotions() unconditionally, which cleared the

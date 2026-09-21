@@ -35,6 +35,7 @@ export const SUITE = {
   'cdp-idle-return.mjs': '动作/表情到点自动回到初始待机',
   'cdp-passthrough.mjs': '只有角色可拖动，透明处事件穿透',
   'cdp-merge.mjs': '装扮菜单：多槽位叠加、跨槽保留、白魔爪双层',
+  'cdp-bubble.mjs': '动作定格能关掉：吹泡泡糖/掏手机 → 无，连测三轮',
 }
 
 const argv = process.argv.slice(2)

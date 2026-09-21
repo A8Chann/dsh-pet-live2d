@@ -10,8 +10,14 @@ whenToUse: >
 
 - **参数按名字查必须走 `core._model.parameters.ids`**（纯字符串数组）。
   引擎包装层的 `getParameterIndex(string)` 拿 CubismId 对象比较，传字符串**永远 miss**。
-- **每帧顺序**：`loadParameters()` → 动作写参数 → `saveParameters()` → 表达式写 → 算形变 → 绘制。
-  **要叠加自己的参数，必须挂在 `saveParameters()` 之后。** 挂在 `loadParameters()` 之后会被这一帧的快照吃进基线，下一帧恢复时已经含了它、再叠一次，于是**永远关不掉**。
+- **每帧顺序（实测，2026-09 用 3 个缝的采样钉死）**：一次 `internalModel.update()` 里
+  `saveParameters()` / `update()` / `loadParameters()` **各一次，且 `loadParameters()` 是最后一个**。
+  **要叠加自己的参数，必须挂在 `saveParameters()` 之后**（写进去 → `update()` 烘进模型 → 画出来），
+  挂在它之前会被这一帧的快照吃进基线、下一帧再叠一次，于是**永远关不掉**。
+- **帧外读到的是"基线"，不是"画面"。** 因为 `loadParameters()` 在帧尾，它把引擎自己的基线
+  整片盖回 lived array。夹在两帧之间读 `core._model.parameters.values`，拿到的是**图层之前**的姿势：
+  动作停了它还是 1、表情明明生效却读到 0。**要断言"画面里是什么"，只能用
+  `window.__dshLive2dPet.drawn(id)`**（= 上一帧 `update()` 那一刻的值，控制器在钩子里存了一份）。
 - **表达式管理器一次只持有一个 `currentExpression`**，在 `internalModel.motionManager.expressionManager`（**不是** `internalModel.expressionManager`）。要多个同时生效只能自己写参数。
 - **引擎解析定义的 File 用 `new URL(file, modelUrl)`**：根相对路径可用，`blob:` 会被判成相对路径改写掉而加载不了。
 - **本模型所有 motion3.json 都声明 `Loop: true`**，永远不触发 `motionFinish`；必须自己按 `Duration` 定时收尾，并以 `loop: false` 启动。
@@ -78,3 +84,20 @@ const restoreHeld = () => { restore(held.saved) }   // 写 core._model.parameter
 （`for (const id of entry.params) delete overrides[id]`）——
 注意 `playIdle()` 是**先 restoreHeld() 再 start()**，如果在 start 里把整张表清空，
 等于把上一行刚装好的还原又抹掉了。
+
+## 后半段：快照也必须读"画面"，否则第二轮必挂
+
+改成每帧覆盖层之后，第一轮好了、**第二轮又关不掉**。因为动作启动时的
+"还原快照"是**帧外读**的：
+
+```js
+const saved = snapshot(entry.params, preset)   // readParameter → 帧外基线
+```
+
+第二轮时覆盖层已经把画面压成 0，但帧外基线仍是冻结的 1 ——
+快照忠实地记下 1，于是"还原"把嘴还原成**鼓着的**。同一类错，换了个位置。
+
+**修法**：快照读 `readDrawn()`（钩子里在图层之后存下的那一份）而不是 `readParameter()`。
+
+**两次都栽在同一个坑**：把"帧外读到的值"当成了"用户看到的值"。凡是要描述
+画面状态的量，都要在帧内取样。

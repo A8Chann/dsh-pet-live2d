@@ -312,6 +312,20 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       }
     };
 
+    /**
+     * The value the last drawn frame holds for this parameter.
+     *
+     * Differs from readParameter() by exactly the layers this controller
+     * applies: readParameter() gives the engine's baseline, this gives what the
+     * user is looking at.
+     */
+    const readDrawn = (id) => {
+      const at = parameterIndex(coreModel(), id);
+      if (at < 0) return undefined;
+      if (drawnValues !== null && at < drawnValues.length) return drawnValues[at];
+      return readParameter(id);
+    };
+
     const writeParameter = (id, value) => {
       const core = coreModel();
       const at = parameterIndex(core, id);
@@ -334,6 +348,55 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
     let expressionLayers = [];
     /** The core model whose saveParameters hook is installed. */
     let hookedCore = null;
+    /**
+     * Every parameter value the LAST frame actually drew.
+     *
+     * The engine's frame runs saveParameters() -> update() -> loadParameters(),
+     * so loadParameters() lands at the END: it puts the engine's own baseline
+     * back over everything written at the save seam. Between frames the live
+     * array therefore holds the pose BEFORE the layers — reading it from outside
+     * a frame answers "what would the motion have drawn", not "what is on
+     * screen".
+     *
+     * This is what `drawn(id)` answers, and it is the ONLY honest way to assert
+     * from a test that a per-frame write reached the screen. The action
+     * snapshot deliberately does NOT use it: restoring a drawn value would
+     * re-apply the mouth's own old offset and then add the current one on top.
+     */
+    let drawnValues = null;
+    /**
+     * How many times the frame hook actually ran, and what it saw.
+     *
+     * Everything this controller writes lands in the saveParameters hook, so
+     * "the write had no effect" has two very different causes: the hook never
+     * ran (a write that lands nowhere), or it ran and something later in the
+     * same frame overwrote it. Counting the calls and sampling one parameter
+     * either side of the pass is what tells them apart.
+     */
+    let hookCalls = 0;
+    let hookProbe = null;
+    /**
+     * Samples of one parameter at each seam of the frame.
+     *
+     * The engine writes its own baseline back at points this controller does
+     * not control, so "our write landed" and "our write survived the frame"
+     * are different claims. Sampling after loadParameters, after the save
+     * hook's own write, and after update() is what separates them.
+     */
+    let seamAt = -1;
+    let loadCalls = 0;
+    let loadSample = null;
+    let updateCalls = 0;
+    let updateSample = null;
+    /**
+     * The order the engine visits the three seams in, most recent last.
+     *
+     * Counts cannot tell "load runs before save" from "load runs after it", and
+     * that difference decides whether a write at the save seam survives the
+     * frame at all.
+     */
+    let seamOrder = "";
+    const markSeam = (ch) => { seamOrder = (seamOrder + ch).slice(-12); };
 
     /**
      * Apply the pinned expressions' parameters.
@@ -400,7 +463,14 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       // out here would leave the mouth frozen half-open instead of closing.
       {
         const now = (typeof performance !== "undefined" ? performance.now() : Date.now());
-        const dt = mouthEasedAt === 0 ? 16 : Math.min(120, now - mouthEasedAt);
+        // No upper clamp on dt. The exponential below is only frame-rate
+        // independent while dt is the REAL elapsed time; capping it at 120ms
+        // made every frame slower than ~8fps ease by a fixed step instead of by
+        // wall-clock, so on a loaded machine the mouth visibly lagged the
+        // pointer (and a test that slept a fixed 1.5s read a half-travelled
+        // mouth). After a real stall — a backgrounded tab — the same formula
+        // simply arrives in one step, which is the correct real-time answer.
+        const dt = mouthEasedAt === 0 ? 16 : Math.max(1, now - mouthEasedAt);
         mouthEasedAt = now;
         // Exponential, so it is smooth and frame-rate independent.
         const k = 1 - Math.exp(-dt / MOUTH_EASE_MS);
@@ -556,8 +626,58 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
         const base = core.saveParameters.bind(core);
         core.saveParameters = () => {
           base();
+          hookCalls += 1;
+          markSeam("S");
+          let values = null;
+          try {
+            values = core._model.parameters.values;
+          } catch {
+            values = null;
+          }
+          // Sample the release table's first entry on both sides of the pass.
+          const probeId = releasedOverrides === null ? null : Object.keys(releasedOverrides)[0];
+          const probeAt = probeId === null || values === null ? -1 : parameterIndex(core, probeId);
+          const pre = probeAt >= 0 ? values[probeAt] : null;
           applyExpressionLayers(core);
+          // The layers are now in place and update() is next, so this is the
+          // pose the frame is about to draw.
+          if (values !== null) {
+            if (drawnValues === null || drawnValues.length !== values.length) {
+              drawnValues = new Float32Array(values.length);
+            }
+            drawnValues.set(values);
+          }
+          hookProbe = probeId === null
+            ? null
+            : { id: probeId, at: probeAt, pre, post: probeAt >= 0 ? values[probeAt] : null };
+          if (probeAt >= 0) seamAt = probeAt;
         };
+        const sample = () => {
+          if (seamAt < 0) return null;
+          try {
+            return core._model.parameters.values[seamAt];
+          } catch {
+            return null;
+          }
+        };
+        if (typeof core.loadParameters === "function") {
+          const loadBase = core.loadParameters.bind(core);
+          core.loadParameters = () => {
+            loadBase();
+            loadCalls += 1;
+            markSeam("L");
+            loadSample = sample();
+          };
+        }
+        if (typeof core.update === "function") {
+          const updateBase = core.update.bind(core);
+          core.update = () => {
+            updateBase();
+            updateCalls += 1;
+            markSeam("U");
+            updateSample = sample();
+          };
+        }
         hookedCore = core;
       } catch {
         /* an engine that will not let us wrap it: pins simply do nothing */
@@ -581,7 +701,20 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       const out = {};
       const all = (ids || []).concat(extra === null || extra === undefined ? [] : Object.keys(extra));
       for (const id of all) {
-        const value = readParameter(id);
+        // The pose to put back is the one the RELEASE seam sees: the
+        // outstanding release if this parameter is in it, otherwise the
+        // engine's own value.
+        //
+        // Neither neighbour works. The raw value alone is the frozen motion
+        // output once a release is installed — recording that is how the second
+        // cycle of 吹泡泡糖 "restored" an inflated mouth. The DRAWN value folds
+        // in the layers' own contributions, and restoring those would count
+        // them twice: the release would re-apply the mouth's old offset and the
+        // mouth pass would add its current one on top.
+        const value = releasedOverrides !== null
+          && Object.prototype.hasOwnProperty.call(releasedOverrides, id)
+          ? releasedOverrides[id]
+          : readParameter(id);
         if (value !== undefined) out[id] = value;
       }
       return out;
@@ -655,8 +788,12 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       if (replaying) stopAll();
       // Releasing the previous action's pins before the new one starts keeps
       // two actions from fighting over the same parameter.
-      if (keep === undefined) restoreHeld();
+      // Snapshot BEFORE releasing the previous action's pins. restoreHeld()
+      // replaces the release table a line later, and that table is part of the
+      // pose being captured — taking the snapshot after it would drop exactly
+      // the values that are holding the previous action's pose (see snapshot()).
       const saved = keep === undefined ? snapshot(entry.params, preset) : keep;
+      if (keep === undefined) restoreHeld();
       // Snapshot first: it reads the OVERRIDDEN values, which is the true
       // pre-action state. Then hand back only the parameters this motion
       // actually drives — clearing the whole map here would wipe the release
@@ -947,6 +1084,7 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
         expressionLayers = [];
         sweepSpec = null;
         hookedCore = null;
+        drawnValues = null;
         headBox = null;
         hitMask = null;
         hitBox = null;
@@ -982,14 +1120,44 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       setGuardResolver(fn) {
         guardFor = typeof fn === "function" ? fn : null;
       },
+      /**
+       * Diagnostic: the value the last frame DREW for a parameter.
+       *
+       * The only honest way to assert on a per-frame write from outside the
+       * frame: reading the model's live array between frames returns the
+       * engine's own baseline, with every layer already loaded back off.
+       */
+      drawn: (id) => {
+        const value = readDrawn(id);
+        return value === undefined ? null : value;
+      },
       /** Diagnostic: blinks started since load. */
       blinkCount: () => blinkCount,
+      /**
+       * Diagnostic: the core this controller hooked.
+       *
+       * An A/B harness reaches the model through its own path; if that path
+       * resolves to a DIFFERENT core than the frame hook writes to, every
+       * measurement of a per-frame write is worthless. Comparing identities is
+       * the only way to rule that out.
+       */
+      coreIdentity: () => hookedCore,
       /** Diagnostic: the release override and the held snapshot. */
       releaseDebug: () => ({
         release: releasedOverrides === null ? null : Object.keys(releasedOverrides).length,
         releaseSample: releasedOverrides === null ? null : releasedOverrides.chuipaopao,
         held: heldParams === null ? null : Object.keys(heldParams.saved).length,
         heldSample: heldParams === null ? null : heldParams.saved.chuipaopao,
+        // Proof that the frame hook runs at all, and that the release pass
+        // really moved the parameter it says it moved.
+        hookCalls,
+        probe: hookProbe,
+        seamAt,
+        loadCalls,
+        loadSample,
+        updateCalls,
+        updateSample,
+        seamOrder,
       }),
       /** Diagnostic: how shut the eyes were on the last frame, 0..1. */
       blinkAmount: () => blinkWrote,

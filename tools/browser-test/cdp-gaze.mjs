@@ -107,7 +107,26 @@ await ev('(() => {'
   + ' })()')
 // Settle first: the value is EASED now, so reading it immediately after a move
 // catches it mid-travel and reports the previous position.
-const mouthParams = async () => { await sleep(800); return ev('JSON.stringify(window.__dshLive2dPet.mouthDebug())') }
+/**
+ * The mouth as written INSIDE the frame, once it has stopped travelling.
+ *
+ * The ease is frame-rate dependent at the bottom end: a 500ms frame is clamped
+ * to a 120ms step, so under parallel load the mouth is still on its way when a
+ * fixed sleep claims it should have arrived. That is exactly what made the lean
+ * check compare a settled "down" (+/-0.461) against a half-travelled "up"
+ * (0.281) and fail on a loaded machine while passing alone. Poll for the
+ * asymptote instead of guessing how long the travel takes.
+ */
+const mouthParams = async () => {
+  let last = null
+  for (let i = 0; i < 25; i += 1) {
+    await sleep(200)
+    const now = await ev('JSON.stringify(window.__dshLive2dPet.mouthDebug())')
+    if (now === last) return JSON.parse(now)
+    last = now
+  }
+  return JSON.parse(last)
+}
 const mouthCentre = await mouthAt(0.5, 0.5)
 const mouthHalf = await mouthAt(0.75, 0.5)
 const mouthEdge = await mouthAt(1.0, 0.5)
@@ -130,24 +149,65 @@ check('the mouth EASES toward the pointer instead of snapping',
 // Opening ParamMouthOpenY alone lifts the UPPER lip, which reads as a gasp.
 // The shape has to be pulled negative at the same time so the opening reads as
 // the lower jaw dropping — the same thing 吐舌 does, minus the tongue.
-const shapeCentre = JSON.parse(await mouthParams())
-await mouthAt(0.5, 0.15)
-const shapeUp = JSON.parse(await mouthParams())
-await mouthAt(0.5, 0.85)
-const shapeDown = JSON.parse(await mouthParams())
+/**
+ * Put the pointer at (fx, fy) of the CHARACTER's box, wait for the mouth to
+ * arrive, and return the resting contribution together with the normalized
+ * offset the plugin actually computed for that spot.
+ *
+ * The measured ny matters: geo is the character's ink box, not the stage, and
+ * its centre sits below the stage centre (493+300 vs a 300px stage at y=493 in
+ * a 300px box — measured 2026-09: the box centre is 34px low). So fy=0.15 and
+ * fy=0.85 are NOT mirror images in normalized space, and the old check that
+ * demanded form(up) == -form(down) was asserting a symmetry the geometry does
+ * not have. It failed on a loaded machine and passed alone, which is how a
+ * driver bug survives: it looks like flakiness.
+ */
+const mouthRead = async () => JSON.parse(await ev('JSON.stringify(window.__dshLive2dPet.mouthDebug())'))
+const mouthAtFull = async (fx, fy) => {
+  const target = await gazeAt(fx, fy)
+  // Poll for the value the geometry SAYS should be there, not for "it stopped
+  // changing": a stalled frame clock also stops it changing, and that is how a
+  // half-travelled mouth got recorded as a settled one.
+  const want = { open: 0.65 * Math.hypot(target.x, target.y), form: -0.7 * target.y }
+  let dbg = await mouthRead()
+  for (let i = 0; i < 20; i += 1) {
+    if (Math.abs(dbg.open - want.open) < 0.03 && Math.abs(dbg.form - want.form) < 0.03) break
+    await sleep(200)
+    dbg = await mouthRead()
+  }
+  return { target, follow: await ev('window.__dshLive2dPet.mouthFollow()'), dbg }
+}
+const mouthRest = await mouthAtFull(0.5, 0.5)
+const mouthUp = await mouthAtFull(0.5, 0.15)
+const mouthDown = await mouthAtFull(0.5, 0.85)
 // Shape follows the pointer VERTICALLY: up leans it the way the author's own
 // open-mouth keyframes do, down leans it the other way.
 check('the mouth shape leans with the pointer height',
-  shapeUp.form > 0.2 && shapeDown.form < -0.2 && Math.abs(shapeUp.form + shapeDown.form) < 0.15,
-  'up ' + JSON.stringify(shapeUp) + ' down ' + JSON.stringify(shapeDown))
-// KNOWN ANOMALY, asserted as observed rather than as it should be: reading the
-// OPEN contribution right after returning to the centre reports it still wide
-// open (0.6+), even though mouthFollow() reads 0 at the same point in the run.
-// The two are sampled at different moments, so one of them is not seeing what
-// the other does. Recorded here so it stays visible.
-const centreOpenStillHigh = shapeCentre.open > 0.4
-check('ANOMALY: open contribution at the centre reads high', centreOpenStillHigh,
-  'centre ' + JSON.stringify(shapeCentre) + ' — needs investigation')
+  mouthUp.dbg.form > 0.2 && mouthDown.dbg.form < -0.2,
+  'up ' + JSON.stringify(mouthUp.dbg) + ' ny=' + mouthUp.target.y.toFixed(3)
+  + '  down ' + JSON.stringify(mouthDown.dbg) + ' ny=' + mouthDown.target.y.toFixed(3))
+// The full law, asserted against the offset the plugin computed rather than
+// against assumed symmetric positions: the opening is MOUTH_FOLLOW (0.65) of
+// the pointer's distance, the lean is MOUTH_DROP (0.7) of its vertical part.
+const lawError = (sample) => ({
+  open: Math.abs(sample.dbg.open - 0.65 * Math.hypot(sample.target.x, sample.target.y)),
+  form: Math.abs(sample.dbg.form + 0.7 * sample.target.y),
+})
+check('the mouth equals 0.65·|offset| open and -0.7·ny lean at every position',
+  [mouthRest, mouthUp, mouthDown].every((s) => lawError(s).open < 0.04 && lawError(s).form < 0.04),
+  [mouthRest, mouthUp, mouthDown]
+    .map((s) => 'ny=' + s.target.y.toFixed(3) + ' ' + JSON.stringify(s.dbg)).join('  '))
+// And with the pointer on the STAGE centre — the only position that is really
+// neutral — both contributions must be zero, so nothing is left pinned.
+const vw = await ev('window.innerWidth')
+const vh = await ev('window.innerHeight')
+await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: Math.round(vw / 2), y: Math.round(vh / 2) })
+await sleep(700)
+const neutralTarget = JSON.parse(await ev('JSON.stringify(window.__dshLive2dPet.gazeTarget())'))
+const neutralMouth = await mouthParams()
+check('the mouth is shut with the pointer on the stage centre',
+  Math.abs(neutralTarget.y) < 0.01 && neutralMouth.open < 0.02 && Math.abs(neutralMouth.form) < 0.02,
+  'target ' + JSON.stringify(neutralTarget) + ' ' + JSON.stringify(neutralMouth))
 await mouthAt(0.5, 0.5)
 
 // --- the pet must BLINK -----------------------------------------------------
