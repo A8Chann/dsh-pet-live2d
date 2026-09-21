@@ -266,6 +266,30 @@ check('挤番茄酱收回之后嘴闭上（动作写过的 ParamMouthOpenY 必�
   (mouthClosed ?? 0) < 0.3 && (mouthOpen ?? 0) > (mouthClosed ?? 0) + 0.1,
   '起始 ' + mouthRest + ' 挤的时候 ' + mouthOpen + ' 收回后 ' + mouthClosed)
 
+// ⚠️ 上面那段（11）重载了页面 —— 面板是关着的，后面要用面板必须先重新打开，
+// 而且要**等到它真的挂上**：重载后第一次 contextmenu 可能落在一个还没准备好代理层的
+// DOM 上，点完什么都没发生（这次就是 click=NOSLOT 才发现的）。
+for (let i = 0; i < 20; i += 1) {
+  if ((await ev('!!document.querySelector("[data-dsh-live2d-pet] [data-panel]")')) === true) break
+  await openPanel(ev)
+  await sleep(300)
+}
+
+// (12) 自拍的前置动作就是掏出手机。手机已经在手里时再播自拍，
+//      前置链会**重播**掏出手机并重新快照 —— 而这时 phone 正被动作举着（=1），
+//      于是"动作前的状态"被记成 1，从此手机再也放不下来。
+const clickedPhone = await clickSlot('rhand', '掏出手机')
+const slotsAfterClick = await ev('JSON.stringify(window.__dshLive2dPet.slotSelections())')
+check('自拍前先掏出手机', (await until(async () => ((await drawn('phone')) ?? 0) > 0.5)) === true,
+  'click=' + clickedPhone + ' slots=' + slotsAfterClick + ' phone=' + (await drawn('phone'))
+  + ' canPlay=' + (await ev('window.__dshLive2dPet.canPlay("OpenCase")')))
+await ev('window.__dshLive2dPet.playOnce("Selfie", 0, { kind: "probe" })')
+await sleep(3000)
+check('播过自拍之后手机还能放下', (await clickSlot('rhand', null)) === 'OK')
+check('画面里的手机回到 0（快照没被"举着的值"污染）',
+  (await until(async () => ((await drawn('phone')) ?? 1) <= 0.05)) === true,
+  'phone=' + (await drawn('phone')))
+
 // (11) 装扮要"存档"：会话相位不动它、归位不清它、重载页面还在。
 await clickSlot('glasses', '墨镜')
 await clickSlot('cloth', '黑色')
@@ -283,7 +307,6 @@ await sleep(800)
 const kept = JSON.parse(await ev('JSON.stringify(window.__dshLive2dPet.slotSelections())'))
 check('重载之后装扮选择从存档恢复', kept.glasses === '墨镜' && kept.cloth === '黑色', JSON.stringify(kept))
 check('重载之后装扮真的画出来了', (await drawn('ParamCheek71')) === 1, 'Cheek71=' + (await drawn('ParamCheek71')))
-
 const bad = results.filter((r) => !r.ok)
 console.log((bad.length === 0 ? 'OK' : 'FAILED') + '  ' + (results.length - bad.length) + '/' + results.length + ' checks passed')
 ws.close()

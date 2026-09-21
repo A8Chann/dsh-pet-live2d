@@ -730,20 +730,24 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       for (const id of all) {
         // 引擎自己会一直驱动的身体参数不进来：钉住它们等于把宠物冻住。
         if (ENGINE_OWNED_PARAM.test(id)) continue;
-        // The pose to put back is the one the RELEASE seam sees: the
-        // outstanding release if this parameter is in it, otherwise the
-        // engine's own value.
+        // 取值顺序（三档，缺一档都会出 bug）：
+        //   1. 还挂着的那个动作的快照 —— 它记的是这只手**还没抬起来**时的值；
+        //   2. 已经装好的还原表 —— 同样记的是动作之前的值；
+        //   3. 引擎自己的值 —— 前两档都没有时才用它。
         //
-        // Neither neighbour works. The raw value alone is the frozen motion
-        // output once a release is installed — recording that is how the second
-        // cycle of 吹泡泡糖 "restored" an inflated mouth. The DRAWN value folds
-        // in the layers' own contributions, and restoring those would count
-        // them twice: the release would re-apply the mouth's old offset and the
-        // mouth pass would add its current one on top.
-        const value = releasedOverrides !== null
-          && Object.prototype.hasOwnProperty.call(releasedOverrides, id)
-          ? releasedOverrides[id]
-          : readParameter(id);
+        // 第 3 档单独用不行：装好还原表之后它是冻结的动作输出（吹泡泡糖第二轮
+        // 就是这么把"鼓着的嘴"记成还原目标的）。第 1 档少了更糟：重播同一个动作、
+        // 或者走前置链时，它正**举着自己写的东西**——掏出手机之后播自拍（自拍的
+        // 前置就是掏出手机），phone 被记成 1，从此谁也放不下这只手。
+        //
+        // DRAWN 值仍然不用：它把插件图层自己的贡献也算进去了，还原那些会算两遍
+        // （还原补一遍嘴的旧偏移，嘴部图层再加一遍当前的）。
+        const outstanding = heldParams === null ? null : heldParams.saved;
+        const value = outstanding !== null && Object.prototype.hasOwnProperty.call(outstanding, id)
+          ? outstanding[id]
+          : (releasedOverrides !== null && Object.prototype.hasOwnProperty.call(releasedOverrides, id)
+            ? releasedOverrides[id]
+            : readParameter(id));
         if (value !== undefined) out[id] = value;
       }
       return out;
