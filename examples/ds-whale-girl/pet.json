@@ -352,6 +352,9 @@
             "label": "吐魂",
             "expressions": [
               "吐魂"
+            ],
+            "conflicts": [
+              "吹泡泡糖"
             ]
           }
         ]
@@ -371,7 +374,10 @@
           {
             "label": "吹泡泡糖",
             "motion": "BubbleGum",
-            "fidgetWeight": 1
+            "fidgetWeight": 1,
+            "conflicts": [
+              "吐魂"
+            ]
           }
         ],
         "fidgetNone": 8

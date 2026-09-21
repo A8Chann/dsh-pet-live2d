@@ -154,6 +154,28 @@ check('写本本 traces a closed loop, not a drift',
 await ev('window.__dshLive2dPet.setExpressions([])')
 await sleep(600)
 
+// --- mutually exclusive options across slots --------------------------------
+// 吐魂 and 吹泡泡糖 write DISJOINT parameters, so nothing in the engine stops
+// them rendering together — a soul leaving the mouth through a bubble-gum
+// pucker. Declared symmetrically, so either pick drops the other.
+const slotPick = async (slotId, label) => {
+  await ev('(()=>{const g=document.querySelector(' + JSON.stringify('[data-dsh-live2d-pet] [data-panel] [data-slot="' + slotId + '"]')
+    + '); if(!g) return false; const b=Array.from(g.querySelectorAll("[data-chips] button")).find((x)=>x.textContent===' + JSON.stringify(label) + ');'
+    + ' if(!b) return false; b.click(); return true})()')
+  await sleep(1100)
+  return JSON.parse(await ev('JSON.stringify(window.__dshLive2dPet.slotSelections())'))
+}
+const withSoul = await slotPick('mood', '吐魂')
+check('吐魂 can be picked on its own', withSoul.mood === '吐魂', JSON.stringify(withSoul))
+const withBubble = await slotPick('mouth', '吹泡泡糖')
+check('picking 吹泡泡糖 drops the rival 吐魂',
+  withBubble.mouth === '吹泡泡糖' && withBubble.mood === undefined, JSON.stringify(withBubble))
+const backToSoul = await slotPick('mood', '吐魂')
+check('and picking 吐魂 drops 吹泡泡糖 in turn',
+  backToSoul.mood === '吐魂' && backToSoul.mouth === undefined, JSON.stringify(backToSoul))
+await slotPick('mood', '平静')
+await ev('window.__dshLive2dPet.setExpressions([])')
+await sleep(500)
 check('no failed plugin request', !reqs.some((r) => !r.startsWith('200')),
   JSON.stringify(reqs.filter((r) => !r.startsWith('200')).slice(0, 5)))
 

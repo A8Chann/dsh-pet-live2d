@@ -402,14 +402,13 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
           if (openAt >= 0) {
             add(MOUTH_OPEN_PARAM, mouthFollow * (params.maximumValues[openAt] - params.minimumValues[openAt]) * MOUTH_FOLLOW);
           }
-          // Pull the shape down with it, so the opening is the jaw rather than
-          // the upper lip.
-          add(MOUTH_FORM_PARAM, -mouthFollow * MOUTH_DROP);
+          // Drive the shape the way the author's own open-mouth keyframes do.
+          add(MOUTH_FORM_PARAM, mouthFollow * MOUTH_DROP);
           // The CONTRIBUTION, not the absolute value: the absolute one also
           // carries the pose's own resting shape, which is not ours to assert.
           mouthWritten = {
             open: Number((mouthFollow * MOUTH_FOLLOW).toFixed(3)),
-            form: Number((-mouthFollow * MOUTH_DROP).toFixed(3)),
+            form: Number((mouthFollow * MOUTH_DROP).toFixed(3)),
           };
         }
         if (sweepSpec !== null) {
@@ -1319,14 +1318,18 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
   /**
    * The mouth's SHAPE parameter (range -2..1 on this model).
    *
-   * Opening ParamMouthOpenY alone reads as the UPPER lip lifting, which looks
-   * like a gasp. Driving the form negative at the same time rounds the opening
-   * and drops it, so it reads as the lower jaw coming down instead — the same
-   * shape 吐舌 makes, minus the tongue.
+   * This is what decides whether an open mouth reads as a natural "ah" or as a
+   * gasp. Read off the author's own 拍照 action: selfie.motion3.json takes
+   * ParamMouthOpenY from 0 to 1 while taking ParamMouthForm UP to +0.7..+1.
+   *
+   * I first drove it NEGATIVE on the theory that it dropped the jaw. Zooming in
+   * on the rendered mouth showed the opposite: -1 slants the opening into a
+   * smirk, 0 gives a clean oval, +0.7..+1 gives the wide natural opening the
+   * author uses. Matching the author beats my guess.
    */
   const MOUTH_FORM_PARAM = "ParamMouthForm";
 
-  /** How far negative the form is pulled at full mouth opening. */
+  /** How far POSITIVE the form is driven at full mouth opening. */
   const MOUTH_DROP = 0.7;
 
   /**
@@ -2165,6 +2168,9 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
      * of asking the engine (which holds a single expression) to switch.
      * The 'none' option clears just this slot.
      */
+    /** Latest pet, for callbacks that must not re-subscribe on every catalog change. */
+    const petRef = useRef(undefined);
+    petRef.current = pet;
     const chooseSlotOptionRef = useRef(() => {});
     const chooseSlotOption = useCallback((slot, option) => {
       const next = Object.assign({}, pinnedRef.current);
@@ -2179,11 +2185,35 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
         // because this code touched the slot.
         for (const name of option.requires ?? []) next[name] = true;
       }
+      // An option may name labels it cannot coexist with. Nothing in the engine
+      // enforces this: 吐魂 and 吹泡泡糖 write disjoint parameters, so both would
+      // simply render — one mouth doing two things. Declared symmetrically on
+      // both sides, so picking either drops the other, including its motion.
+      if (option !== null) {
+        for (const label of option.conflicts ?? []) {
+          for (const other of petRef.current?.expressionSlots ?? []) {
+            const rival = other.options.find((o) => o.label === label);
+            if (rival === undefined) continue;
+            if (slotSelectionsRef.current[other.id] !== label) continue;
+            for (const candidate of other.options) {
+              for (const name of candidate.expressions) delete next[name];
+              for (const name of candidate.requires ?? []) delete next[name];
+            }
+            // Deleted IN PLACE: the code below re-reads this ref to record the
+            // new choice, so replacing it with a copy here would simply be
+            // overwritten and the rival would come straight back.
+            delete slotSelectionsRef.current[other.id];
+            if (typeof rival.motion === "string" && slotMotionRef.current === rival.motion) {
+              slotMotionRef.current = null;
+            }
+          }
+        }
+      }
       // A 'clears' option needs other slots emptied first (写本本 wants the left
       // hand free), so drop their expressions before applying this one.
       if (option !== null) {
         for (const slotId of option.clears ?? []) {
-          const target = (pet?.expressionSlots ?? []).find((s) => s.id === slotId);
+          const target = (petRef.current?.expressionSlots ?? []).find((s) => s.id === slotId);
           for (const candidate of target?.options ?? []) {
             for (const name of candidate.expressions) delete next[name];
             for (const name of candidate.requires ?? []) delete next[name];
@@ -2203,7 +2233,7 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       applySweep();
       if (slotMotionRef.current !== null) {
         motion.current.playOnce(slotMotionRef.current, 0, { kind: "slot", hold: true, persist: true });
-      } else if (option === null) {
+      } else if (option === null || (option.conflicts ?? []).length > 0) {
         // Leaving a slot that owned a motion hands the body back to idle; the
         // other slots' pins are untouched, so their look survives.
         motion.current.playIdle();

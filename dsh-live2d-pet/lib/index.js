@@ -212,6 +212,16 @@ function normaliseSlots(raw) {
       // a ±30 range and NOTHING driving them — the author meant the hand to
       // follow the mouse and never wired it up. Writing a curve per frame turns
       // them into a hand that actually writes on the tablet.
+      // Options that cannot be worn together, named by their LABEL. 吐魂 and
+      // 吹泡泡糖 write different parameters, so nothing in the engine stops them
+      // overlapping — but the soul leaving the mouth on top of a bubble-gum
+      // pucker is one mouth doing two things.
+      const conflicts = []
+      for (const label of Array.isArray(option.conflicts) ? option.conflicts : []) {
+        if (typeof label === 'string' && label.trim() !== '' && !conflicts.includes(label.trim())) {
+          conflicts.push(label.trim())
+        }
+      }
       const sweep = normaliseSweep(option.sweep)
       // Fidget weighting. Most of the time the mouth should simply be normal,
       // and a couple of options should never come up on their own at all, so the
@@ -230,6 +240,7 @@ function normaliseSlots(raw) {
         ...(requires.length === 0 ? {} : { requires }),
         ...(clears.length === 0 ? {} : { clears }),
         ...(sweep === null ? {} : { sweep }),
+        ...(conflicts.length === 0 ? {} : { conflicts }),
         ...(fidgetOff ? { fidget: false } : {}),
         ...(fidgetWeight === 1 ? {} : { fidgetWeight }),
       })

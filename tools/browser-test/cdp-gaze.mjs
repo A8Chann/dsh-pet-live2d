@@ -111,9 +111,9 @@ check('the mouth closes again when the pointer comes back', mouthBack === 0, 'fo
 const shapeCentre = JSON.parse(await mouthParams())
 await mouthAt(1.0, 0.5)
 const shapeEdge = JSON.parse(await mouthParams())
-check('the jaw drops with the mouth, not just the upper lip',
+check('the shape follows the author\'s open-mouth keyframes',
   shapeCentre.open === 0 && shapeCentre.form === 0
-  && shapeEdge.open > 0.2 && shapeEdge.form < -0.2,
+  && shapeEdge.open > 0.2 && shapeEdge.form > 0.2,
   'contribution at centre ' + JSON.stringify(shapeCentre) + ' vs edge ' + JSON.stringify(shapeEdge))
 await mouthAt(0.5, 0.5)
 
