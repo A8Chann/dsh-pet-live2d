@@ -365,6 +365,23 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
      */
     let drawnValues = null;
     /**
+     * 上一帧采样到的、**引擎自己写出来**的每个被还原参数的值。
+     *
+     * 用来区分"这个参数还有活的东西在驱动"和"它只是停在动作留下的值上"。
+     */
+    /**
+     * 引擎自己的动画系统每帧都在驱动的参数，**永远不进还原表**。
+     *
+     * 视线跟随（focusController）写 ParamAngleX/Y/Z、ParamEyeBallX/Y，
+     * 物理摆动写头发/身体，嘴部与眨眼由本插件每帧写。这些参数一旦被还原表
+     * 钉住，宠物就"死"了：实测挤番茄酱 → 无 之后，头不再跟着鼠标转、也不再
+     * 有待机摆动（帧外基线明明在动，画面却纹丝不动）。
+     *
+     * 动作真正私有的参数（chuipaopao*、phone*、danbaofan、ji…）不在此列，
+     * 它们才是还原要负责的东西。
+     */
+    const ENGINE_OWNED_PARAM = /^Param(Angle|Eye|Mouth|Body|Breath|Brow)/;
+    /**
      * How many times the frame hook actually ran, and what it saw.
      *
      * Everything this controller writes lands in the saveParameters hook, so
@@ -454,6 +471,21 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
     /** Last pen position, for diagnostics. */
     let sweepLast = null;
 
+    /**
+     * 把被还原的参数写回它们动作之前的值 —— 但只写那些**真的需要钉住**的。
+     *
+     * 哪些参数进得了这张表，由 ENGINE_OWNED_PARAM 决定（见 snapshot()）：
+     * 引擎自己的视线跟随和物理摆动每帧都在写 ParamAngle* / ParamEye* / ParamMouth*，
+     * 把它们钉住会让宠物僵掉 —— 实测挤番茄酱收回之后头就不再跟着鼠标转。
+     */
+    const applyRelease = (values, core) => {
+      if (releasedOverrides === null || values === null) return;
+      for (const id of Object.keys(releasedOverrides)) {
+        const at = parameterIndex(core, id);
+        if (at >= 0) values[at] = releasedOverrides[id];
+      }
+    };
+
     const applyExpressionLayers = (core) => {
       // The mouth follows the pointer even with nothing pinned and no sweep, so
       // it has to be part of this condition — otherwise the whole pass bails out
@@ -522,22 +554,12 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
         mouthWritten = { open: 0, form: 0 };
         // The release still has to be applied — it is not tied to any of the
         // things this guard is about.
-        if (releasedOverrides !== null) {
-          for (const [id, value] of Object.entries(releasedOverrides)) {
-            const at = parameterIndex(core, id);
-            if (at >= 0) core._model.parameters.values[at] = value;
-          }
-        }
+        applyRelease(core._model.parameters.values, core);
         return;
       }
       try {
         const values = core._model.parameters.values;
-        if (releasedOverrides !== null) {
-          for (const [id, value] of Object.entries(releasedOverrides)) {
-            const at = parameterIndex(core, id);
-            if (at >= 0) values[at] = value;
-          }
-        }
+        applyRelease(values, core);
         // The mouth follows the pointer too. It has to be written per frame —
         // setting it once from the pointermove handler would be overwritten by
         // the very next frame the motion system runs.
@@ -701,6 +723,8 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       const out = {};
       const all = (ids || []).concat(extra === null || extra === undefined ? [] : Object.keys(extra));
       for (const id of all) {
+        // 引擎自己会一直驱动的身体参数不进来：钉住它们等于把宠物冻住。
+        if (ENGINE_OWNED_PARAM.test(id)) continue;
         // The pose to put back is the one the RELEASE seam sees: the
         // outstanding release if this parameter is in it, otherwise the
         // engine's own value.
@@ -1085,6 +1109,7 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
         sweepSpec = null;
         hookedCore = null;
         drawnValues = null;
+        releasedOverrides = null;
         headBox = null;
         hitMask = null;
         hitBox = null;
@@ -1152,6 +1177,8 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
         // really moved the parameter it says it moved.
         hookCalls,
         probe: hookProbe,
+        /** 还钉着的参数个数（引擎自己还在动的那些已经被交还掉了）。 */
+        released: releasedOverrides === null ? null : Object.keys(releasedOverrides).length,
         seamAt,
         loadCalls,
         loadSample,
