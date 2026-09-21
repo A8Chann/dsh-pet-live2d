@@ -1628,8 +1628,24 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   const SETTINGS_CSS = [
     SETTINGS_SEL + "{font:400 12px/1.7 inherit;color:inherit;max-width:600px}",
     SETTINGS_SEL + " h3{margin:12px 0 4px;font-size:13px;font-weight:600;opacity:.9}",
-    SETTINGS_SEL + " [data-setting]{margin-bottom:10px}",
-    SETTINGS_SEL + " [data-setting]>[data-chips]{display:flex;flex-direction:column;gap:2px}",
+    SETTINGS_SEL + " [data-setting]{margin:0 0 16px}",
+    // 布局**必须在样式表里**：行内样式优先级更高，之前把 flex 写在行上，
+    // 结果这一节在 DSH 设置页里怎么调都还是"没对齐的小控件"。
+    SETTINGS_SEL + " [data-setting]>[data-chips]{display:block}",
+    SETTINGS_SEL + " [data-field],"
+      + SETTINGS_SEL + " [data-fidget-slot]>div:first-child,"
+      + SETTINGS_SEL + " [data-fidget-row]{display:grid;grid-template-columns:132px 60px 30px;"
+      + "align-items:center;gap:8px;padding:2px 0}",
+    SETTINGS_SEL + " [data-field]{grid-template-columns:132px 1fr 52px}",
+    SETTINGS_SEL + " [data-phase]{display:grid;grid-template-columns:132px 1fr 1fr 30px;"
+      + "align-items:center;gap:8px;padding:2px 0}",
+    SETTINGS_SEL + " [data-fidget-row]," + SETTINGS_SEL + " [data-phase]{padding-left:14px}",
+    SETTINGS_SEL + " button{width:auto;justify-self:start}",
+    SETTINGS_SEL + " [data-fidget-remove]," + SETTINGS_SEL + " [data-phase-remove]"
+      + "{justify-self:center;border:0;opacity:.45;font-size:14px;padding:0 4px}",
+    SETTINGS_SEL + " [data-fidget-remove]:hover," + SETTINGS_SEL + " [data-phase-remove]:hover"
+      + "{opacity:1;border:0}",
+    SETTINGS_SEL + " input[type=number]{width:60px;text-align:center}",
     SETTINGS_SEL + " input[type=number]," + SETTINGS_SEL + " select{font:inherit;color:inherit;"
       + "background:transparent;border:1px solid rgba(127,127,127,.35);border-radius:5px;padding:1px 5px;max-width:100%}",
     SETTINGS_SEL + " input[type=range]{flex:1;min-width:80px;accent-color:currentColor}",
@@ -1990,7 +2006,6 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         fields.map((field) => h("label", {
           key: field.key,
           "data-field": field.key,
-          style: { display: "flex", alignItems: "center", gap: 6, width: "100%", fontSize: 11, padding: "2px 0" },
         },
         h("span", { style: { flex: "0 0 96px", opacity: .85 } }, field.label),
         h("input", {
@@ -3992,7 +4007,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     return Array.from(names).sort();
   }
 
-  const rowStyle = { display: "flex", alignItems: "center", gap: 6, fontSize: 11, padding: "2px 0" };
+
   const labelStyle = { flex: "0 0 88px", opacity: .85 };
   const selectStyle = { flex: 1, minWidth: 0, fontSize: 11 };
   /** 行尾的 ×（删掉这一条）。 */
@@ -4024,7 +4039,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     return h("div", { "data-settings": "", "data-setting": "phases" },
       rows.map((phase) => {
         const now = current(phase);
-        return h("div", { key: phase, "data-phase": phase, style: rowStyle },
+        return h("div", { key: phase, "data-phase": phase },
           h("span", { style: labelStyle }, phase),
           h("select", {
             "data-phase-motion": phase,
@@ -4114,9 +4129,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           entries.map((entry, index) => h("div", {
             key: keyOf(entry) + ":" + index,
             "data-fidget-row": slot.id + ":" + keyOf(entry),
-            style: { display: "flex", alignItems: "center", gap: 6, fontSize: 11, paddingLeft: 12 },
           },
-          h("span", { style: { flex: "0 0 96px", opacity: .8 } }, labelOf(entry)),
+          h("span", null, labelOf(entry)),
           numberInput(entry.weight, (value) => {
             const next = entries.slice();
             next[index] = { label: entry.label ?? null, weight: value };
