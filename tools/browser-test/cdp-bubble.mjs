@@ -236,6 +236,21 @@ check('再把嘴部切回无：两个动作都收得回去（还原表不能被�
   (await until(async () => (await drawn('chuipaopao')) === 0 && ((await drawn('phone')) ?? 1) <= 0.05)) === true,
   'chuipaopao=' + (await drawn('chuipaopao')) + ' phone=' + (await drawn('phone')))
 
+// (9) 用户报的路径：掏出手机 -> 切到**爱心眼**（带 pairs 配对的表情）。
+await clickSlot('rhand', '掏出手机')
+check('掏出手机举起来', (await until(async () => ((await drawn('phone')) ?? 0) > 0.5)) === true,
+  'phone=' + (await drawn('phone')))
+await clickSlot('eyes', '爱心眼')
+await sleep(1500)
+console.log('  切爱心眼后：phone=' + (await drawn('phone')) + ' 爱心眼=' + (await drawn('ParamEyeLOpen'))
+  + ' data-motion=' + await ev('document.querySelector("[data-dsh-live2d-pet]").getAttribute("data-motion")')
+  + ' blending=' + await ev('window.__dshLive2dPet.blending()')
+  + ' 还原表=' + JSON.stringify(JSON.parse(await ev('JSON.stringify(window.__dshLive2dPet.releaseDebug())'))))
+await clickSlot('rhand', null)
+const phoneAfterLove = await until(async () => ((await drawn('phone')) ?? 1) <= 0.05)
+check('切回无之后手机放下（爱心眼不该挡住这一步）', phoneAfterLove === true,
+  'phone=' + (await drawn('phone')))
+
 const bad = results.filter((r) => !r.ok)
 console.log((bad.length === 0 ? 'OK' : 'FAILED') + '  ' + (results.length - bad.length) + '/' + results.length + ' checks passed')
 ws.close()

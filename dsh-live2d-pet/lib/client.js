@@ -2714,7 +2714,12 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       }
       const previous = slotMotionRef.current;
       slotMotionRef.current = desired;
-      if (desired !== null && (desired !== previous || option !== null)) {
+      // 只在"该播的动作真的换了"时才播 —— 原来还有个 `|| option !== null`，
+      // 意思是点任何表情都顺手把当前动作重播一遍。它会**重新快照**，而这时
+      // 动作早就在最后一帧停着了：掏出手机之后点爱心眼，快照里的 phone 记的就是
+      // 1（手机已在手里），于是"还原"忠实地把手机举着不放。
+      // 用户报的"掏出手机切不到其他状态"就是这个。
+      if (desired !== null && desired !== previous) {
         motion.current.playOnce(desired, 0, { kind: "slot", hold: true, persist: true });
       } else if (desired === null && previous !== null) {
         // The slot gave up its motion: hand the body back. Other slots' pins
