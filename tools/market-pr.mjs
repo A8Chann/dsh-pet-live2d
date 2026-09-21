@@ -8,7 +8,10 @@ import { join } from 'node:path'
 
 const UPSTREAM = 'awesome-dsh-plugin/awesome-dsh-plugin'
 const BRANCH = 'add-dsh-pet-live2d'
-const ENTRY_PATH = 'data/plugins/A8Chann__dsh-pet-live2d.yml'
+// 插件在仓库的子目录里（根没有 package.json），所以条目必须指向子包 ——
+// 文件名按人家的约定：owner__repo--<子路径，斜杠换成短横>。
+const ENTRY_PATH = 'data/plugins/A8Chann__dsh-pet-live2d--dsh-live2d-pet.yml'
+const OLD_ENTRY_PATH = 'data/plugins/A8Chann__dsh-pet-live2d.yml'
 const tokenPath = process.argv[2] ?? join(homedir(), '.dsh', 'github-token.txt')
 
 let token
@@ -82,6 +85,16 @@ if (existing.ok && existing.body && existing.body.sha !== undefined) putBody.sha
 const put = await api('/repos/' + login + '/awesome-dsh-plugin/contents/' + ENTRY_PATH, { method: 'PUT', body: JSON.stringify(putBody) })
 if (!put.ok) { console.error('提交文件失败：HTTP ' + put.status + ' ' + JSON.stringify(put.body).slice(0, 300)); process.exit(1) }
 console.log('条目已提交：' + ENTRY_PATH + ' @ ' + String(put.body.commit?.sha ?? '').slice(0, 8))
+
+// 先指向仓库根的那版要从分支上删掉，否则会留下两条指向同一仓库的条目。
+const oldEntry = await api('/repos/' + login + '/awesome-dsh-plugin/contents/' + OLD_ENTRY_PATH + '?ref=' + BRANCH)
+if (oldEntry.ok && oldEntry.body && oldEntry.body.sha !== undefined) {
+  const removed = await api('/repos/' + login + '/awesome-dsh-plugin/contents/' + OLD_ENTRY_PATH, {
+    method: 'DELETE',
+    body: JSON.stringify({ message: 'Point the entry at the plugin subpackage', sha: oldEntry.body.sha, branch: BRANCH }),
+  })
+  console.log('旧条目已删除：' + OLD_ENTRY_PATH + '（HTTP ' + removed.status + '）')
+}
 
 const list = await api('/repos/' + UPSTREAM + '/pulls?head=' + login + ':' + BRANCH + '&state=open')
 if (list.ok && Array.isArray(list.body) && list.body.length > 0) {

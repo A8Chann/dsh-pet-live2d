@@ -66,6 +66,27 @@ whenToUse: >
   确认构建产物入库（`github:owner/repo` 装下来没有 build 步骤可用），
   `cordis.patch.yml` 是 `- insert: [- id: …, name: …]` 那个形状。
 
+### 子包条目：安装命令是 `#path:/子目录`
+
+插件在仓库子目录里时（我们就是：清单在 `dsh-live2d-pet/package.json`，仓库根没有），
+条目要写 `url: https://github.com/owner/repo/tree/main/<子目录>`、
+`name: owner/repo#<子目录>`，文件名 `owner__repo--<子目录>`。
+**但 `name` 里的 `#子目录` 只是显示名** —— 手动装的时候 pnpm 的语法是：
+
+```
+dsh plugin --profile web add 'github:owner/repo#path:/<子目录>'
+```
+
+`#` 在 pnpm 里是 **git ref**（分支/标签/提交）。写成 `github:owner/repo#<子目录>`
+会把子目录名当成分支去找，报
+`ERR_PNPM_PACKAGE_MANAGER_ADD_RESOLVE_GIT: Could not resolve <子目录> to a commit`。
+市场列表里自动生成的 install 命令是 `#path:/` 那版（现存条目可对照：
+`github:s3yf1337/dsh-desktop#path:/bundle`）。
+
+实测 `pnpm add 'github:A8Chann/dsh-pet-live2d#path:/dsh-live2d-pet'`：~8 秒装好，
+`lib/` 跟着来，**不需要 allowBuilds**（没有 prepare 脚本；有才会要求）。
+临时目录里先试装一遍再让用户装，比让他踩一次便宜。
+
 **本机拿不到非交互的 GitHub 凭据**：GCM（`credential.helper=manager`）只在 push 时
 静默给凭据，`git credential fill` / `git credential-manager get` 都会**挂住**
 （命令无输出、被工具超时杀掉），`gh` 也没装。所以开 PR 只有两条路：

@@ -1,5 +1,5 @@
-url: https://github.com/A8Chann/dsh-pet-live2d
-name: A8Chann/dsh-pet-live2d
+url: https://github.com/A8Chann/dsh-pet-live2d/tree/main/dsh-live2d-pet
+name: "A8Chann/dsh-pet-live2d#dsh-live2d-pet"
 category: fun
 description:
   en: A draggable Live2D desktop pet for the DSH web GUI that tracks the pointer, changes motion, expression and outfit with the session phase, and opens a right-click control panel.
