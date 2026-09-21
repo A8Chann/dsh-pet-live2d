@@ -15,7 +15,7 @@
 // The proprietary Cubism Core runtime is never bundled: the page loads the
 // user-supplied file from the host's runtime route first, and reports a
 // localized install hint when it is absent.
-window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
+window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
 
   var module = { exports: {} };
   var exports = module.exports;
