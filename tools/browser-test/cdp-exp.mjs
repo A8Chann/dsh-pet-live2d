@@ -107,19 +107,40 @@ await sleep(600)
 await ev('(()=>{const g=document.querySelector(\'[data-dsh-live2d-pet] [data-panel] [data-slot="rhand"]\');'
   + ' const b=Array.from(g.querySelectorAll("[data-chips] button")).find((x)=>x.textContent==="写本本");'
   + ' if(!b) return false; b.click(); return true})()')
-const xs = []
+const pts = []
 let pressed = null
-for (let i = 0; i < 16; i += 1) {
+for (let i = 0; i < 26; i += 1) {
   await sleep(320)
   const now = await frame()
   if (now === null) continue
-  xs.push(at(now, 'pointX'))
+  pts.push([at(now, 'pointX'), at(now, 'pointY')])
   pressed = at(now, 'pointZ')
 }
-const spread = Math.max(...xs) - Math.min(...xs)
+const xs = pts.map((q) => q[0])
+const ys = pts.map((q) => q[1])
 check('写本本 presses the pen down', pressed === 1, 'pointZ=' + pressed)
-check('写本本 sweeps the hand across the tablet', spread > 8,
-  'pointX range=' + spread.toFixed(2) + ' samples=' + JSON.stringify(xs.slice(0, 6)))
+check('写本本 moves the hand across the tablet', Math.max(...xs) - Math.min(...xs) > 8,
+  'pointX range=' + (Math.max(...xs) - Math.min(...xs)).toFixed(2))
+// It must read as ONE continuous loop, not a stroke plus a snap back. The
+// first version was a sawtooth, and the snap of ~2*ampX per cycle is exactly
+// what made it look stiff, so the shape is asserted, not just the range.
+// Judged by SHAPE, not by an absolute step size. Sampling is only ~320ms apart
+// over a 2.8s loop, so a perfectly smooth curve still moves ~13 units between
+// samples near its fastest point — an absolute threshold would call the loop
+// itself a failure. What separates flowing from snapping is that a snap is a
+// lone OUTLIER: a sawtooth travels at a constant rate and then jumps by the
+// whole width at once. So compare the worst step with the typical one.
+const jumps = pts.slice(1).map((q, i) => Math.hypot(q[0] - pts[i][0], q[1] - pts[i][1]))
+const sorted = jumps.slice().sort((a, b) => a - b)
+const typical = sorted[Math.floor(sorted.length * 0.9)]
+const worst = sorted[sorted.length - 1]
+check('写本本 flows instead of snapping back', worst < typical * 2.2,
+  'worst step=' + worst.toFixed(2) + ' vs typical=' + typical.toFixed(2)
+  + ' (a sawtooth snap is a lone outlier ~3.7x)')
+check('写本本 traces a closed loop, not a drift',
+  Math.min(...xs) < 0 && Math.max(...xs) > 0 && Math.min(...ys) < 0 && Math.max(...ys) > 0,
+  'x ' + Math.min(...xs).toFixed(1) + '..' + Math.max(...xs).toFixed(1)
+  + '  y ' + Math.min(...ys).toFixed(1) + '..' + Math.max(...ys).toFixed(1))
 await ev('window.__dshLive2dPet.setExpressions([])')
 await sleep(600)
 

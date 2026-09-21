@@ -150,13 +150,17 @@ function normaliseSweep(raw) {
   const num = (value, fallback) => (typeof value === 'number' && Number.isFinite(value) ? value : fallback)
   return {
     ...axes,
-    ampX: num(raw.ampX, 18),
+    ampX: num(raw.ampX, 16),
     ampY: num(raw.ampY, 8),
-    ampZ: num(raw.ampZ, 5),
-    // One writing stroke, in milliseconds: left to right, then back.
-    strokeMs: num(raw.strokeMs, 1400),
-    // How long the "pen" takes to work its way down the page and start over.
-    lineMs: num(raw.lineMs, 11000),
+    ampZ: num(raw.ampZ, 6),
+    // One full trace of the loop, in milliseconds. The pen never lifts: the
+    // path closes on itself, which is what makes it read as flowing rather
+    // than as a series of strokes being snapped back to the margin.
+    loopMs: num(raw.loopMs, 2600),
+    // Optional slow drift, so a long-running loop does not look pinned to one
+    // spot. 0 keeps it a pure closed curve.
+    driftMs: num(raw.driftMs, 0),
+    driftY: num(raw.driftY, 0),
   }
 }
 

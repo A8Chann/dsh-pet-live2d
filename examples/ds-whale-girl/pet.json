@@ -230,10 +230,11 @@
               "rz": "pointY2",
               "z": "pointZ",
               "ampX": 16,
-              "ampY": 7,
-              "ampZ": 4,
-              "strokeMs": 1500,
-              "lineMs": 12000
+              "ampY": 9,
+              "ampZ": 7,
+              "loopMs": 2800,
+              "driftMs": 21000,
+              "driftY": 3
             }
           }
         ]

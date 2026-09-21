@@ -375,16 +375,23 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
             if (i >= 0) values[i] += delta;
           };
           const now = (typeof performance !== "undefined" ? performance.now() : Date.now());
-          // One stroke sweeps left -> right, then the pen lifts and returns.
-          const stroke = (now % spec.strokeMs) / spec.strokeMs;
-          // The "page" advances slowly, so successive lines sit lower down.
-          const line = (now % spec.lineMs) / spec.lineMs;
-          sweepLast = { x: spec.ampX * (2 * stroke - 1), y: spec.ampY * (1 - 2 * line) };
-          add(spec.x, spec.ampX * (2 * stroke - 1));
-          add(spec.y, spec.ampY * (1 - 2 * line));
-          // A small wobble so a stroke is not a perfectly straight ruler line,
-          // and a steady pressure so the pen is visibly touching the tablet.
-          add(spec.rz, spec.ampZ * Math.sin(now / 90));
+          // A closed loop the pen never leaves: a lemniscate (figure-eight),
+          // which is the 2D shadow of a Möbius strip's centre line. The old
+          // version was a sawtooth — write left to right, snap back — and the
+          // snap is what read as stiff.
+          const u = (now / spec.loopMs) * Math.PI * 2;
+          // The half-twist: the strip only comes back to itself after TWO
+          // passes, so anything tied to the twist runs at half the loop rate.
+          const half = u / 2;
+          const px = spec.ampX * Math.sin(u);
+          const py = spec.ampY * 0.5 * Math.sin(2 * u);
+          const drift = spec.driftMs > 0 ? spec.driftY * Math.sin((now / spec.driftMs) * Math.PI * 2) : 0;
+          sweepLast = { x: px, y: py + drift };
+          add(spec.x, px);
+          add(spec.y, py + drift);
+          // The pen leans with the twist, so the loop has a front and a back
+          // instead of being a flat outline, and stays pressed to the tablet.
+          add(spec.rz, spec.ampZ * Math.sin(half));
           add(spec.z, 0.6);
         }
         for (const layer of expressionLayers) {
