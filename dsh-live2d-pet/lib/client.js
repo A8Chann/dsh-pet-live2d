@@ -1482,6 +1482,9 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
 
   const FIDGET_SLOTS = ["rhand", "lhand", "mood", "cheek", "mouth", "eyes"];
 
+  /** Chance that a fidget with the phone out also takes a photo. */
+  const SELFIE_CHANCE = 0.4;
+
 
   /**
    * What a head pat may answer with (requirement #5).
@@ -1779,6 +1782,10 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       // scope, and a controller-scoped copy throws ReferenceError on every call
       // — which surfaces as a silent `undefined`, not as an error.
       api.fidgetReady = () => fidgetLiveRef.current;
+      // Drivers that assert "this state stays put" call setFidgetEnabled(false)
+      // first; otherwise a 摸鱼 can rewrite the state mid-assertion.
+      api.setFidgetEnabled = (on) => { fidgetEnabledRef.current = on !== false; };
+      api.fidgetEnabled = () => fidgetEnabledRef.current;
       api.fidgetTally = () => fidgetTallyRef.current;
       api.resetFidgetTally = () => { fidgetTallyRef.current.picked = {}; fidgetTallyRef.current.drawn = {}; };
     }, []);
@@ -1807,6 +1814,8 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
     // would end up mutating two different objects, and the tally would read 0
     // forever while the fidget worked perfectly.
     const fidgetTallyRef = useRef({ picked: {}, drawn: {} });
+    /** Whether the SCHEDULED fidget may run. Forced calls ignore it. */
+    const fidgetEnabledRef = useRef(true);
     const slotMotionRef = useRef(null);
     /** slot id -> chosen option label, for the panel highlight and diagnostics. */
     const slotSelectionsRef = useRef({});
@@ -2439,15 +2448,29 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       if (option === null) delete chosen[slot.id];
       else chosen[slot.id] = option.label;
       slotSelectionsRef.current = chosen;
-      slotMotionRef.current = option !== null && typeof option.motion === "string" ? option.motion : null;
+      // The body follows whichever slot currently holds a motion option, worked
+      // out from the selections rather than remembered. Remembering only the
+      // LAST motion meant 掏出手机 -> 喵喵手 (a motion option to a plain
+      // expression) left the phone parked forever: the new option starts no
+      // motion, and nothing stopped the old one either — so the right hand was
+      // stuck on the phone and no later draw could change it.
       if (option === null || option.sweep === undefined) userSweepRef.current = null;
       else userSweepRef.current = option.sweep;
       applySweep();
-      if (slotMotionRef.current !== null) {
-        motion.current.playOnce(slotMotionRef.current, 0, { kind: "slot", hold: true, persist: true });
-      } else if (option === null || (option.conflicts ?? []).length > 0) {
-        // Leaving a slot that owned a motion hands the body back to idle; the
-        // other slots' pins are untouched, so their look survives.
+      let desired = null;
+      for (const other of petRef.current?.expressionSlots ?? []) {
+        const label = slotSelectionsRef.current[other.id];
+        if (label === undefined) continue;
+        const picked = other.options.find((o) => o.label === label);
+        if (typeof picked?.motion === "string") { desired = picked.motion; break; }
+      }
+      const previous = slotMotionRef.current;
+      slotMotionRef.current = desired;
+      if (desired !== null && (desired !== previous || option !== null)) {
+        motion.current.playOnce(desired, 0, { kind: "slot", hold: true, persist: true });
+      } else if (desired === null && previous !== null) {
+        // The slot gave up its motion: hand the body back. Other slots' pins
+        // are untouched, so their look survives.
         motion.current.playIdle();
       }
       // A dress-up choice PERSISTS. The auto-clear exists so a reaction or a
@@ -2622,6 +2645,11 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
         timer = window.setTimeout(fire, wait);
       };
       const fire = (force = false) => {
+        // A forced call always runs; the SCHEDULED one honours the switch. Tests
+        // turn it off for long drivers: a 摸鱼 every 12-26s rewrites the very slot
+        // selections a slow assertion is watching, which made four drivers look
+        // broken under parallel load and pass when run alone.
+        if (!force && !fidgetEnabledRef.current) { schedule(); return; }
         fidgetTallyRef.current.fired = (fidgetTallyRef.current.fired ?? 0) + 1;
         const quietFor = Date.now() - lastInteraction.current;
         const busy = motion.current.isPlaying() || dragState.current !== null;
@@ -2680,7 +2708,24 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
         // option happened to be the only lively one. The weights alone control
         // the mix now; fidgetNone is the knob for "how often does this slot
         // move at all".
+        // With the phone already out, a fidget sometimes takes a photo — the
+        // whole reason the phone slot exists. The selfie's own guard requires the
+        // phone, so this can only fire when it is genuinely out.
+        const phoneOut = () => slotSelectionsRef.current.rhand === "掏出手机";
+        const phoneWanted = changes.some(([slot, option]) => slot.id === "rhand" && option?.label === "掏出手机")
+          || phoneOut();
+        if (phoneWanted && motion.current.canPlay("Selfie") && Math.random() < SELFIE_CHANCE) {
+          changes.push([null, { label: "__selfie__", selfie: true }]);
+        }
         for (const [slot, option] of changes) {
+          if (slot === null) {
+            // Not a slot choice: a one-shot reaction that parks like the rest.
+            const group = Math.random() < 0.5 ? "Selfie" : "SelfieQuick";
+            if (motion.current.canPlay(group)) {
+              motion.current.playOnce(group, 0, { kind: "fidget", hold: true, persist: true });
+            }
+            continue;
+          }
           fidgetTallyRef.current.picked[slot.id] = (fidgetTallyRef.current.picked[slot.id] ?? 0) + 1;
           const key = slot.id + ":" + (option === null ? "无" : option.label);
           fidgetTallyRef.current.drawn[key] = (fidgetTallyRef.current.drawn[key] ?? 0) + 1;

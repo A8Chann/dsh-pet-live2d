@@ -19,7 +19,14 @@ export async function waitReady(ev, timeoutMs = 30000) {
     } catch {
       ok = false
     }
-    if (ok === true) return true
+    if (ok === true) {
+      // Pause the scheduled fidget once, here, so no driver has to remember.
+      // A 摸鱼 rewrites the slot selections every 12-26s — exactly what a slow
+      // assertion is watching — which made four drivers look broken under
+      // parallel load and pass when run alone.
+      try { await ev('window.__dshLive2dPet.setFidgetEnabled && window.__dshLive2dPet.setFidgetEnabled(false)') } catch {}
+      return true
+    }
     if (Date.now() > deadline) return false
     await new Promise((r) => setTimeout(r, 100))
   }
@@ -54,4 +61,16 @@ export async function panelFooter(ev, label) {
     + ' const bs = Array.from(document.querySelectorAll("[data-dsh-live2d-pet] [data-panel] footer button"));'
     + ' const b = bs.find((x) => x.textContent === ' + JSON.stringify(label) + ');'
     + ' if (!b) return false; b.click(); return true })()')
+}
+
+/**
+ * Stop the SCHEDULED idle fidget for the rest of the run.
+ *
+ * A 摸鱼 fires every 12-26s and rewrites the slot selections — which is exactly
+ * what a slow assertion is usually watching. Four drivers looked broken under
+ * parallel load and passed when run alone because of it. Forced fidgets
+ * (fidgetNow) still work, so the drivers that TEST the fidget are unaffected.
+ */
+export async function pauseFidget(ev) {
+  return ev('window.__dshLive2dPet.setFidgetEnabled(false)')
 }
