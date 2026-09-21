@@ -1954,6 +1954,16 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   }
 
   /**
+   * 拖动阈值：按下后移动超过这么多像素才算拖动，否则算点击。
+   *
+   * 注意它必须留在模块作用域 —— 曾经被一次组件替换顺手删掉，只剩下引用，
+   * 于是每次 pointermove 都在 slop 判断那行抛 ReferenceError，
+   * 表现是「按下去有反应（data-dragging 出现）但宠物纹丝不动」，
+   * 而页面的 __errors 里一直躺着 "DRAG_SLOP_PX is not defined"。
+   */
+  const DRAG_SLOP_PX = 4;
+
+  /**
    * 「装扮」那一节：现在只有一个开关（跨启动记住那六件）。
    *
    * 关掉时顺带把已存的清掉 —— 否则「关掉」只是不读，存档还留在那儿，
@@ -3608,10 +3618,11 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         if (!state.moved && Math.abs(dx) < DRAG_SLOP_PX && Math.abs(dy) < DRAG_SLOP_PX) return;
         state.moved = true;
         const width = sizeRef.current;
-        setPos({
+        const nextPos = {
           right: Math.max(0, Math.min(window.innerWidth - width, state.right - dx)),
           bottom: clampBottom(state.bottom - dy, width),
-        });
+        };
+        setPos(nextPos);
       };
       const onUp = () => {
         const state = dragState.current;

@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process'
 import { rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { browserPath, PROFILES, BASE } from './paths.mjs'
-import { waitReady } from './ready.mjs'
+import { waitReady, pageErrors } from './ready.mjs'
 
 const EDGE = browserPath()
 const PORT = 9383
@@ -120,6 +120,8 @@ for (let i = 1; i <= 6; i += 1) {
 const bottomAfter = await ev('document.querySelector("[data-dsh-live2d-pet]").style.bottom')
 check('可以把宠物往下拖到屏幕底边之外', Number.parseFloat(bottomAfter) < -20,
   'bottom ' + bottomBefore + ' -> ' + bottomAfter)
+
+check('页面没有未捕获异常', (await pageErrors(ev)).length === 0, JSON.stringify(await pageErrors(ev)))
 
 const bad = results.filter(r => !r.ok)
 console.log((bad.length === 0 ? 'OK' : 'FAILED') + '  ' + (results.length - bad.length) + '/' + results.length + ' checks passed')

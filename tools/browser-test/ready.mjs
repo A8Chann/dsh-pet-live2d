@@ -71,6 +71,21 @@ export async function panelFooter(ev, label) {
  * parallel load and passed when run alone because of it. Forced fidgets
  * (fidgetNow) still work, so the drivers that TEST the fidget are unaffected.
  */
+/**
+ * 页面里有没有未捕获异常。
+ *
+ * 这是**第一条该看的信号**：处理器里抛异常时，功能会静默失效（表现是「点了没反应」），
+ * 而 DOM/参数看起来一切正常。曾有过一次：pointermove 里 DRAG_SLOP_PX 未定义，
+ * 每次移动都抛异常，拖动整个失效，而 __errors 里一直躺着那行 ReferenceError，
+ * 我却查了七八轮才想起来看它。
+ */
+export async function pageErrors(ev) {
+  try {
+    return JSON.parse(await ev('JSON.stringify(window.__errors ?? [])') ?? '[]')
+  } catch {
+    return []
+  }
+}
 export async function pauseFidget(ev) {
   return ev('window.__dshLive2dPet.setFidgetEnabled(false)')
 }
