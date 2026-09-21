@@ -360,15 +360,35 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
     let sweepSpec = null;
     /** Last normalized gaze target, for diagnostics. */
     let gazeTarget = { x: 0, y: 0 };
+    /** 0..1 pointer distance, driving the mouth. */
+    let mouthFollow = 0;
     /** Answers whether a motion group's premise currently holds. */
     let guardFor = null;
     /** Last pen position, for diagnostics. */
     let sweepLast = null;
 
     const applyExpressionLayers = (core) => {
-      if (expressionLayers.length === 0 && sweepSpec === null) return;
+      // The mouth follows the pointer even with nothing pinned and no sweep, so
+      // it has to be part of this condition — otherwise the whole pass bails out
+      // before reaching it and the mouth never moves.
+      if (expressionLayers.length === 0 && sweepSpec === null && mouthFollow <= 0) return;
       try {
         const values = core._model.parameters.values;
+        // The mouth follows the pointer too. It has to be written per frame —
+        // setting it once from the pointermove handler would be overwritten by
+        // the very next frame the motion system runs.
+        if (mouthFollow > 0) {
+          const at = parameterIndex(core, MOUTH_OPEN_PARAM);
+          if (at >= 0) {
+            const min = core._model.parameters.minimumValues[at];
+            const max = core._model.parameters.maximumValues[at];
+            const span = (max - min) * MOUTH_FOLLOW;
+            // Added on top of whatever the pose or a pinned face already wrote,
+            // then clamped: an open mouth must not push past the model's range.
+            const opened = values[at] + mouthFollow * span;
+            values[at] = opened > max ? max : (opened < min ? min : opened);
+          }
+        }
         if (sweepSpec !== null) {
           const spec = sweepSpec;
           const at = (id) => (id === undefined ? -1 : parameterIndex(core, id));
@@ -890,12 +910,17 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
         // Screen y grows downward; the controller wants up-positive.
         const ny = shape((y - half.y) / half.y);
         gazeTarget = { x: nx, y: ny };
+        // How far the pointer is, on the SAME normalized scale the gaze uses, so
+        // the mouth and the eyes agree about how far away it is.
+        mouthFollow = Math.min(1, Math.hypot(nx, ny));
         try {
           model.internalModel?.focusController?.focus(nx, -ny);
         } catch {
           /* an engine without a focus controller simply does not follow */
         }
       },
+      /** Diagnostic: 0..1 pointer distance driving the mouth. */
+      mouthFollow: () => mouthFollow,
       /** Diagnostic: the normalized gaze target the pointer last produced. */
       gazeTarget: () => gazeTarget,
       setExpressionApplier(fn) {
@@ -1256,6 +1281,17 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
    * only starts moving once the pointer has genuinely left the middle.
    */
   const GAZE_DEADZONE = 0.12;
+
+  /** The model's mouth-opening parameter. */
+  const MOUTH_OPEN_PARAM = "ParamMouthOpenY";
+
+  /**
+   * How much of the model's mouth range a fully-deflected pointer uses.
+   *
+   * Deliberately not 1: the mouth should read as following the cursor, not as
+   * being permanently wide open whenever the pointer leaves the middle.
+   */
+  const MOUTH_FOLLOW = 0.65;
 
   const FIDGET_SLOTS = ["rhand", "lhand", "mood", "cheek", "mouth"];
 

@@ -82,7 +82,23 @@ check('the gaze grows with distance',
   Math.abs(middle.x) <= Math.abs(nudged.x) && Math.abs(nudged.x) <= Math.abs(small.x)
   && Math.abs(small.x) < Math.abs(halfway.x) && Math.abs(halfway.x) <= Math.abs(farEdge.x),
   [middle.x, nudged.x, small.x, halfway.x, farEdge.x].map((v) => v.toFixed(3)).join(' <= '))
+// --- the mouth follows the same offset -------------------------------------
+// Written per frame at the same seam as everything else. It used to never
+// appear at all, because the per-frame pass returned early whenever nothing was
+// pinned and no sweep was running.
 await gazeAt(0.5, 0.5)
+const mouthAt = async (fx, fy) => {
+  await gazeAt(fx, fy)
+  return ev('window.__dshLive2dPet.mouthFollow()')
+}
+const mouthCentre = await mouthAt(0.5, 0.5)
+const mouthHalf = await mouthAt(0.75, 0.5)
+const mouthEdge = await mouthAt(1.0, 0.5)
+const mouthBack = await mouthAt(0.5, 0.5)
+check('the mouth is closed with the pointer at the centre', mouthCentre === 0, 'follow=' + mouthCentre)
+check('the mouth opens with the pointer offset', mouthHalf > 0.2 && mouthEdge > mouthHalf,
+  [mouthCentre, mouthHalf, mouthEdge].map((v) => Number(v).toFixed(3)).join(' < '))
+check('the mouth closes again when the pointer comes back', mouthBack === 0, 'follow=' + mouthBack)
 
 const bad = results.filter((r) => !r.ok)
 console.log((bad.length === 0 ? 'OK' : 'FAILED') + '  ' + (results.length - bad.length) + '/' + results.length + ' checks passed')

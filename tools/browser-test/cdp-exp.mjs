@@ -107,18 +107,28 @@ await sleep(600)
 await ev('(()=>{const g=document.querySelector(\'[data-dsh-live2d-pet] [data-panel] [data-slot="rhand"]\');'
   + ' const b=Array.from(g.querySelectorAll("[data-chips] button")).find((x)=>x.textContent==="写本本");'
   + ' if(!b) return false; b.click(); return true})()')
+const pickWrite = () => ev('(()=>{const g=document.querySelector(\'[data-dsh-live2d-pet] [data-panel] [data-slot="rhand"]\');'
+  + ' const b=Array.from(g.querySelectorAll("[data-chips] button")).find((x)=>x.textContent==="写本本");'
+  + ' if(!b) return false; b.click(); return true})()')
+const pinnedNow = async () => JSON.parse(await ev('JSON.stringify(window.__dshLive2dPet.expressions())'))
 const pts = []
-let pressed = null
+let pressed = 0
 for (let i = 0; i < 26; i += 1) {
   await sleep(320)
+  // The idle fidget is allowed to change slots while this runs — that is by
+  // design — so re-assert the choice instead of assuming it stays put. Reading
+  // only the final sample made this flaky for a reason that had nothing to do
+  // with the sweep.
+  if (i % 6 === 5 && !(await pinnedNow()).includes('点菜按下')) await pickWrite()
   const now = await frame()
   if (now === null) continue
   pts.push([at(now, 'pointX'), at(now, 'pointY')])
-  pressed = at(now, 'pointZ')
+  const z = at(now, 'pointZ')
+  if (typeof z === 'number' && z > pressed) pressed = z
 }
 const xs = pts.map((q) => q[0])
 const ys = pts.map((q) => q[1])
-check('写本本 presses the pen down', pressed === 1, 'pointZ=' + pressed)
+check('写本本 presses the pen down', pressed >= 1, 'pointZ peak=' + pressed)
 check('写本本 moves the hand across the tablet', Math.max(...xs) - Math.min(...xs) > 8,
   'pointX range=' + (Math.max(...xs) - Math.min(...xs)).toFixed(2))
 // It must read as ONE continuous loop, not a stroke plus a snap back. The
