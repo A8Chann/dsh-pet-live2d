@@ -139,6 +139,29 @@ for (let i = 0; i < 10; i += 1) {
 }
 check('a fidget actually changes the pet', changed >= 4, changed + '/10 draws changed something')
 check('a fidget plays a MOTION, not just a face', sawMotion, 'saw a non-idle motion')
+
+// --- the mouth must be NORMAL most of the time ------------------------------
+// Sampled over many draws: 吐舌 is excluded from fidgets entirely, and the mouth
+// carries a heavy "leave it alone" weight so the pet does not pull a face every
+// time it idles.
+let mouthNormal = 0
+let total = 0
+let tongue = 0
+for (let i = 0; i < 34; i += 1) {
+  await ev('(()=>{const g=document.querySelector(\'[data-dsh-live2d-pet] [data-panel] [data-slot="mouth"]\');'
+    + ' const b=Array.from(g.querySelectorAll("[data-chips] button")).find((x)=>x.textContent==="闭嘴");'
+    + ' if(b) b.click(); return true})()')
+  await sleep(120)
+  await ev('window.__dshLive2dPet.fidgetNow()')
+  await sleep(320)
+  const chosen = await ev('window.__dshLive2dPet.slotSelections().mouth ?? null')
+  total += 1
+  if (chosen === null) mouthNormal += 1
+  if (chosen === '吐舌') tongue += 1
+}
+check('吐舌 never comes up in a fidget', tongue === 0, 'tongue draws=' + tongue)
+check('the mouth stays normal most of the time', mouthNormal >= total * 0.6,
+  mouthNormal + '/' + total + ' draws left the mouth alone')
 // The unblocking side is asserted on a clean state BEFORE any fidget runs: a
 // fidget legitimately opens the selfie by drawing 掏出手机 for the hand, so
 // checking it afterwards would be testing the fidget, not the guard.

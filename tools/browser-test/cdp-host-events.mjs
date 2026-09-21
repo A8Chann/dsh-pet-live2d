@@ -78,9 +78,12 @@ let previous = null
 for (let i = 0; i < 12; i++) {
   await sleep(1000)
   const pen = await ev('JSON.stringify(window.__dshLive2dPet.sweepPosition())')
+  if (pen === null || pen === undefined) { previous = pen; continue }
   if (previous !== null && pen !== previous) { stillMoving = true; break }
   previous = pen
 }
+// Demanding a NON-NULL first sample: the sweep is what carries this phase, so
+// "no sweep at all" must fail rather than satisfy a vacuous comparison.
 check('the tool phase sustains its animation past one motion length', stillMoving,
   'pen samples ended at ' + previous)
 check('the sustained pet still reports kind=phase', (await ev('window.__dshLive2dPet.kind()')) === 'phase',

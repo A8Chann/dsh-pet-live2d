@@ -365,13 +365,16 @@
             "label": "吐舌",
             "expressions": [
               "吐舌"
-            ]
+            ],
+            "fidget": false
           },
           {
             "label": "吹泡泡糖",
-            "motion": "BubbleGum"
+            "motion": "BubbleGum",
+            "fidgetWeight": 1
           }
-        ]
+        ],
+        "fidgetNone": 8
       },
       {
         "id": "symbol",

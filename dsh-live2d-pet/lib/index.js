@@ -213,6 +213,13 @@ function normaliseSlots(raw) {
       // follow the mouse and never wired it up. Writing a curve per frame turns
       // them into a hand that actually writes on the tablet.
       const sweep = normaliseSweep(option.sweep)
+      // Fidget weighting. Most of the time the mouth should simply be normal,
+      // and a couple of options should never come up on their own at all, so the
+      // idle fidget needs more than a uniform draw.
+      const fidgetOff = option.fidget === false
+      const fidgetWeight = typeof option.fidgetWeight === 'number' && option.fidgetWeight > 0
+        ? option.fidgetWeight
+        : 1
       if (expressions.length === 0 && motion === null && sweep === null) continue
       options.push({
         label: typeof option.label === 'string' && option.label !== ''
@@ -223,6 +230,8 @@ function normaliseSlots(raw) {
         ...(requires.length === 0 ? {} : { requires }),
         ...(clears.length === 0 ? {} : { clears }),
         ...(sweep === null ? {} : { sweep }),
+        ...(fidgetOff ? { fidget: false } : {}),
+        ...(fidgetWeight === 1 ? {} : { fidgetWeight }),
       })
     }
     if (options.length === 0) continue
@@ -230,6 +239,9 @@ function normaliseSlots(raw) {
       id,
       label: typeof slot.label === 'string' && slot.label !== '' ? slot.label : id,
       none: typeof slot.none === 'string' && slot.none !== '' ? slot.none : '无',
+      // How strongly the idle fidget should prefer leaving this slot alone.
+      // The mouth sets it high so the pet mostly looks normal.
+      ...(typeof slot.fidgetNone === 'number' && slot.fidgetNone > 0 ? { fidgetNone: slot.fidgetNone } : {}),
       options,
     })
   }

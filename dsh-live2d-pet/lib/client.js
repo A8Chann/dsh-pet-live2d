@@ -2352,26 +2352,50 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
           return;
         }
         lastInteraction.current = Date.now();
+        // Options that may come up at all: a motion whose premise is missing is
+        // out (a selfie with no phone would set the pins and play nothing), and
+        // so is anything the pet marked fidget:false — 吐舌 does not belong in
+        // an idle 摸鱼.
+        const usable = (slot) => slot.options.filter((o) =>
+          (typeof o.motion !== "string" || motion.current.canPlay(o.motion)) && o.fidget !== false);
+        // Weighted draw over "leave it alone" plus the usable options. The mouth
+        // carries a heavy fidgetNone so the pet mostly looks normal rather than
+        // pulling a face every time it idles.
+        const draw = (slot) => {
+          const opts = usable(slot);
+          if (opts.length === 0) return null;
+          const weightOf = (o) => (typeof o.fidgetWeight === "number" && o.fidgetWeight > 0 ? o.fidgetWeight : 1);
+          const entries = [[null, typeof slot.fidgetNone === "number" ? slot.fidgetNone : 1]]
+            .concat(opts.map((o) => [o, weightOf(o)]));
+          let total = 0;
+          for (const [, w] of entries) total += w;
+          let roll = Math.random() * total;
+          for (const [option, w] of entries) {
+            roll -= w;
+            if (roll <= 0) return option;
+          }
+          return entries[entries.length - 1][0];
+        };
+        const pool = slots.filter((slot) => usable(slot).length > 0);
+        if (pool.length === 0) { schedule(); return; }
         // "可以只选其中一个或者多个": one or two slots at a time.
         const count = 1 + Math.floor(Math.random() * 2);
-        const picked = slots.slice().sort(() => Math.random() - 0.5).slice(0, count);
-        // A fidget should be MOVEMENT, not merely a different face. Most slot
-        // options are static, so a purely random draw often changed nothing
-        // visible; if none of the picks can play a motion, swap one for a slot
-        // that can.
-        const hasMotion = (slot) => slot.options.some((o) => typeof o.motion === "string" && motion.current.canPlay(o.motion));
-        if (!picked.some(hasMotion)) {
-          const lively = slots.filter(hasMotion);
-          if (lively.length > 0) picked[0] = lively[Math.floor(Math.random() * lively.length)];
+        const picked = pool.slice().sort(() => Math.random() - 0.5).slice(0, count);
+        const changes = picked.map((slot) => [slot, draw(slot)]);
+        // A fidget should still be MOVEMENT. If the weighted draw left everything
+        // alone, force one HAND slot that can play a motion — the hands are where
+        // the pet's actions live, and forcing the mouth would defeat the point of
+        // weighting it.
+        if (changes.every(([, option]) => option === null)) {
+          const lively = pool.filter((slot) => slot.id !== "mouth"
+            && usable(slot).some((o) => typeof o.motion === "string"));
+          if (lively.length > 0) {
+            const slot = lively[Math.floor(Math.random() * lively.length)];
+            const moves = usable(slot).filter((o) => typeof o.motion === "string");
+            changes[0] = [slot, moves[Math.floor(Math.random() * moves.length)]];
+          }
         }
-        for (const slot of picked) {
-          // Skip options whose motion cannot play right now — a selfie with no
-          // phone, a spray with no whale. Picking one would set the pins and
-          // then silently play nothing.
-          const usable = slot.options.filter((o) => typeof o.motion !== "string" || motion.current.canPlay(o.motion));
-          const pool = usable.length > 0 ? usable : slot.options;
-          chooseSlotOptionRef.current(slot, pool[Math.floor(Math.random() * pool.length)]);
-        }
+        for (const [slot, option] of changes) chooseSlotOptionRef.current(slot, option);
         schedule();
       };
       fidgetRef.current = () => fire(true);
