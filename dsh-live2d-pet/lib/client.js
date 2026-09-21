@@ -1665,6 +1665,9 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     /** 眨眼间隔范围（ms）。 */
     blinkMinMs: 2200,
     blinkMaxMs: 6400,
+    /** 摸鱼：静置多久才算「闲下来」，以及之后每次摸鱼的随机间隔上界（ms）。 */
+    fidgetQuietMs: 12000,
+    fidgetGapMs: 26000,
   };
 
   /** 出厂值快照（「恢复默认」用）。 */
@@ -1684,8 +1687,19 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     { key: "mouthEaseMs", label: "嘴缓动 ms", min: 30, max: 800, step: 10 },
     { key: "blinkMinMs", label: "眨眼最短 ms", min: 600, max: 20000, step: 100 },
     { key: "blinkMaxMs", label: "眨眼最长 ms", min: 800, max: 40000, step: 100 },
+    // 摸鱼那一组单独排，界面上分开展示（见 TUNING_GROUPS）。
+    { key: "fidgetQuietMs", label: "静置多久开始", min: 2000, max: 120000, step: 1000, group: "fidget" },
+    { key: "fidgetGapMs", label: "之后最长间隔", min: 4000, max: 300000, step: 1000, group: "fidget" },
   ];
+  /** 可调项的分组（没写 group 的都归「手感」）。 */
+  const TUNING_GROUPS = [
+    { id: "feel", label: "手感（指针 / 嘴 / 眨眼）" },
+    { id: "fidget", label: "摸鱼节奏" },
+  ];
+  const tuningGroupOf = (field) => field.group ?? "feel";
   const TUNING_KEY = "dsh-pet-live2d.settings.v1";
+  /** 装扮存档的 key。放这里是因为开关（applyFlag）也要用它清存档。 */
+  const OUTFIT_KEY = "dsh-pet-live2d:outfit";
 
   /** 把存档里的值夹进合法区间 —— 坏值不能让宠物动不了。 */
   const clampSetting = (field, value) => Math.min(field.max, Math.max(field.min, value));
@@ -1711,14 +1725,39 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   const MANIFEST = { current: null };
 
   const PHASE_OVERRIDES = { phases: {}, fidget: {} };
+
+  /**
+   * 开关类设置（数字之外的那些）。
+   *
+   *   outfitArchive —— 装扮是否跨启动记住（那六件穿在身上的东西）
+   *
+   * 和数字项分开存：它们不是滑杆，校验方式也不同（true/false）。
+   */
+  const FLAGS = { outfitArchive: true };
+  const FLAG_DEFAULTS = Object.freeze(Object.assign({}, FLAGS));
   const OVERRIDE_KEY = "dsh-pet-live2d.settings.v2";
 
   const saveOverrides = () => {
     try {
-      window.localStorage.setItem(OVERRIDE_KEY, JSON.stringify(PHASE_OVERRIDES));
+      window.localStorage.setItem(OVERRIDE_KEY, JSON.stringify(Object.assign({}, PHASE_OVERRIDES, { flags: FLAGS })));
     } catch {
       /* 无痕模式之类：这次生效，下次不记得 */
     }
+  };
+
+  /** 开关类设置：存档 + 广播（装扮存档开关关掉时顺带清掉那份存档）。 */
+  const applyFlag = (key, value) => {
+    if (!Object.prototype.hasOwnProperty.call(FLAGS, key)) return;
+    FLAGS[key] = value === true;
+    if (key === "outfitArchive" && FLAGS[key] === false) {
+      try {
+        window.localStorage.removeItem(OUTFIT_KEY);
+      } catch {
+        /* 无痕模式：本来也没存下 */
+      }
+    }
+    saveOverrides();
+    notifySettings();
   };
 
   /** 读回存档；值只做类型校验，范围由调用方按权重语义处理。 */
@@ -1756,6 +1795,12 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           if (Object.keys(options).length > 0) next.options = options;
         }
         if (Object.keys(next).length > 0) PHASE_OVERRIDES.fidget[slotId] = next;
+      }
+    }
+    const flags = saved.flags;
+    if (flags !== null && typeof flags === "object") {
+      for (const key of Object.keys(FLAGS)) {
+        if (typeof flags[key] === "boolean") FLAGS[key] = flags[key];
       }
     }
   };
@@ -1873,11 +1918,13 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
    *
    * 抽成独立组件是因为它要在**两个地方**渲染：DSH 设置页和宠物右键面板。
    */
-  function TuningControls() {
+  function TuningControls(props) {
     useSettings();
-    return h("div", { "data-settings": "", "data-setting": "tuning" },
+    const only = props?.group;
+    const fields = TUNING_FIELDS.filter((field) => only === undefined || tuningGroupOf(field) === only);
+    return h("div", { "data-settings": "", "data-setting": only ?? "all" },
       h("div", { "data-chips": "" },
-        TUNING_FIELDS.map((field) => h("label", {
+        fields.map((field) => h("label", {
           key: field.key,
           "data-field": field.key,
           style: { display: "flex", alignItems: "center", gap: 6, width: "100%", fontSize: 11, padding: "2px 0" },
@@ -1895,19 +1942,41 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         }),
         h("code", { "data-value": field.key, style: { flex: "0 0 52px", textAlign: "right" } }, String(TUNING[field.key])),
         )),
-        h("button", {
-          type: "button",
-          "data-reset": "tuning",
-          onClick: () => applyTuning(Object.assign({}, TUNING_DEFAULTS)),
-        }, "恢复默认"),
+        only === undefined || only === "feel"
+          ? h("button", {
+            type: "button",
+            "data-reset": "tuning",
+            onClick: () => applyTuning(Object.assign({}, TUNING_DEFAULTS)),
+          }, "恢复默认")
+          : null,
       ),
     );
   }
 
-  /** How long a tap may move, in px, before it counts as a drag. */
-  const DRAG_SLOP_PX = 4;
-
+  /**
+   * 「装扮」那一节：现在只有一个开关（跨启动记住那六件）。
+   *
+   * 关掉时顺带把已存的清掉 —— 否则「关掉」只是不读，存档还留在那儿，
+   * 下次开开关会突然穿回一套很旧的搭配。
+   */
+  function OutfitControls() {
+    useSettings();
+    return h("div", { "data-settings": "", "data-setting": "outfit" },
+      h("label", { style: { display: "flex", alignItems: "center", gap: 6, fontSize: 11 } },
+        h("input", {
+          type: "checkbox",
+          checked: FLAGS.outfitArchive === true,
+          "data-flag": "outfitArchive",
+          onChange: (event) => applyFlag("outfitArchive", event.target.checked),
+        }),
+        h("span", null, "跨启动记住装扮（眼镜 / 发饰 / 魔爪 / 巴菲 / 桌布 / 手机换色）"),
+      ),
+      h("div", { style: { opacity: .7, fontSize: 10, paddingTop: 2 } },
+        FLAGS.outfitArchive ? "关掉会同时清掉已存的那套。" : "已关闭，也不再记录。"),
+    );
+  }
   /** Quiet time before the first idle fidget, and the randomised gap after. */
+  // 摸鱼节奏现在是可调的：默认值留在 TUNING（设置页能改），这两行只作说明。
   const IDLE_FIDGET_MIN_MS = 12000;
   const IDLE_FIDGET_MAX_MS = 26000;
 
@@ -2857,7 +2926,6 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
      * 三条规矩，都是用户定的：会话相位不动它们、归位不清它们、跨启动记住它们。
      */
     const OUTFIT_SLOTS = ["glasses", "hair", "claw", "desk", "cloth", "other"];
-    const OUTFIT_KEY = "dsh-live2d-pet:outfit";
     /** 把当前装扮翻译成表达式 pin（相位覆盖不了它们，因为最后才合并）。 */
     const outfitPins = () => {
       const pins = {};
@@ -2871,6 +2939,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       return pins;
     };
     const saveOutfit = () => {
+      // 开关关掉就既不存也不读（见设置页「装扮」那一节）。
+      if (!FLAGS.outfitArchive) return;
       try {
         const out = {};
         for (const id of OUTFIT_SLOTS) {
@@ -2883,6 +2953,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       }
     };
     const readOutfit = () => {
+      if (!FLAGS.outfitArchive) return null;
       try {
         const parsed = JSON.parse(window.localStorage.getItem(OUTFIT_KEY) ?? "null");
         return parsed !== null && typeof parsed === "object" ? parsed : null;
@@ -3297,7 +3368,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       let timer = 0;
       const schedule = () => {
         window.clearTimeout(timer);
-        const wait = IDLE_FIDGET_MIN_MS + Math.random() * (IDLE_FIDGET_MAX_MS - IDLE_FIDGET_MIN_MS);
+        // 间隔取自 TUNING（设置页「摸鱼节奏」那一组）。
+        const wait = TUNING.fidgetQuietMs + Math.random() * Math.max(0, TUNING.fidgetGapMs - TUNING.fidgetQuietMs);
         timer = window.setTimeout(fire, wait);
       };
       const fire = (force = false) => {
@@ -3312,7 +3384,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         // 'fixed' means a session owns the look; leave it alone. A forced call
         // (the diagnostic, and the tests) skips the idle gate — otherwise the
         // trigger is unreachable for the first 12 seconds and looks broken.
-        if (!force && (busy || quietFor < IDLE_FIDGET_MIN_MS || phaseRef.current !== "idle")) {
+        if (!force && (busy || quietFor < TUNING.fidgetQuietMs || phaseRef.current !== "idle")) {
           schedule();
           return;
         }
@@ -3721,9 +3793,12 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
             : tab === "settings"
             // 和 DSH 设置页共用同一个组件（值也共用一份，见模块里的 store）。
             ? h("div", { "data-settings": "" },
-                h("div", { "data-group": "", "data-setting": "tuning" }, h(TuningControls, null)),
+                ...TUNING_GROUPS.map((group) => h("div", { key: group.id, "data-group": "", "data-setting": group.id },
+                  h(TuningControls, { group: group.id }),
+                )),
                 h("div", { "data-group": "", "data-setting": "phases" }, h(PhaseControls, null)),
                 h("div", { "data-group": "", "data-setting": "fidget" }, h(FidgetControls, null)),
+                h("div", { "data-group": "", "data-setting": "outfit" }, h(OutfitControls, null)),
               )
             : tab === "motions"
             ? pet.motions.filter((entry) => !(pet.hiddenMotions ?? []).includes(entry.group))
@@ -3923,12 +3998,16 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     useSettings();
     const heading = (text) => h("h3", { style: { margin: "10px 0 4px", fontSize: 13 } }, text);
     return h("div", { "data-pet-settings": "" },
-      heading("手感（指针 / 嘴 / 眨眼）"),
-      h(TuningControls, null),
+      ...TUNING_GROUPS.map((group) => h("div", { key: group.id },
+        heading(group.label),
+        h(TuningControls, { group: group.id }),
+      )),
       heading("会话相位 → 动作 / 表情"),
       h(PhaseControls, null),
       heading("摸鱼：可触发项与权重"),
       h(FidgetControls, null),
+      heading("装扮"),
+      h(OutfitControls, null),
     );
   }
 

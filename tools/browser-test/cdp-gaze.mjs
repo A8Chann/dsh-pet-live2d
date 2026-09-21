@@ -366,6 +366,34 @@ check('权重 0 的槽位退出摸鱼池（池子少一个）',
   String(poolBefore) !== String(poolAfter) && String(poolAfter).endsWith(String(Number(String(poolBefore).split("/")[1]) - 1)),
   poolBefore + ' -> ' + poolAfter)
 
+// --- 摸鱼节奏 + 装扮存档开关 -----------------------------------------------
+const hasFidgetGap = await ev('!!document.querySelector("#dsh-settings-probe [data-input=\'fidgetQuietMs\']")')
+check('设置页有「摸鱼节奏」那一组（静置多久开始）', hasFidgetGap === true)
+const setGap = await ev('(() => {'
+  + ' const el = document.querySelector("#dsh-settings-probe [data-input=\'fidgetQuietMs\']");'
+  + ' if (!el) return false;'
+  + ' const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;'
+  + ' setter.call(el, "4000"); el.dispatchEvent(new Event("input", { bubbles: true })); return true })()')
+await sleep(300)
+const gapSaved = JSON.parse((await ev('window.localStorage.getItem("dsh-pet-live2d.settings.v1")')) ?? 'null')
+check('摸鱼间隔改动能存下来', setGap === true && gapSaved?.fidgetQuietMs === 4000, JSON.stringify({ gap: gapSaved?.fidgetQuietMs }))
+
+const hasFlag = await ev('!!document.querySelector("#dsh-settings-probe [data-flag=\'outfitArchive\']")')
+check('设置页有「跨启动记住装扮」开关', hasFlag === true)
+// 先塞一份"已存装扮"，再关开关 —— 存档必须被清掉（不然下次开开关会突然穿回旧搭配）。
+await ev('window.localStorage.setItem("dsh-pet-live2d:outfit", JSON.stringify({ glasses: "墨镜" }))')
+check('先塞一份装扮存档', (await ev('!!window.localStorage.getItem("dsh-pet-live2d:outfit")')) === true)
+await ev('document.querySelector("#dsh-settings-probe [data-flag=\'outfitArchive\']").click()')
+await sleep(400)
+check('关掉开关会清掉已存的装扮',
+  (await ev('!!window.localStorage.getItem("dsh-pet-live2d:outfit")')) === false,
+  'key=' + await ev('String(window.localStorage.getItem("dsh-pet-live2d:outfit"))'))
+const flagsSaved = JSON.parse(await ev('window.localStorage.getItem("dsh-pet-live2d.settings.v2") ?? "null"'))
+check('开关状态也存下来了', flagsSaved?.flags?.outfitArchive === false, JSON.stringify(flagsSaved?.flags ?? null))
+// 开回去，免得影响后面的用例。
+await ev('document.querySelector("#dsh-settings-probe [data-flag=\'outfitArchive\']").click()')
+await sleep(300)
+
 const bad = results.filter((r) => !r.ok)
 console.log((bad.length === 0 ? 'OK' : 'FAILED') + '  ' + (results.length - bad.length) + '/' + results.length + ' checks passed')
 ws.close()
