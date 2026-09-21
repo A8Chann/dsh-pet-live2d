@@ -1615,11 +1615,40 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     ROOT_SEL + " [data-hint] code{display:block;margin-top:5px;font-size:11px;opacity:.85;word-break:break-all}",
   ].join("\n");
 
+  /**
+   * 设置页那一节的样式。
+   *
+   * 这一节渲染在宠物根节点**之外**（DSH 的设置界面里），ROOT_SEL 作用域下的
+   * 上百条规则一条也管不到它 —— 表现就是"样式没读取上"：光秃秃的 select 和 input。
+   *
+   * 颜色刻意**不写死**：宿主有浅色与深色两套主题，用 currentColor 和中性灰透明，
+   * 跟着宿主走才不会一边好看一边瞎。
+   */
+  const SETTINGS_SEL = "[data-pet-settings]";
+  const SETTINGS_CSS = [
+    SETTINGS_SEL + "{font:400 12px/1.7 inherit;color:inherit;max-width:600px}",
+    SETTINGS_SEL + " h3{margin:12px 0 4px;font-size:13px;font-weight:600;opacity:.9}",
+    SETTINGS_SEL + " [data-setting]{margin-bottom:10px}",
+    SETTINGS_SEL + " [data-setting]>[data-chips]{display:flex;flex-direction:column;gap:2px}",
+    SETTINGS_SEL + " input[type=number]," + SETTINGS_SEL + " select{font:inherit;color:inherit;"
+      + "background:transparent;border:1px solid rgba(127,127,127,.35);border-radius:5px;padding:1px 5px;max-width:100%}",
+    SETTINGS_SEL + " input[type=range]{flex:1;min-width:80px;accent-color:currentColor}",
+    SETTINGS_SEL + " input[type=checkbox]{accent-color:currentColor}",
+    SETTINGS_SEL + " button{font:inherit;color:inherit;background:transparent;"
+      + "border:1px solid rgba(127,127,127,.35);border-radius:5px;padding:1px 7px;cursor:pointer}",
+    SETTINGS_SEL + " button:hover{border-color:currentColor}",
+    SETTINGS_SEL + " label{display:flex;align-items:center;gap:6px}",
+    SETTINGS_SEL + " code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;opacity:.85}",
+    SETTINGS_SEL + " [data-fidget-slot],[data-phase]{border-top:1px solid rgba(127,127,127,.16);padding-top:4px}",
+  ];
+  // CSS 是一整个字符串（上面已经 join 过），不是数组 —— 别对它 concat 数组。
+  const STYLE_TEXT = CSS + "\n" + SETTINGS_CSS.join("\n");
+
   function ensureStyle() {
     if (document.getElementById(STYLE_ID) !== null) return;
     const tag = document.createElement("style");
     tag.id = STYLE_ID;
-    tag.textContent = CSS;
+    tag.textContent = STYLE_TEXT;
     document.head.appendChild(tag);
   }
 

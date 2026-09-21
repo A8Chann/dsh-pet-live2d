@@ -328,6 +328,14 @@ const hasPhaseUi = await ev('!!document.querySelector("#dsh-settings-probe [data
 check('DSH 设置页能加一行「会话相位」并出现动作下拉', addedTool === true && hasPhaseUi === true)
 const hasFidgetUi = await ev('!!document.querySelector("#dsh-settings-probe [data-fidget-slot=\'mouth\'] input[data-fidget-weight]")')
 check('DSH 设置页有「摸鱼」权重输入', hasFidgetUi === true)
+// 设置页那一节在宠物根节点之外，必须有自己的样式（曾经整节都是裸控件）。
+const sectionStyled = await ev('(() => {'
+  + ' const s = document.querySelector("#dsh-settings-probe [data-fidget-slot] select, #dsh-settings-probe [data-fidget-slot] input[type=number]");'
+  + ' if (!s) return null;'
+  + ' const cs = getComputedStyle(s);'
+  + ' return JSON.stringify({ border: cs.borderTopWidth, font: cs.fontSize }); })()')
+check('DSH 设置页那一节的控件有样式（不是裸控件）',
+  sectionStyled !== null && !String(sectionStyled).includes('"border":"0px"'), String(sectionStyled))
 
 // 选一个和默认不同的动作，然后真的推一个 tool 相位过去 —— 必须播这个动作。
 const setSelect = (selector, value) => ev('(() => {'
