@@ -2355,11 +2355,15 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
           const target = slots.find((s) => s.id === slotId);
           if (target === undefined) return;
           for (const candidate of target.options) {
+            // Only the NAMED option is turned on. This used to set every option's
+            // expressions when wanted was true, so pairing 爱心眼 -> 冒爱心 also
+            // switched on 心跳 and 情绪花花: three ambient effects at once.
+            const isNamed = wanted && candidate.label === label;
             for (const name of candidate.expressions) {
-              if (wanted) next[name] = true;
+              if (isNamed) next[name] = true;
               else delete next[name];
             }
-            if (!wanted) for (const name of candidate.requires ?? []) delete next[name];
+            if (!isNamed) for (const name of candidate.requires ?? []) delete next[name];
           }
           const chosen = Object.assign({}, slotSelectionsRef.current);
           if (wanted) chosen[slotId] = label;
@@ -2372,6 +2376,13 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
         // Choosing "none" applies the slot's UNION of breaks: leaving the hand
         // empty must take the cat sticker off just as any other hand pose does,
         // otherwise the sticker stays on with no cat paws to justify it.
+        // Undo whatever this slot's PREVIOUS option paired in. Choosing 爱心眼
+        // pulls 冒爱心 in; going back to 默认 eyes has to let it go again.
+        const previousLabel = slotSelectionsRef.current[slot.id];
+        if (previousLabel !== undefined) {
+          const previous = slot.options.find((o) => o.label === previousLabel);
+          for (const pairedId of Object.keys(previous?.pairs ?? {})) applyLabel(pairedId, "", false);
+        }
         const sources = option === null
           ? slot.options
           : [option];

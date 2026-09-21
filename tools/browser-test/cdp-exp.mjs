@@ -176,6 +176,21 @@ check('and picking 吐魂 drops 吹泡泡糖 in turn',
 await slotPick('mood', '平静')
 await ev('window.__dshLive2dPet.setExpressions([])')
 await sleep(500)
+// --- a paired option pulls in exactly ONE partner, and lets it go -----------
+// pairs used to switch on EVERY option of the target slot, so 爱心眼 brought in
+// 冒爱心 AND 心跳 AND 情绪花花 at once. Leaving the pair also has to undo it.
+const paired = await slotPick('eyes', '爱心眼')
+const pairedFaces = JSON.parse(await ev('JSON.stringify(window.__dshLive2dPet.expressions())'))
+check('爱心眼 brings in 冒爱心', paired.mood === undefined && pairedFaces.includes('冒爱心'), JSON.stringify(pairedFaces))
+check('and brings in NOTHING else from the ambient slot',
+  !pairedFaces.includes('心跳') && !pairedFaces.includes('情绪花花'), JSON.stringify(pairedFaces))
+await slotPick('eyes', '默认')
+const released = JSON.parse(await ev('JSON.stringify(window.__dshLive2dPet.expressions())'))
+check('going back to normal eyes releases the ambience',
+  !released.includes('冒爱心') && !released.includes('心跳') && !released.includes('情绪花花'),
+  JSON.stringify(released))
+await ev('window.__dshLive2dPet.setExpressions([])')
+await sleep(500)
 check('no failed plugin request', !reqs.some((r) => !r.startsWith('200')),
   JSON.stringify(reqs.filter((r) => !r.startsWith('200')).slice(0, 5)))
 

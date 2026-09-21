@@ -46,8 +46,10 @@ const rest = await read()
 // (1) bubble gum must not leave the mouth inflated
 await ev('window.__dshLive2dPet.playOnce("BubbleGum",0,{kind:"panel"})')
 await sleep(1500); const bubbleDuring = await read()
-for (let i=0;i<30;i++){ await sleep(500); if (await motion() === 'idle') break }
-await sleep(1500); const bubbleAfter = await read()
+// NOT "wait for idle": a hold+persist motion never goes idle, so that loop span
+// the full 15s and a natural fidget changed the mouth slot in the meantime.
+// Wait out the motion's own declared duration instead.
+await sleep(5000); const bubbleAfter = await read()
 check('bubble gum leaves the mouth inflated while it runs', bubbleDuring.chuipaopao > 0, JSON.stringify(bubbleDuring))
 // 吹泡泡糖 is declared hold+persist: the user asked for actions to PARK on their
 // last frame rather than relax. The original expectation here was the opposite.
@@ -74,8 +76,8 @@ for (let i = 0; i < 20 && !allowed; i += 1) {
 check('with a whale on screen the spray is allowed', allowed)
 await ev('window.__dshLive2dPet.playOnce("SprayWater",0,{kind:"panel"})')
 await sleep(300); const sprayDuring = await read()
-for (let i=0;i<30;i++){ await sleep(500); if (await motion() === 'idle') break }
-await sleep(1500); const sprayAfter = await read()
+// 鲸鱼喷水 is 0.467s long and also holds, so again: no idle to wait for.
+await sleep(2500); const sprayAfter = await read()
 check('the spray shows the whale', sprayDuring.jingyu === 1, 'jingyu=' + sprayDuring.jingyu)
 // 鲸鱼喷水 is declared hold+persist too, so it PARKS with the whale out. The
 // original expectation here predates that requirement.

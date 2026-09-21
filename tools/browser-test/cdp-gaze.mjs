@@ -168,7 +168,13 @@ for (let i = 0; i < 90; i += 1) {
   wasOpen = v === 0
 }
 check('a blink actually closes the eyes', deepest > 0.8, 'deepest=' + Number(deepest).toFixed(2))
-check('the eyes open again after blinking', (await ev('window.__dshLive2dPet.blinkAmount()')) === 0)
+// Polled: a fresh blink can start between the sampling loop ending and this read.
+let opened = false
+for (let i = 0; i < 20 && !opened; i += 1) {
+  if ((await ev('window.__dshLive2dPet.blinkAmount()')) === 0) opened = true
+  else await sleep(120)
+}
+check('the eyes open again after blinking', opened)
 // And it must happen on its own, not only when forced: roughly one blink every
 // 2.2-6.4s, so a 12s window must contain several.
 // Counted by the client, not sampled from here: a blink is ~225ms end to end
