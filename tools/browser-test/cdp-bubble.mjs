@@ -16,7 +16,7 @@
 import { spawn } from 'node:child_process'
 import { rmSync } from 'node:fs'
 import { browserPath, PROFILES, BASE } from './paths.mjs'
-import { waitReady, openPanel } from './ready.mjs'
+import { waitReady, openPanel, panelFooter } from './ready.mjs'
 import { join } from 'node:path'
 
 const EDGE = browserPath()
@@ -265,6 +265,24 @@ const mouthClosed = await drawn('ParamMouthOpenY')
 check('挤番茄酱收回之后嘴闭上（动作写过的 ParamMouthOpenY 必须被还原）',
   (mouthClosed ?? 0) < 0.3 && (mouthOpen ?? 0) > (mouthClosed ?? 0) + 0.1,
   '起始 ' + mouthRest + ' 挤的时候 ' + mouthOpen + ' 收回后 ' + mouthClosed)
+
+// (11) 装扮要"存档"：会话相位不动它、归位不清它、重载页面还在。
+await clickSlot('glasses', '墨镜')
+await clickSlot('cloth', '黑色')
+await sleep(900)
+check('先把装扮穿上（墨镜 = ParamCheek71）', (await drawn('ParamCheek71')) === 1,
+  'Cheek71=' + (await drawn('ParamCheek71')))
+await panelFooter(ev, '归位')
+await sleep(900)
+check('归位之后装扮还在（归位不清装扮）', (await drawn('ParamCheek71')) === 1,
+  'Cheek71=' + (await drawn('ParamCheek71')))
+await send('Page.navigate', { url: BASE + '/?variant=DBG' })
+for (let i = 0; i < 240; i += 1) { await sleep(400); if (await ev('document.title') === 'done') break }
+await waitReady(ev)
+await sleep(800)
+const kept = JSON.parse(await ev('JSON.stringify(window.__dshLive2dPet.slotSelections())'))
+check('重载之后装扮选择从存档恢复', kept.glasses === '墨镜' && kept.cloth === '黑色', JSON.stringify(kept))
+check('重载之后装扮真的画出来了', (await drawn('ParamCheek71')) === 1, 'Cheek71=' + (await drawn('ParamCheek71')))
 
 const bad = results.filter((r) => !r.ok)
 console.log((bad.length === 0 ? 'OK' : 'FAILED') + '  ' + (results.length - bad.length) + '/' + results.length + ' checks passed')

@@ -495,7 +495,14 @@
             "expressions": [
               "手机换色"
             ]
-          },
+          }
+        ]
+      },
+      {
+        "id": "menu",
+        "label": "点菜",
+        "none": "无",
+        "options": [
           {
             "label": "点菜按下",
             "expressions": [

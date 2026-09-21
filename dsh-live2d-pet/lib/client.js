@@ -2533,18 +2533,61 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
      * to be mirroring; when the phase ends its layer is emptied and the user's
      * outfit comes straight back, without having been destroyed in between.
      */
+    /**
+     * 装扮槽：用户"穿在身上"的东西，不是这一轮的临时效果。
+     *
+     * 三条规矩，都是用户定的：会话相位不动它们、归位不清它们、跨启动记住它们。
+     */
+    const OUTFIT_SLOTS = ["glasses", "hair", "claw", "desk", "cloth", "other"];
+    const OUTFIT_KEY = "dsh-live2d-pet:outfit";
+    /** 把当前装扮翻译成表达式 pin（相位覆盖不了它们，因为最后才合并）。 */
+    const outfitPins = () => {
+      const pins = {};
+      for (const id of OUTFIT_SLOTS) {
+        const label = slotSelectionsRef.current[id];
+        if (label === undefined) continue;
+        const option = slotByIdRef.current.get(id)?.options.find((o) => o.label === label);
+        for (const name of option?.expressions ?? []) pins[name] = true;
+        for (const name of option?.requires ?? []) pins[name] = true;
+      }
+      return pins;
+    };
+    const saveOutfit = () => {
+      try {
+        const out = {};
+        for (const id of OUTFIT_SLOTS) {
+          const label = slotSelectionsRef.current[id];
+          if (label !== undefined) out[id] = label;
+        }
+        window.localStorage.setItem(OUTFIT_KEY, JSON.stringify(out));
+      } catch {
+        /* 无痕模式之类存不下：不影响这次，只是下次不记得 */
+      }
+    };
+    const readOutfit = () => {
+      try {
+        const parsed = JSON.parse(window.localStorage.getItem(OUTFIT_KEY) ?? "null");
+        return parsed !== null && typeof parsed === "object" ? parsed : null;
+      } catch {
+        return null;
+      }
+    };
+
     commitPinsRef.current = () => {
       const merged = Object.assign({}, userPinsRef.current);
       // A phase owns the slots it names. Overriding key-by-key is not enough:
       // 蛋包饭 and 画笔 are DIFFERENT expressions, so a user-chosen 蛋包饭 would
       // stay pinned through the whole session and put omurice on screen.
       for (const slotId of phaseSlotsRef.current) {
+        // 装扮槽归用户：会话相位不碰眼镜/发饰/魔爪/巴菲/桌布/手机换色。
+        if (OUTFIT_SLOTS.indexOf(slotId) !== -1) continue;
         const slot = slotByIdRef.current.get(slotId);
         for (const option of slot?.options ?? []) {
           for (const name of option.expressions) delete merged[name];
         }
       }
-      applyExpressions(Object.assign(merged, phasePinsRef.current));
+      // 装扮最后合并：相位即使点名了这些槽位，也压不过用户自己的选择。
+      applyExpressions(Object.assign(merged, phasePinsRef.current, outfitPins()));
     };
 
     /**
@@ -2631,6 +2674,7 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
           if (wanted) chosen[slotId] = label;
           else delete chosen[slotId];
           slotSelectionsRef.current = chosen;
+      saveOutfit();
           if (!wanted && typeof target.options.find((o) => o.label === label)?.motion === "string") {
             slotMotionRef.current = null;
           }
@@ -2701,6 +2745,7 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       if (option === null) delete chosen[slot.id];
       else chosen[slot.id] = option.label;
       slotSelectionsRef.current = chosen;
+      saveOutfit();
       // The body follows whichever slot currently holds a motion option, worked
       // out from the selections rather than remembered. Remembering only the
       // LAST motion meant 掏出手机 -> 喵喵手 (a motion option to a plain
@@ -2747,11 +2792,46 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       window.clearTimeout(expressionTimer.current);
       userPinsRef.current = {};
       phasePinsRef.current = {};
-      slotSelectionsRef.current = {};
+      // 归位不动装扮：那六件是用户穿在身上的，不是这一轮的临时效果。
+      // 表达式 pin 会被 outfitPins() 在 commit 时重新合并回去。
+      const keepOutfit = {};
+      for (const id of OUTFIT_SLOTS) {
+        const label = slotSelectionsRef.current[id];
+        if (label !== undefined) keepOutfit[id] = label;
+      }
+      slotSelectionsRef.current = keepOutfit;
       commitPinsRef.current();
       motion.current.resetToRest();
       say(pick(LINES.reset));
     }, [applyExpressions, say]);
+
+    /**
+     * 启动时把上次的装扮穿回来。
+     *
+     * 放在 ready 之后：那时 catalog 已经填好 slotByIdRef，能校验存档里的
+     * label 在当前 pet.json 里还存在（换模型/改配置之后存档可能对不上，
+     * 对不上就当没存过，不要凭空造一个选项出来）。
+     */
+    const outfitRestoredRef = useRef(false);
+    useEffect(() => {
+      if (outfitRestoredRef.current || !ready) return;
+      if (slotByIdRef.current.size === 0) return;
+      outfitRestoredRef.current = true;
+      const saved = readOutfit();
+      if (saved === null) return;
+      const chosen = Object.assign({}, slotSelectionsRef.current);
+      let restored = false;
+      for (const id of OUTFIT_SLOTS) {
+        const label = saved[id];
+        if (typeof label !== "string") continue;
+        if (slotByIdRef.current.get(id)?.options.some((o) => o.label === label) !== true) continue;
+        chosen[id] = label;
+        restored = true;
+      }
+      if (!restored) return;
+      slotSelectionsRef.current = chosen;
+      commitPinsRef.current();
+    }, [ready]);
 
     // ---- session activity (#4) -----------------------------------------
     // The host pushes the agent's coarse phase over same-origin SSE; each
