@@ -316,6 +316,56 @@ await sleep(400)
 const afterDshChange = await gazeAt(0.60, 0.5)
 check('在 DSH 设置页改死区，宠物立刻跟着变', Math.abs(afterDshChange.x) < 0.01, JSON.stringify(afterDshChange))
 
+// --- DSH 设置页里的「会话相位」和「摸鱼」两节 --------------------------------
+const hasPhaseUi = await ev('!!document.querySelector("#dsh-settings-probe [data-phase=\'tool\'] select[data-phase-motion]")')
+check('DSH 设置页有「会话相位」下拉', hasPhaseUi === true)
+const hasFidgetUi = await ev('!!document.querySelector("#dsh-settings-probe [data-fidget-slot=\'mouth\'] input[data-fidget-none]")')
+check('DSH 设置页有「摸鱼」权重输入', hasFidgetUi === true)
+
+// 选一个和默认不同的动作，然后真的推一个 tool 相位过去 —— 必须播这个动作。
+const setSelect = (selector, value) => ev('(() => {'
+  + ' const el = document.querySelector(' + JSON.stringify("#dsh-settings-probe " + selector) + ');'
+  + ' if (!el) return false;'
+  + ' const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value").set;'
+  + ' setter.call(el, ' + JSON.stringify(value) + ');'
+  + ' el.dispatchEvent(new Event("change", { bubbles: true }));'
+  + ' return true })()')
+check('把 tool 相位的动作改成 Hammer', (await setSelect('[data-phase-motion=\'tool\']', "Hammer")) === true)
+await sleep(300)
+const phaseSaved = JSON.parse(await ev('window.localStorage.getItem("dsh-pet-live2d.settings.v2") ?? "null"'))
+check('相位覆盖写进了存档', phaseSaved !== null && phaseSaved.phases?.tool?.motion === "Hammer", JSON.stringify(phaseSaved?.phases ?? null))
+await fetch(BASE + '/__nudge?phase=tool')
+let played = null
+for (let i = 0; i < 20; i += 1) {
+  await sleep(250)
+  played = await ev('(document.querySelector("[data-dsh-live2d-pet]") || {}).getAttribute?.("data-motion")')
+  if (played === "Hammer") break
+}
+check('会话相位真的播了设置里指定的动作', played === "Hammer", 'data-motion=' + played)
+await fetch(BASE + '/__nudge?phase=idle')
+await sleep(600)
+
+// 摸鱼：把嘴部唯一可触发选项的权重清零 —— 它应该整个退出摸鱼池。
+// poolSize 是摸鱼真正跑过之后才写上的，所以先强制摸一次再读基线。
+await ev('window.__dshLive2dPet.fidgetNow()')
+await sleep(600)
+const poolBefore = await ev('window.__dshLive2dPet.fidgetTally().poolSize')
+const setWeight = (key, value) => ev('(() => {'
+  + ' const el = document.querySelector("[data-dsh-live2d-pet] [data-fidget-weight=\'' + key + '\']");'
+  + ' if (!el) return false;'
+  + ' const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;'
+  + ' setter.call(el, ' + JSON.stringify(String(value)) + ');'
+  + ' el.dispatchEvent(new Event("input", { bubbles: true }));'
+  + ' return true })()')
+check('在右键面板里把「吹泡泡糖」的摸鱼权重改成 0', (await setWeight("mouth:吹泡泡糖", 0)) === true)
+await sleep(300)
+await ev('window.__dshLive2dPet.fidgetNow()')
+await sleep(800)
+const poolAfter = await ev('window.__dshLive2dPet.fidgetTally().poolSize')
+check('权重 0 的槽位退出摸鱼池（池子少一个）',
+  String(poolBefore) !== String(poolAfter) && String(poolAfter).endsWith(String(Number(String(poolBefore).split("/")[1]) - 1)),
+  poolBefore + ' -> ' + poolAfter)
+
 const bad = results.filter((r) => !r.ok)
 console.log((bad.length === 0 ? 'OK' : 'FAILED') + '  ' + (results.length - bad.length) + '/' + results.length + ' checks passed')
 ws.close()

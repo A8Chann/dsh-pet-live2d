@@ -1697,6 +1697,113 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
    * （用户说是过渡）。两边都必须立刻看到对方的改动，所以值放模块作用域，
    * 改完广播一次。
    */
+  /**
+   * 相位映射与摸鱼权重的**用户覆盖**（DSH 设置页可改）。
+   *
+   * 默认值来自 pet.json（motionsByPhase / expressionsByPhase / 各槽位的
+   * fidgetNone 与各选项的 fidgetWeight）；这里只放用户改过的部分，
+   * 键都按名字存，换宠物时对不上的覆盖会被忽略（和装扮存档同一套思路）。
+   *
+   *   phases: { <相位>: { motion: 组名|null, expression: 表情名|null } }
+   *   fidget: { <槽位>: { none: 权重, options: { <选项标签>: 权重 } } }
+   */
+  /** 当前宠物的清单，给设置界面用（DSH 设置页拿不到组件里的 pet）。 */
+  const MANIFEST = { current: null };
+
+  const PHASE_OVERRIDES = { phases: {}, fidget: {} };
+  const OVERRIDE_KEY = "dsh-pet-live2d.settings.v2";
+
+  const saveOverrides = () => {
+    try {
+      window.localStorage.setItem(OVERRIDE_KEY, JSON.stringify(PHASE_OVERRIDES));
+    } catch {
+      /* 无痕模式之类：这次生效，下次不记得 */
+    }
+  };
+
+  /** 读回存档；值只做类型校验，范围由调用方按权重语义处理。 */
+  const restoreOverrides = () => {
+    let saved = null;
+    try {
+      saved = JSON.parse(window.localStorage.getItem(OVERRIDE_KEY) ?? "null");
+    } catch {
+      saved = null;
+    }
+    if (saved === null || typeof saved !== "object") return;
+    const phases = saved.phases;
+    if (phases !== null && typeof phases === "object") {
+      for (const [phase, entry] of Object.entries(phases)) {
+        if (entry === null || typeof entry !== "object") continue;
+        const next = {};
+        if (typeof entry.motion === "string" || entry.motion === null) next.motion = entry.motion;
+        if (typeof entry.expression === "string" || entry.expression === null) next.expression = entry.expression;
+        if (Object.keys(next).length > 0) PHASE_OVERRIDES.phases[phase] = next;
+      }
+    }
+    const fidget = saved.fidget;
+    if (fidget !== null && typeof fidget === "object") {
+      for (const [slotId, entry] of Object.entries(fidget)) {
+        if (entry === null || typeof entry !== "object") continue;
+        const next = {};
+        if (typeof entry.none === "number" && Number.isFinite(entry.none)) {
+          next.none = Math.min(99, Math.max(0, entry.none));
+        }
+        if (entry.options !== null && typeof entry.options === "object") {
+          const options = {};
+          for (const [label, weight] of Object.entries(entry.options)) {
+            if (typeof weight === "number" && Number.isFinite(weight)) options[label] = Math.min(99, Math.max(0, weight));
+          }
+          if (Object.keys(options).length > 0) next.options = options;
+        }
+        if (Object.keys(next).length > 0) PHASE_OVERRIDES.fidget[slotId] = next;
+      }
+    }
+  };
+
+  /** 改一处覆盖：写进 store、存档、广播（两个设置界面立刻同步）。 */
+  const applyOverride = (patch) => {
+    if (patch.phases !== undefined) {
+      for (const [phase, entry] of Object.entries(patch.phases)) {
+        PHASE_OVERRIDES.phases[phase] = Object.assign({}, PHASE_OVERRIDES.phases[phase], entry);
+      }
+    }
+    if (patch.fidget !== undefined) {
+      for (const [slotId, entry] of Object.entries(patch.fidget)) {
+        const current = PHASE_OVERRIDES.fidget[slotId] ?? {};
+        PHASE_OVERRIDES.fidget[slotId] = {
+          none: entry.none === undefined ? current.none : entry.none,
+          options: Object.assign({}, current.options, entry.options),
+        };
+      }
+    }
+    saveOverrides();
+    notifySettings();
+  };
+
+  /** 相位最终取值：默认（pet.json / 内置） <- 用户覆盖。 */
+  const phaseMotionFor = (base, phase) => {
+    const override = PHASE_OVERRIDES.phases[phase];
+    if (override !== undefined && override.motion !== undefined) return override.motion;
+    return base[phase];
+  };
+  const phaseExpressionFor = (base, phase) => {
+    const override = PHASE_OVERRIDES.phases[phase];
+    if (override !== undefined && override.expression !== undefined) return override.expression;
+    return base[phase];
+  };
+  /** 摸鱼权重：默认（pet.json） <- 用户覆盖。 */
+  const fidgetNoneFor = (slot) => {
+    const override = PHASE_OVERRIDES.fidget[slot.id];
+    if (override !== undefined && typeof override.none === "number") return override.none;
+    return typeof slot.fidgetNone === "number" ? slot.fidgetNone : 1;
+  };
+  const fidgetWeightFor = (slot, option) => {
+    const override = PHASE_OVERRIDES.fidget[slot.id];
+    const fromUser = override?.options?.[option.label];
+    if (typeof fromUser === "number") return fromUser;
+    return typeof option.fidgetWeight === "number" && option.fidgetWeight > 0 ? option.fidgetWeight : 1;
+  };
+
   const settingsListeners = new Set();
   const notifySettings = () => {
     for (const listener of Array.from(settingsListeners)) {
@@ -2294,9 +2401,9 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       return () => window.cancelAnimationFrame(id);
     }, [panelOpen]);
     const [tab, setTab] = useState("motions");
-    // 设置值在模块作用域的 store 里（DSH 设置页和这里的面板共用一份），
-    // 订阅它只为重渲染。
-    useSettings();
+    // 设置值在模块作用域的 store 里（DSH 设置页和这里的面板共用一份）。
+    // 订阅它既为重渲染，也为下面那个「相位映射随设置重算」的 effect 提供依赖。
+    const settingsRev = useSettings();
 
     const [pinned, setPinned] = useState({});
     const [dragging, setDragging] = useState(false);
@@ -2388,6 +2495,22 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       return () => { alive = false; };
     }, []);
 
+    /**
+     * 相位映射随设置变化重算。
+     *
+     * 基线（内置 + pet.json）由 model boot 那段填，这里只把用户覆盖叠上去；
+     * 两个设置界面共用同一份 store，所以哪边改都会广播到这里。
+     */
+    useEffect(() => {
+      const base = phaseBaseRef.current;
+      const motions = {};
+      for (const phase of Object.keys(base.motions)) motions[phase] = phaseMotionFor(base.motions, phase);
+      const expressions = {};
+      for (const phase of Object.keys(base.expressions)) expressions[phase] = phaseExpressionFor(base.expressions, phase);
+      phaseMotionRef.current = motions;
+      phaseExpressionRef.current = expressions;
+    }, [settingsRev]);
+
     // ---- model boot ---------------------------------------------------
     useEffect(() => {
       if (catalog === null || pet === undefined) return undefined;
@@ -2400,9 +2523,16 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         // Per-pet phase overrides: the manifest's live2d.motions/expressions use
       // the same phase keys, so a model can retarget any slot. Unset slots keep
       // the built-in defaults.
-      phaseMotionRef.current = Object.assign({}, PHASE_MOTION, pet.motionsByPhase || {});
-      phaseExpressionRef.current = Object.assign({}, PHASE_EXPRESSION, pet.expressionsByPhase || {});
+      // 相位映射：内置默认 <- pet.json <- 用户在设置页的覆盖。
+      phaseBaseRef.current = {
+        motions: Object.assign({}, PHASE_MOTION, pet.motionsByPhase || {}),
+        expressions: Object.assign({}, PHASE_EXPRESSION, pet.expressionsByPhase || {}),
+      };
+      phaseMotionRef.current = Object.assign({}, phaseBaseRef.current.motions);
+      phaseExpressionRef.current = Object.assign({}, phaseBaseRef.current.expressions);
       looksByPhaseRef.current = pet.looksByPhase || {};
+      // 设置界面（含 DSH 设置页那个独立组件）需要清单里有哪些动作/表情/槽位。
+      MANIFEST.current = pet;
       slotByIdRef.current = new Map((pet.expressionSlots ?? []).map((slot) => [slot.id, slot]));
       guardsRef.current = pet.motionGuards || {};
       phaseRef.current = "idle";
@@ -3198,16 +3328,19 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         // so is anything the pet marked fidget:false — 吐舌 does not belong in
         // an idle 摸鱼.
         const usable = (slot) => slot.options.filter((o) =>
-          (typeof o.motion !== "string" || motion.current.canPlay(o.motion)) && o.fidget !== false);
+          (typeof o.motion !== "string" || motion.current.canPlay(o.motion)) && o.fidget !== false
+          // 权重被设置页调成 0 的选项等于「关掉」：直接从池子里拿掉，
+          // 免得它靠"权重 0 也占一个名额"的边角情况偶尔冒出来。
+          && fidgetWeightFor(slot, o) > 0);
         // Weighted draw over "leave it alone" plus the usable options. The mouth
         // carries a heavy fidgetNone so the pet mostly looks normal rather than
         // pulling a face every time it idles.
         const draw = (slot) => {
           const opts = usable(slot);
           if (opts.length === 0) return null;
-          const weightOf = (o) => (typeof o.fidgetWeight === "number" && o.fidgetWeight > 0 ? o.fidgetWeight : 1);
-          const entries = [[null, typeof slot.fidgetNone === "number" ? slot.fidgetNone : 1]]
-            .concat(opts.map((o) => [o, weightOf(o)]));
+          // 权重：pet.json 的默认值，可以被设置页覆盖（0 = 永不触发）。
+          const entries = [[null, fidgetNoneFor(slot)]]
+            .concat(opts.map((o) => [o, fidgetWeightFor(slot, o)]));
           let total = 0;
           for (const [, w] of entries) total += w;
           let roll = Math.random() * total;
@@ -3281,6 +3414,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     const phaseRef = useRef("idle");
     const phaseMotionRef = useRef(PHASE_MOTION);
     const phaseExpressionRef = useRef(PHASE_EXPRESSION);
+    /** 相位的「出厂 + pet.json」基线；用户覆盖叠在上面（见 phaseMotionFor）。 */
+    const phaseBaseRef = useRef({ motions: PHASE_MOTION, expressions: PHASE_EXPRESSION });
     /** phase -> slot-vocabulary look, from the pet manifest (requirement #10). */
     const looksByPhaseRef = useRef({});
     // Gaze target, mirrored onto the pet root as data-gaze.
@@ -3585,7 +3720,11 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
               })
             : tab === "settings"
             // 和 DSH 设置页共用同一个组件（值也共用一份，见模块里的 store）。
-            ? h("div", { "data-settings": "" }, h(TuningControls, null))
+            ? h("div", { "data-settings": "" },
+                h("div", { "data-group": "", "data-setting": "tuning" }, h(TuningControls, null)),
+                h("div", { "data-group": "", "data-setting": "phases" }, h(PhaseControls, null)),
+                h("div", { "data-group": "", "data-setting": "fidget" }, h(FidgetControls, null)),
+              )
             : tab === "motions"
             ? pet.motions.filter((entry) => !(pet.hiddenMotions ?? []).includes(entry.group))
               .map((entry) => h("div", { "data-group": "", key: entry.group },
@@ -3681,11 +3820,115 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
    *
    * 右键面板里那份设置只是过渡（用户明说的），正牌入口在这里。
    */
+  /** 清单里全部可用的表情名（槽位选项里出现过的去重）。 */
+  function manifestExpressions(pet) {
+    const names = new Set();
+    for (const slot of pet.expressionSlots ?? []) {
+      for (const option of slot.options ?? []) {
+        for (const name of option.expressions ?? []) names.add(name);
+      }
+    }
+    return Array.from(names).sort();
+  }
+
+  const rowStyle = { display: "flex", alignItems: "center", gap: 6, fontSize: 11, padding: "2px 0" };
+  const labelStyle = { flex: "0 0 88px", opacity: .85 };
+  const selectStyle = { flex: 1, minWidth: 0, fontSize: 11 };
+
+  /**
+   * 会话相位 → 动作 / 表情。
+   *
+   * 覆盖存在 store 里（键按名字），换宠物时对不上的会被忽略。
+   */
+  function PhaseControls() {
+    useSettings();
+    const pet = MANIFEST.current;
+    if (pet === null) return h("div", { "data-empty": "phases" }, "宠物还没加载好");
+    const phases = Array.from(new Set([...Object.keys(PHASE_MOTION), ...Object.keys(pet.motionsByPhase ?? {})]));
+    const groups = (pet.motions ?? []).map((entry) => entry.group);
+    const expressions = manifestExpressions(pet);
+    const current = (phase) => ({
+      motion: phaseMotionFor(Object.assign({}, PHASE_MOTION, pet.motionsByPhase ?? {}), phase) ?? "",
+      expression: phaseExpressionFor(Object.assign({}, PHASE_EXPRESSION, pet.expressionsByPhase ?? {}), phase) ?? "",
+    });
+    const pick = (phase, key, value) => applyOverride({ phases: { [phase]: { [key]: value === "" ? null : value } } });
+    return h("div", { "data-settings": "", "data-setting": "phases" },
+      phases.map((phase) => {
+        const now = current(phase);
+        return h("label", { key: phase, "data-phase": phase, style: rowStyle },
+          h("span", { style: labelStyle }, phase),
+          h("select", {
+            "data-phase-motion": phase,
+            style: selectStyle,
+            value: now.motion,
+            onChange: (event) => pick(phase, "motion", event.target.value),
+          },
+          h("option", { value: "" }, "（默认）"),
+          groups.map((group) => h("option", { key: group, value: group }, group)),
+          ),
+          h("select", {
+            "data-phase-expression": phase,
+            style: selectStyle,
+            value: now.expression,
+            onChange: (event) => pick(phase, "expression", event.target.value),
+          },
+          h("option", { value: "" }, "（默认）"),
+          expressions.map((expr) => h("option", { key: expr, value: expr }, expr)),
+          ),
+        );
+      }),
+    );
+  }
+
+  /**
+   * 摸鱼：每个槽位一个「保持不变」权重，每个选项一个权重。
+   *
+   * 权重 0 = 永不触发（选项会被直接移出池子，见 usable()）。
+   */
+  function FidgetControls() {
+    useSettings();
+    const pet = MANIFEST.current;
+    if (pet === null) return h("div", { "data-empty": "fidget" }, "宠物还没加载好");
+    const slots = (pet.expressionSlots ?? []).filter((slot) => FIDGET_SLOTS.includes(slot.id));
+    const numberInput = (key, value, onChange, extra) => h("input", Object.assign({
+      type: "number", min: 0, max: 99, step: 1, value: String(value),
+      style: { width: 46, fontSize: 11 },
+      onChange: (event) => onChange(Number(event.target.value)),
+    }, extra));
+    return h("div", { "data-settings": "", "data-setting": "fidget" },
+      slots.map((slot) => h("div", { key: slot.id, "data-fidget-slot": slot.id, style: { padding: "3px 0" } },
+        h("div", { style: { display: "flex", alignItems: "center", gap: 6, fontSize: 11 } },
+          h("span", { style: labelStyle }, slot.label),
+          h("span", { style: { opacity: .7 } }, "保持不变"),
+          numberInput("none", fidgetNoneFor(slot), (value) => applyOverride({ fidget: { [slot.id]: { none: value } } }),
+            { "data-fidget-none": slot.id }),
+        ),
+        h("div", { "data-chips": "", style: { display: "flex", flexWrap: "wrap", gap: 6, paddingLeft: 94 } },
+          (slot.options ?? []).map((option) => h("label", {
+            key: option.label,
+            "data-fidget-option": slot.id + ":" + option.label,
+            style: { display: "flex", alignItems: "center", gap: 3, fontSize: 11 },
+          },
+          h("span", { style: { opacity: .8 } }, option.label),
+          numberInput("w", fidgetWeightFor(slot, option), (value) => applyOverride({ fidget: { [slot.id]: { options: { [option.label]: value } } } }),
+            { "data-fidget-weight": slot.id + ":" + option.label }),
+          )),
+        ),
+      )),
+    );
+  }
+
+  /** DSH 设置页里的「桌宠」一节：手感 / 会话相位 / 摸鱼。 */
   function PetSettingsSection() {
     useSettings();
+    const heading = (text) => h("h3", { style: { margin: "10px 0 4px", fontSize: 13 } }, text);
     return h("div", { "data-pet-settings": "" },
-      h("h3", { style: { margin: "0 0 6px", fontSize: 13 } }, "手感（指针 / 嘴 / 眨眼）"),
+      heading("手感（指针 / 嘴 / 眨眼）"),
       h(TuningControls, null),
+      heading("会话相位 → 动作 / 表情"),
+      h(PhaseControls, null),
+      heading("摸鱼：可触发项与权重"),
+      h(FidgetControls, null),
     );
   }
 
@@ -3709,6 +3952,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     ensureStyle();
     // 设置值在模块作用域，客户端启动时读一次存档就够了。
     restoreTuning();
+    restoreOverrides();
     applySettings(ctx);
     // Takeover: an earlier instance — a hot reload, or one left behind by a
     // crashed reload — must not leave a second floating pet on the page.
