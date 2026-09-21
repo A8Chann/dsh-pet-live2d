@@ -30,6 +30,13 @@ desktop.ini
 # ---- local scratch (kept on disk, not published) ----
 local-assets/
 
+# ---- 命令输出的临时文件（commit message draft、driver 输出重定向）----
+# 曾经把 .commitmsg.tmp 一起提交进去过：写文件、git add -A、再删，顺序错了就会中招。
+.commitmsg.tmp
+out.txt
+push.out
+push.err
+
 # ---- proprietary runtime ----
 # Live2D Cubism Core must be obtained from Live2D Inc. by the user.
 # It is NOT redistributable, so it never enters this repository.
