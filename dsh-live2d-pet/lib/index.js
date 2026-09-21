@@ -426,6 +426,10 @@ export function scanPet(dir, id) {
     // premise is missing (a selfie with no phone out, a spray with no whale)
     // must not play at all, from ANY path: the panel, a fidget or a phase.
     motionGuards: typeof block.motionGuards === 'object' && block.motionGuards !== null ? block.motionGuards : {},
+    // Motion groups that belong to the SLOT menu rather than the 动作 tab.
+    // 掏出手机 and 吹泡泡糖 are slot choices now; listing them twice made the
+    // same thing reachable two ways, and the tab copy could not hold a pose.
+    hiddenMotions: Array.isArray(block.hiddenMotions) ? block.hiddenMotions.filter((m) => typeof m === 'string') : [],
     translate: {
       x: typeof block.translate?.x === 'number' ? block.translate.x : 0,
       y: typeof block.translate?.y === 'number' ? block.translate.y : 0,
@@ -580,6 +584,7 @@ function catalogRoute() {
           expressionSlots: pet.expressionSlots,
           looksByPhase: pet.looksByPhase,
           motionGuards: pet.motionGuards,
+          hiddenMotions: pet.hiddenMotions,
           motionOptions: pet.motionOptions,
           motions: pet.motions,
           expressions: pet.expressions,

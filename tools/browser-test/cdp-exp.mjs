@@ -77,7 +77,7 @@ await sleep(700)
 // 表情 and 装扮 are one menu now: 14 slots, each with its options plus a
 // "none" button.
 const slots = await ev('document.querySelectorAll("[data-dsh-live2d-pet] [data-panel] [data-slot]").length')
-check('the merged menu renders every slot', slots === 17, 'slots=' + slots)
+check('the merged menu renders every slot', slots === 16, 'slots=' + slots)
 
 // Each chip must move the parameter its own .exp3.json declares.
 for (const [label, param] of [["墨镜","ParamCheek71"],["星星眼","ParamCheek16"],["头顶鲸","jingyu"]]) {
@@ -191,6 +191,39 @@ check('going back to normal eyes releases the ambience',
   JSON.stringify(released))
 await ev('window.__dshLive2dPet.setExpressions([])')
 await sleep(500)
+// --- motion-only options must not render as permanently pressed -------------
+// The highlight used `option.expressions.every((n) => pinned[n] === true)`, and
+// a motion-only option has an EMPTY expression list — [].every(...) is
+// vacuously true, so 掏出手机 and 吹泡泡糖 were lit up from the moment the panel
+// opened. Selection is now read from the slot's own chosen label.
+const pressedChips = async () => JSON.parse(await ev('JSON.stringify(Array.from('
+  + 'document.querySelectorAll("[data-dsh-live2d-pet] [data-panel] [data-chips] button[data-on]"))'
+  + '.map((b) => b.textContent))'))
+await slotPick('rhand', '无')
+await slotPick('mouth', '吹泡泡糖')
+await slotPick('mouth', '闭嘴')
+await sleep(600)
+const idlePressed = await pressedChips()
+check('nothing is pressed while nothing is chosen',
+  !idlePressed.includes('掏出手机') && !idlePressed.includes('吹泡泡糖'), JSON.stringify(idlePressed))
+await slotPick('rhand', '掏出手机')
+const onePressed = await pressedChips()
+check('a motion option lights up only when it is the chosen one',
+  onePressed.includes('掏出手机') && !onePressed.includes('吹泡泡糖'), JSON.stringify(onePressed))
+await slotPick('rhand', '无')
+
+// --- 掏出手机 / 吹泡泡糖 belong to the slots, not the 动作 tab ---------------
+await ev('(()=>{const bs=Array.from(document.querySelectorAll("[data-dsh-live2d-pet] [data-panel] [data-tabs] button"));'
+  + ' const b=bs.find((x)=>x.textContent.indexOf("动作")===0); if(b) b.click(); return !!b})()')
+await sleep(600)
+const motionLabels = JSON.parse(await ev('JSON.stringify(Array.from('
+  + 'document.querySelectorAll("[data-dsh-live2d-pet] [data-panel] [data-body] [data-group] > span"))'
+  + '.map((s) => s.textContent))'))
+check('the 动作 tab offers the real motions', motionLabels.length >= 5, JSON.stringify(motionLabels))
+check('but not the two that are slot choices',
+  !motionLabels.some((l) => /掏出手机|吹泡泡糖/.test(l)), JSON.stringify(motionLabels))
+await ev('window.__dshLive2dPet.setExpressions([])')
+await sleep(400)
 check('no failed plugin request', !reqs.some((r) => !r.startsWith('200')),
   JSON.stringify(reqs.filter((r) => !r.startsWith('200')).slice(0, 5)))
 

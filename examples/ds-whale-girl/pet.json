@@ -187,21 +187,15 @@
         ]
       },
       {
-        "id": "phone",
-        "label": "手机",
-        "none": "收着",
-        "options": [
-          {
-            "label": "掏出手机",
-            "motion": "OpenCase"
-          }
-        ]
-      },
-      {
         "id": "rhand",
         "label": "右手",
         "none": "无",
         "options": [
+          {
+            "label": "掏出手机",
+            "motion": "OpenCase",
+            "fidgetWeight": 1
+          },
           {
             "label": "喵喵手",
             "expressions": [
@@ -219,7 +213,8 @@
             ],
             "breaks": [
               "猫猫"
-            ]
+            ],
+            "fidgetWeight": 1
           },
           {
             "label": "挤番茄酱",
@@ -232,7 +227,8 @@
             ],
             "breaks": [
               "猫猫"
-            ]
+            ],
+            "fidgetWeight": 1
           },
           {
             "label": "写本本",
@@ -256,10 +252,11 @@
             },
             "breaks": [
               "猫猫"
-            ]
+            ],
+            "fidget": false
           }
         ],
-        "fidgetNone": 1
+        "fidgetNone": 0
       },
       {
         "id": "lhand",
@@ -294,7 +291,7 @@
             ]
           }
         ],
-        "fidgetNone": 2
+        "fidgetNone": 1
       },
       {
         "id": "eyes",
@@ -539,12 +536,12 @@
     },
     "motionGuards": {
       "Selfie": {
-        "phone": [
+        "rhand": [
           "掏出手机"
         ]
       },
       "SelfieQuick": {
-        "phone": [
+        "rhand": [
           "掏出手机"
         ]
       },
@@ -559,7 +556,11 @@
           "蛋包饭"
         ]
       }
-    }
+    },
+    "hiddenMotions": [
+      "OpenCase",
+      "BubbleGum"
+    ]
   },
   "remarks": {
     "pet": [

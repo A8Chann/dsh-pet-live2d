@@ -2983,7 +2983,12 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
                 // An option is active when every expression it carries is pinned:
                 // 白魔爪 needs the claw AND its recolour, so checking only the
                 // first would light it up for 粉魔爪 too.
-                const active = slot.options.find((option) => option.expressions.every((name) => pinned[name] === true));
+                // Selected = the label this slot actually holds. NOT
+                // "every expression is pinned": a motion-only option has an EMPTY
+                // expression list, and [].every(...) is vacuously true, so
+                // 掏出手机 and 吹泡泡糖 rendered as permanently pressed.
+                const chosenLabel = slotSelectionsRef.current[slot.id];
+                const active = slot.options.find((option) => option.label === chosenLabel);
                 return h("div", { "data-group": "", key: slot.id, "data-slot": slot.id },
                   h("span", null, slot.label),
                   h("div", { "data-chips": "" },
@@ -2996,7 +3001,7 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
                     slot.options.map((option) => h("button", {
                       type: "button",
                       key: option.label,
-                      ...(option.expressions.every((name) => pinned[name] === true) ? { "data-on": "" } : {}),
+                      ...(option.label === chosenLabel ? { "data-on": "" } : {}),
                       "data-slot-option": option.label,
                       onClick: () => chooseSlotOption(slot, option),
                     }, option.label)),
@@ -3004,7 +3009,8 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
                 );
               })
             : tab === "motions"
-            ? pet.motions.map((entry) => h("div", { "data-group": "", key: entry.group },
+            ? pet.motions.filter((entry) => !(pet.hiddenMotions ?? []).includes(entry.group))
+              .map((entry) => h("div", { "data-group": "", key: entry.group },
                 h("span", null, entry.label),
                 h("div", { "data-chips": "" },
                   Array.from({ length: entry.count }, (_, index) => h("button", {
