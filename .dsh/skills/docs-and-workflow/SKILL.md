@@ -83,6 +83,18 @@ dsh plugin --profile web add 'github:owner/repo#path:/<子目录>'
 市场列表里自动生成的 install 命令是 `#path:/` 那版（现存条目可对照：
 `github:s3yf1337/dsh-desktop#path:/bundle`）。
 
+**给用户的命令要看他用的是哪个 shell。** 单引号只在 PowerShell 里是引号；cmd.exe 会把
+`'...'` 连引号一起当成参数传下去，pnpm 就报
+`ERR_PNPM_PACKAGE_MANAGER_ADD_RESOLVE_LATEST: Package name "'github:..." is invalid,
+it should have a @scope`。这个 spec 没有空格、`#`/`:` 在 cmd 里也不特殊，**裸写即可**：
+
+```
+:: cmd.exe
+dsh plugin --profile web add github:owner/repo#path:/<子目录>
+```
+
+判断方法：看提示符。`C:\Users\x>` 是 cmd，`PS C:\Users\x>` 才是 PowerShell。
+
 实测 `pnpm add 'github:A8Chann/dsh-pet-live2d#path:/dsh-live2d-pet'`：~8 秒装好，
 `lib/` 跟着来，**不需要 allowBuilds**（没有 prepare 脚本；有才会要求）。
 临时目录里先试装一遍再让用户装，比让他踩一次便宜。
