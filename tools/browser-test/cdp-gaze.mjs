@@ -244,6 +244,27 @@ const before = await ev('window.__dshLive2dPet.blinkCount()')
 await sleep(13000)
 const after = await ev('window.__dshLive2dPet.blinkCount()')
 check('the pet blinks on its own', after - before >= 1, (after - before) + ' blinks in 13s')
+// --- 指针「不在场」时必须回正 ---------------------------------------------
+// 鼠标移出窗口后 pointermove 不再发来，宠物会僵在最后一个注视方向上。页面拿不到
+// 窗口外的指针位置（要原生钩子），所以做的是回正：离开窗口 / 失焦 / 切标签页。
+await gazeAt(1.0, 0.5)
+const beforeLeave = JSON.parse(await ev('JSON.stringify(window.__dshLive2dPet.gazeTarget())'))
+check('先把视线拉到一边（准备验回正）', Math.abs(beforeLeave.x) > 0.5, JSON.stringify(beforeLeave))
+await ev('document.documentElement.dispatchEvent(new MouseEvent("mouseleave", { bubbles: false }))')
+await sleep(900)
+const afterLeave = JSON.parse(await ev('JSON.stringify(window.__dshLive2dPet.gazeTarget())'))
+check('鼠标离开窗口后视线回正',
+  Math.abs(afterLeave.x) < 0.02 && Math.abs(afterLeave.y) < 0.02
+  && (await gaze()) === 'center',
+  JSON.stringify(afterLeave) + ' data-gaze=' + await gaze())
+// 嘴也要跟着回中位（它和视线共用同一个指针目标）。
+const mouthAfterLeave = await mouthParams()
+check('嘴也跟着回到中位', mouthAfterLeave.open < 0.05 && Math.abs(mouthAfterLeave.form) < 0.05,
+  JSON.stringify(mouthAfterLeave))
+// 再动一下就恢复跟随。
+await gazeAt(0.75, 0.5)
+check('指针回来后重新跟随', (await gaze()) === 'pointer', 'data-gaze=' + await gaze())
+
 const bad = results.filter((r) => !r.ok)
 console.log((bad.length === 0 ? 'OK' : 'FAILED') + '  ' + (results.length - bad.length) + '/' + results.length + ' checks passed')
 ws.close()

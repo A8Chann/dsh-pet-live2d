@@ -2503,9 +2503,29 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           focusDefault();
         }
       };
+      /**
+       * 指针「不在场」了：回正。
+       *
+       * 鼠标一旦移出窗口，pointermove 就不再发来，宠物会**僵在最后一个注视方向**上
+       * （用户报的就是这个）。页面拿不到窗口外的指针位置——那需要原生钩子，浏览器
+       * 里没有这个能力——所以这里能做的是回正：离开窗口 / 窗口失焦 / 切标签页，
+       * 都当成指针不在场，视线与嘴一起缓动回中位。
+       */
+      const onLeave = () => {
+        if (resting) return;
+        resting = true;
+        focusDefault();
+      };
+      const root = document.documentElement;
+      root.addEventListener("mouseleave", onLeave);
+      window.addEventListener("blur", onLeave);
+      document.addEventListener("visibilitychange", onLeave);
       window.addEventListener("pointermove", onMove, { passive: true });
       return () => {
         window.removeEventListener("pointermove", onMove);
+        root.removeEventListener("mouseleave", onLeave);
+        window.removeEventListener("blur", onLeave);
+        document.removeEventListener("visibilitychange", onLeave);
         focusDefaultRef.current = () => {};
       };
     }, [ready]);
