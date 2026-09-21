@@ -41,3 +41,6 @@ push.err
 # Live2D Cubism Core must be obtained from Live2D Inc. by the user.
 # It is NOT redistributable, so it never enters this repository.
 live2dcubismcore.min.js
+.npm-install-test/
+.npmrc-publish
+.npm-install-test/
