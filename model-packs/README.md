@@ -22,7 +22,7 @@
 node tools/build-pet.mjs
 
 # 或指定源包 / 输出位置
-node tools/build-pet.mjs --src model-packs/DS鼠控版 --dest ./examples/ds-whale-girl
+node tools/build-pet.mjs --src model-packs/DS鼠控版 --dest ./dsh-live2d-pet/pets/ds-whale-girl
 ```
 
-仓库里的 `examples/ds-whale-girl/` 就是这个命令的产物。
+仓库里的 `dsh-live2d-pet/pets/ds-whale-girl/` 就是这个命令的产物，**它随插件包一起分发**，装完插件就有宠物。

@@ -20,7 +20,7 @@
  * DSH web server (apply) and by tests.
  */
 
-import { existsSync, mkdirSync, readFileSync, realpathSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readFileSync, realpathSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, extname, join, sep } from 'node:path'
@@ -444,7 +444,43 @@ export function scanPet(dir, id) {
 }
 
 /** Build the live catalog from disk (fresh per request, so installs are picked up). */
+/**
+ * 把**随包分发**的宠物装进用户的宠物目录。
+ *
+ * 以前宠物是仓库里单独一份，装插件的人还得自己再拷一次 —— 从插件市场装完
+ * 「看不见宠物」就是这么来的（插件包里有代码，没有模型）。
+ *
+ * 为什么模型能随包、Cubism Core 不能：模型是 CC BY-NC-SA 4.0，且 Live2D 作者
+ * 已明确授权本项目转载与开源（见 pets/ds-whale-girl/LICENSE）；Core 是 Live2D Inc.
+ * 的专有软件，只允许从官方渠道取，所以它走 CDN 兜底那条路。
+ *
+ * 只在目标**不存在**时复制：用户自己改过的宠物永远优先，绝不覆盖。
+ */
+export function installBundledPets() {
+  const bundled = join(pluginRoot(), 'pets')
+  if (!existsSync(bundled)) return
+  let names = []
+  try {
+    names = readdirSync(bundled).filter((entry) => !entry.startsWith('.'))
+  } catch {
+    return
+  }
+  for (const name of names) {
+    const source = join(bundled, name)
+    const target = join(petsRoot(), name)
+    try {
+      if (!statSync(source).isDirectory()) continue
+      if (existsSync(target)) continue
+      mkdirSync(dirname(target), { recursive: true })
+      cpSync(source, target, { recursive: true })
+    } catch {
+      /* 只读文件系统之类：让用户自己拷，别让整个目录扫描失败 */
+    }
+  }
+}
+
 export function buildCatalog() {
+  installBundledPets()
   const root = petsRoot()
   if (!existsSync(root)) return []
   let names = []

@@ -416,7 +416,7 @@ cd ../../tools/browser-test && npm install && npm run suite
 - vendor 分包：pixi.js（MIT）+ untitled-pixi-live2d-engine（MIT），可随包分发
 - Cubism Core：Live2D 专有，**用户自备，本插件不内置**
 - DS鲸鱼娘模型：**CC BY-NC-SA 4.0**（署名 · **非商业** · 相同方式共享），见
-  [`../examples/ds-whale-girl/LICENSE`](../examples/ds-whale-girl/LICENSE)。
+  [`pets/ds-whale-girl/LICENSE`](pets/ds-whale-girl/LICENSE)。
 
   版权链：**上善无形**（鲸鱼娘角色原作，原创 OC「溟月」）→ **ZipZipPipe**（DeepSeek 女仆二创）
   → **氵六青**（本模型）。氵六青已授权本项目转载开源，但该授权**不解除基础版权**，

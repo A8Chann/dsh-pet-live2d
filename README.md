@@ -46,18 +46,21 @@ dsh plugin --profile web add "link:./dsh-pet-live2d/dsh-live2d-pet"
 %DSH_HOME%\pets\.runtime\live2dcubismcore.min.js
 ```
 
-### 装上自带宠物
+### 宠物：随包自带，不用手动装
+
+插件包里就带着一只可用的宠物（`dsh-live2d-pet/pets/ds-whale-girl/`，CC BY-NC-SA 4.0）。
+**第一次运行时宿主半区会把它复制进 `%DSH_HOME%\pets\`**，所以装完插件、重启 `dsh web` 就能看见。
+
+只在目标**不存在**时复制 —— 你自己改过或换过的宠物目录永远优先，不会被覆盖。
+想手动来一遍也行：
 
 ```powershell
 # Windows
-Copy-Item -Recurse -Force examples\ds-whale-girl "$env:USERPROFILE\.dsh\pets\"
+Copy-Item -Recurse -Force dsh-live2d-pet\pets\ds-whale-girl "$env:USERPROFILE\.dsh\pets\"
 
 # macOS / Linux
-cp -R examples/ds-whale-girl ~/.dsh/pets/
+cp -R dsh-live2d-pet/pets/ds-whale-girl ~/.dsh/pets/
 ```
-
-然后重启 `dsh web`。
-
 ## 目录结构
 
 ```
@@ -65,8 +68,8 @@ dsh-live2d-pet/      插件包本身（这就是要装的东西）
   lib/                 宿主半区 + 浏览器半区 + vendor 分包
   src/                 vendor 分包入口（esbuild）
   docs/                截图
-examples/
-  ds-whale-girl/       可直接使用的宠物（复制进 %DSH_HOME%\pets 即可）
+  pets/
+    ds-whale-girl/      随包自带的宠物（首次运行自动复制进 %DSH_HOME%\pets）
 tools/
   build-pet.mjs        模型源包 -> 可安装宠物包
   browser-test/        无头浏览器端到端回归测试
@@ -135,7 +138,7 @@ node cdp-motion.mjs
 |---|---|
 | 插件代码、`tools/` | **MIT** — 见 [`LICENSE`](LICENSE) |
 | `pixi.js` / `untitled-pixi-live2d-engine` | MIT（打包进 `lib/live2d-vendor.js`） |
-| `examples/`、`model-packs/` 里的模型与贴图 | **CC BY-NC-SA 4.0** — 署名 · **非商业** · 相同方式共享 |
+| `dsh-live2d-pet/pets/`、`model-packs/` 里的模型与贴图 | **CC BY-NC-SA 4.0** — 署名 · **非商业** · 相同方式共享 |
 
 | 版权所有人 | 内容 |
 |---|---|

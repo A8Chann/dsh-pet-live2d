@@ -24,7 +24,7 @@ SOFTWARE.
 THIS LICENSE COVERS THE CODE ONLY.
 ================================================================================
 
-It does NOT cover the artwork bundled under examples/ and model-packs/
+It does NOT cover the artwork bundled under dsh-live2d-pet/pets/ and model-packs/
 (Live2D model, textures, expressions, motions) nor the screenshots in
 dsh-live2d-pet/docs/.
 

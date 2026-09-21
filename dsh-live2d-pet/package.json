@@ -17,6 +17,7 @@
     "lib",
     "src",
     "docs",
+    "pets",
     "cordis.patch.yml",
     "README.md",
     "LICENSE"

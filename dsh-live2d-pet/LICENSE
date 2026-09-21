@@ -27,7 +27,7 @@ Third-party components bundled into lib/live2d-vendor.js:
   pixi.js                       MIT
   untitled-pixi-live2d-engine   MIT
 
-The DS鲸鱼娘 model bundled in ../examples/ds-whale-girl (and its source pack in
+The DS鲸鱼娘 model bundled in ./pets/ds-whale-girl (and its source pack in
 ../model-packs) is NOT covered by the MIT license above, and must not be used
 as if it were. It is licensed CC BY-NC-SA 4.0:
 

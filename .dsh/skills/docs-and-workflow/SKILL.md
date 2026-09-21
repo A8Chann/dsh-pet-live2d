@@ -13,7 +13,7 @@ whenToUse: >
 改动插件行为后，同步更新：
 
 - `dsh-live2d-pet/README.md`
-- `examples/ds-whale-girl/README.md`
+- `dsh-live2d-pet/pets/ds-whale-girl/README.md`
 
 ## 常用命令
 
