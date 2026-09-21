@@ -8,6 +8,27 @@ whenToUse: >
 
 # Cubism / 引擎
 
+## Cubism Core 怎么拿（别内置）
+
+`live2dcubismcore.min.js` 是 Live2D 的专有运行时：**不要提交进仓库、不要随包分发**。
+但也不需要让用户自己去找 —— **Live2D 自己托管了一份**，官方 SDK 文档就是让使用者在
+页面里引这一行：
+
+```
+https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js
+```
+
+带 `Access-Control-Allow-Origin: *`，实测 200 / `text/javascript` / 207155 字节。
+现在的做法（`lib/index.js` 的 runtime 路由）：
+
+1. 本地 `$DSH_HOME/pets/.runtime/live2dcubismcore.min.js` 有就用本地的（离线友好）；
+2. 没有就**由宿主半区**去上面那个地址取一次 —— 浏览器不必出网，也不吃 CSP；
+3. 取回来先校验（长度 + 含 `Live2DCubismCore` 符号，防被网关/登录页替换），
+   再**缓存到 (1) 的路径**，之后离线也能用；
+4. 两边都拿不到时返回 502，body 里带上该地址和落盘路径，别只丢一个 "missing"。
+
+先"取不到就当 404"会让每个从市场装插件的人卡在同一个地方。
+
 - **参数按名字查必须走 `core._model.parameters.ids`**（纯字符串数组）。
   引擎包装层的 `getParameterIndex(string)` 拿 CubismId 对象比较，传字符串**永远 miss**。
 - **每帧顺序（实测，2026-09 用 3 个缝的采样钉死）**：一次 `internalModel.update()` 里
