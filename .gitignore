@@ -32,7 +32,7 @@ local-assets/
 
 # ---- 命令输出的临时文件（commit message draft、driver 输出重定向）----
 # 曾经把 .commitmsg.tmp 一起提交进去过：写文件、git add -A、再删，顺序错了就会中招。
-.commitmsg.tmp
+*.tmp
 out.txt
 push.out
 push.err

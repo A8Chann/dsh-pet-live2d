@@ -1,7 +1,0 @@
-chore(market): 插件市场的收录条目 + 上架流程写进 skill
-
-- tools/market-entry.yml：awesome-dsh-plugin 的收录文件（url/name/category/description）
-- 硬性要求逐条对过：package.json 有 dsh.bundle.patch、cordis.patch.yml 形状正确、
-  仓库有 dsh-plugin topic、创建满 1 天（09-20 08:11Z）、lib/ 构建产物已入库
-- skill 里记下：收录靠 PR 一个 YAML；本机拿不到非交互 GitHub 凭据（GCM 会挂住、
-  gh 没装），开 PR 只能走网页预填链接或用户给 token
