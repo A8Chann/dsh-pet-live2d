@@ -96,12 +96,26 @@ check('dragging from the transparent margin does not move the pet', before === a
 
 // 从角色身上往下拖：必须能拖到屏幕下边（原来下界是 0，脚一贴底就动不了了）。
 // 模型的画布有透明边距，角色看着悬空，用户要把它再往下压一点。
+//
+// 每一轮都**重新量**角色位置：宠物被拖走之后，上一轮的坐标就按不到它了
+// （原来 6 轮共用一个起始点，首按一偏就整条假红）。
 const bottomBefore = await ev('document.querySelector("[data-dsh-live2d-pet]").style.bottom')
+// 量的必须是 **stage**：根节点还含头顶气泡，比舞台高一截，
+// 拿根节点的盒子去套舞台内的偏移，落点会整体偏上，按不到角色（踩过）。
+const boxOf = async () => JSON.parse(await ev('JSON.stringify((() => {'
+  + ' const r = document.querySelector("[data-dsh-live2d-pet] [data-stage]").getBoundingClientRect();'
+  + ' return [r.x, r.y, r.width, r.height] })())'))
+// 角色身上的那个点，相对盒子左上角的偏移 —— 盒子怎么动都跟着。
+const grabDx = inside.lx
+const grabDy = inside.ly
 for (let i = 1; i <= 6; i += 1) {
-  await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: info.x + inside.lx, y: info.y + inside.ly, button: 'left', buttons: 1, clickCount: 1 })
-  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: info.x + inside.lx, y: info.y + inside.ly + i * 60, button: 'left', buttons: 1 })
-  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: info.x + inside.lx, y: info.y + inside.ly + i * 60, button: 'left', buttons: 0, clickCount: 1 })
-  await sleep(160)
+  const box = await boxOf()
+  const gx = Math.round(box[0] + grabDx)
+  const gy = Math.round(box[1] + grabDy)
+  await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: gx, y: gy, button: 'left', buttons: 1, clickCount: 1 })
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: gx, y: gy + 60, button: 'left', buttons: 1 })
+  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: gx, y: gy + 60, button: 'left', buttons: 0, clickCount: 1 })
+  await sleep(200)
 }
 const bottomAfter = await ev('document.querySelector("[data-dsh-live2d-pet]").style.bottom')
 check('可以把宠物往下拖到屏幕底边之外', Number.parseFloat(bottomAfter) < -20,
