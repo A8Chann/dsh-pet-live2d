@@ -2942,10 +2942,13 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
         const pool = slots.filter((slot) => usable(slot).length > 0);
         fidgetTallyRef.current.poolSize = slots.length + "/" + pool.length;
         if (pool.length === 0) { schedule(); return; }
-        // "可以只选其中一个或者多个": one or two slots at a time.
-        const count = 1 + Math.floor(Math.random() * 2);
-        const picked = pool.slice().sort(() => Math.random() - 0.5).slice(0, count);
-        const changes = picked.map((slot) => [slot, draw(slot)]);
+        // 每个池子各自 roll 一次 —— 手部、情绪、脸红、嘴、眼睛**同时**摇，
+        // 而不是"这次只摇一两个槽位"。用户要的是每次摸鱼都重新掷一遍所有池子，
+        // 组合出来的样子才会变；只摇一个的话，其余槽位永远停在上一次的结果上，
+        // 摸鱼看起来就总是同一套。
+        // "保持不变"仍然由各槽位自己的 fidgetNone 权重决定（嘴 8、眼 11…），
+        // 所以这不是"每次都全变"，而是"每次每个池子都掷一次骰子"。
+        const changes = pool.map((slot) => [slot, draw(slot)]);
         // A fidget should still be MOVEMENT. If the weighted draw left everything
         // alone, force one HAND slot that can play a motion — the hands are where
         // the pet's actions live, and forcing the mouth would defeat the point of
