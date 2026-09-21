@@ -251,6 +251,21 @@ const phoneAfterLove = await until(async () => ((await drawn('phone')) ?? 1) <= 
 check('切回无之后手机放下（爱心眼不该挡住这一步）', phoneAfterLove === true,
   'phone=' + (await drawn('phone')))
 
+// (10) 挤番茄酱会把嘴撑开；收回去之后嘴必须**闭上**（动作停在最后一帧，
+//      只有还原表能把它带回来）。
+const mouthRest = await drawn('ParamMouthOpenY')
+await clickSlot('lhand', '蛋包饭')
+await sleep(600)
+await clickSlot('rhand', '挤番茄酱')
+await until(async () => ((await drawn('ji')) ?? 0) > 0.5, 20, 200)
+const mouthOpen = await drawn('ParamMouthOpenY')
+await clickSlot('rhand', null)
+await until(async () => ((await drawn('ji')) ?? 1) < 0.05)
+const mouthClosed = await drawn('ParamMouthOpenY')
+check('挤番茄酱收回之后嘴闭上（动作写过的 ParamMouthOpenY 必须被还原）',
+  (mouthClosed ?? 0) < 0.3 && (mouthOpen ?? 0) > (mouthClosed ?? 0) + 0.1,
+  '起始 ' + mouthRest + ' 挤的时候 ' + mouthOpen + ' 收回后 ' + mouthClosed)
+
 const bad = results.filter((r) => !r.ok)
 console.log((bad.length === 0 ? 'OK' : 'FAILED') + '  ' + (results.length - bad.length) + '/' + results.length + ' checks passed')
 ws.close()

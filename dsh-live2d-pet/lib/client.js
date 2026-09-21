@@ -380,7 +380,12 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
      * 动作真正私有的参数（chuipaopao*、phone*、danbaofan、ji…）不在此列，
      * 它们才是还原要负责的东西。
      */
-    const ENGINE_OWNED_PARAM = /^Param(Angle|Eye|Mouth|Body|Breath|Brow)/;
+    // 名单收得很窄：只有**视线跟随和物理摆动**真正每帧在写的那些。
+    // ParamEye* / ParamMouth* 曾经也在里面，代价是动作留下的嘴形永远收不回来 ——
+    // 挤番茄酱写过 ParamMouthOpenY/Form，排除掉之后没人还原它，嘴就一直张着。
+    // 眼睛同理（动作把它眯起来之后就再也没人睁开）。它们只由动作和本插件的图层
+    // 驱动，不跟引擎抢，所以必须留在还原表里。
+    const ENGINE_OWNED_PARAM = /^Param(Angle|Body|Breath|Hair)/;
     /**
      * How many times the frame hook actually ran, and what it saw.
      *
