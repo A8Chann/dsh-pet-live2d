@@ -92,7 +92,7 @@ await ev('(()=>{const bs=Array.from(document.querySelectorAll("[data-dsh-live2d-
   + ' const b=bs.find((x)=>x.textContent.indexOf("装扮")===0); if(b) b.click(); return !!b})()')
 await sleep(600)
 const slots = await ev('document.querySelectorAll("[data-dsh-live2d-pet] [data-panel] [data-slot]").length')
-check('the 装扮 tab lists every slot', slots === 16, 'slots=' + slots)
+check('the 装扮 tab lists every slot', slots === 17, 'slots=' + slots)
 await ev('(()=>{const g=document.querySelector(\'[data-dsh-live2d-pet] [data-panel] [data-slot="glasses"]\');'
   + ' const b=Array.from(g.querySelectorAll("[data-chips] button")).find((x)=>x.textContent==="圆眼镜");'
   + ' if(!b) return false; b.click(); return true})()')
@@ -133,13 +133,25 @@ check('resetToRest returns the motion to idle', (await motion()) === 'idle', 'da
 check('resetToRest returns kind to idle', (await ev('window.__dshLive2dPet.kind()')) === 'idle', 'kind=' + await ev('window.__dshLive2dPet.kind()'))
 
 // --- a session phase expression is cleared when the phase ends -------------
+// 注意：这个 driver 前面从面板里挑过 圆眼镜（装扮槽）。按新契约，装扮是用户的
+// 选择，**会话相位和归位都不动它**，所以"离开相位"之后它仍然应该挂着 —— 被判定的
+// 是相位自己钉的那几个表达式（头顶鲸 / 画笔），而不是"表达式数量归零"。
+const exprs = async () => JSON.parse(await ev('JSON.stringify(window.__dshLive2dPet.expressions())') ?? '[]')
 const stopKeepAlive2 = await startKeepAlive()
 await fetch(BASE + '/__nudge?phase=thinking')
-check('a session phase pins its expression', await until(async () => (await exprCount()) > 0, 15000),
-  'expressions=' + await ev('JSON.stringify(window.__dshLive2dPet.expressions())'))
+check('a session phase pins its own expression',
+  await until(async () => {
+    const list = await exprs()
+    return list.includes('头顶鲸') || list.includes('画笔')
+  }, 15000),
+  'expressions=' + JSON.stringify(await exprs()))
 await fetch(BASE + '/__nudge?phase=idle')
-check('leaving the phase clears the expression', await until(async () => (await exprCount()) === 0, 15000),
-  'expressions=' + await ev('JSON.stringify(window.__dshLive2dPet.expressions())'))
+check('leaving the phase clears the PHASE expressions (用户挑的装扮留着)',
+  await until(async () => {
+    const list = await exprs()
+    return !list.includes('头顶鲸') && !list.includes('画笔')
+  }, 15000),
+  'expressions=' + JSON.stringify(await exprs()))
 stopKeepAlive2()
 
 const bad = results.filter(r => !r.ok)
