@@ -65,8 +65,13 @@ await sleep(700)
 await ev('(()=>{const g=document.querySelector(\'[data-dsh-live2d-pet] [data-panel] [data-slot="whale"]\');'
   + ' if(!g) return false; const b=Array.from(g.querySelectorAll("[data-chips] button")).find((x)=>x.textContent==="放桌上");'
   + ' if(!b) return false; b.click(); return true})()')
-await sleep(1200)
-check('with a whale on screen the spray is allowed', (await ev('window.__dshLive2dPet.canPlay("SprayWater")')) === true)
+// Polled: the panel click, the React render and the guard all have to land.
+let allowed = false
+for (let i = 0; i < 20 && !allowed; i += 1) {
+  allowed = (await ev('window.__dshLive2dPet.canPlay("SprayWater")')) === true
+  if (!allowed) await sleep(200)
+}
+check('with a whale on screen the spray is allowed', allowed)
 await ev('window.__dshLive2dPet.playOnce("SprayWater",0,{kind:"panel"})')
 await sleep(300); const sprayDuring = await read()
 for (let i=0;i<30;i++){ await sleep(500); if (await motion() === 'idle') break }

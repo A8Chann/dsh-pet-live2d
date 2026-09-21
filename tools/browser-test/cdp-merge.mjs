@@ -117,7 +117,7 @@ await ev('(()=>{const bs=Array.from(document.querySelectorAll("[data-dsh-live2d-
   + ' const b=bs.find((x)=>x.textContent.indexOf("装扮")===0); if(!b) return false; b.click(); return true})()')
 await sleep(700)
 const slotCount = await ev('document.querySelectorAll("[data-dsh-live2d-pet] [data-panel] [data-slot]").length')
-check('the 装扮 tab lists every slot', slotCount === 16, 'slots=' + slotCount)
+check('the 装扮 tab lists every slot', slotCount === 17, 'slots=' + slotCount)
 
 /** Click a chip in the panel by its slot id and visible label. */
 const pick = async (slotId, label, expect) => {

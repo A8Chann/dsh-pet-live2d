@@ -120,7 +120,7 @@ await sleep(700)
 await ev('(()=>{const bs=Array.from(document.querySelectorAll("[data-dsh-live2d-pet] [data-tabs] button"));'
   + ' const b=bs.find((x)=>x.textContent.indexOf("装扮")===0); if(b) b.click(); return !!b})()')
 await sleep(700)
-await ev('(()=>{const g=document.querySelector(\'[data-dsh-live2d-pet] [data-panel] [data-slot="rhand"]\');'
+await ev('(()=>{const g=document.querySelector(\'[data-dsh-live2d-pet] [data-panel] [data-slot="phone"]\');'
   + ' if(!g) return false; const b=Array.from(g.querySelectorAll("[data-chips] button")).find((x)=>x.textContent==="掏出手机");'
   + ' if(!b) return false; b.click(); return true})()')
 await sleep(1200)
@@ -138,7 +138,10 @@ for (let i = 0; i < 10; i += 1) {
   if ((await attr('data-motion')) !== 'idle') sawMotion = true
 }
 check('a fidget actually changes the pet', changed >= 4, changed + '/10 draws changed something')
-check('a fidget plays a MOTION, not just a face', sawMotion, 'saw a non-idle motion')
+// Deliberately NOT asserted: after the weights were tightened, a fidget plays a
+// motion only as often as the user asked for (rarely). The draw distribution
+// below is the real contract.
+void sawMotion
 
 // --- the mouth must be NORMAL most of the time ------------------------------
 // Sampled over many draws: 吐舌 is excluded from fidgets entirely, and the mouth
@@ -165,6 +168,37 @@ check('the mouth stays normal most of the time', mouthNormal >= total * 0.6,
 // The unblocking side is asserted on a clean state BEFORE any fidget runs: a
 // fidget legitimately opens the selfie by drawing 掏出手机 for the hand, so
 // checking it afterwards would be testing the fidget, not the guard.
+await ev('window.__dshLive2dPet.setExpressions([])')
+// --- the fidget's draw distribution -----------------------------------------
+// Asserted on the DRAWS the client counted, not on sampled state. State is a
+// poor proxy: a value persists across rounds that never touch its slot, so
+// counting it made a 7% draw look like 61% and sent me chasing a weighting bug
+// that did not exist.
+await ev('window.__dshLive2dPet.resetFidgetTally()')
+for (let i = 0; i < 160; i += 1) {
+  await ev('window.__dshLive2dPet.fidgetNow()')
+  await sleep(45)
+}
+const tally = JSON.parse(await ev('JSON.stringify(window.__dshLive2dPet.fidgetTally())'))
+const drawn = tally.drawn ?? {}
+const drawsFor = (slot) => Object.entries(drawn).filter(([k]) => k.startsWith(slot + ':'))
+const count = (key) => drawn[key] ?? 0
+const slotTotal = (slot) => drawsFor(slot).reduce((a, [, v]) => a + v, 0)
+check('the fidget actually runs', (tally.fired ?? 0) >= 150, 'fired=' + tally.fired)
+check('吐舌 is never drawn', count('mouth:吐舌') === 0, JSON.stringify(drawsFor('mouth')))
+check('the fidget never draws an excluded mood',
+  ['悲伤', '大哭', '生气', '吐魂'].every((m) => count('mood:' + m) === 0), JSON.stringify(drawsFor('mood')))
+check('the left hand is only ever 蛋包饭 or nothing',
+  drawsFor('lhand').every(([k]) => k === 'lhand:无' || k === 'lhand:蛋包饭'), JSON.stringify(drawsFor('lhand')))
+check('the eyes are mostly left normal',
+  count('eyes:爱心眼') <= slotTotal('eyes') * 0.25,
+  count('eyes:爱心眼') + '/' + slotTotal('eyes') + ' draws')
+check('the mouth is mostly left normal',
+  count('mouth:吹泡泡糖') <= slotTotal('mouth') * 0.3,
+  count('mouth:吹泡泡糖') + '/' + slotTotal('mouth') + ' draws')
+check('no single hand option dominates',
+  Math.max(...drawsFor('rhand').map(([, v]) => v)) <= slotTotal('rhand') * 0.6,
+  JSON.stringify(drawsFor('rhand')))
 await ev('window.__dshLive2dPet.setExpressions([])')
 const bad = results.filter(r => !r.ok)
 console.log((bad.length === 0 ? 'OK' : 'FAILED') + '  ' + (results.length - bad.length) + '/' + results.length + ' checks passed')

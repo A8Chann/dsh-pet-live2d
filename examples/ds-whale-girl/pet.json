@@ -259,7 +259,7 @@
             ]
           }
         ],
-        "fidgetNone": 3
+        "fidgetNone": 1
       },
       {
         "id": "lhand",
@@ -485,7 +485,8 @@
               "脸红"
             ]
           }
-        ]
+        ],
+        "fidgetNone": 1
       },
       {
         "id": "other",

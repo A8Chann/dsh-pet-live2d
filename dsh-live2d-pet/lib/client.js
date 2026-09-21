@@ -1775,6 +1775,12 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       const api = motion.current;
       api.slotSelections = () => slotSelectionsRef.current;
       api.fidgetNow = () => fidgetRef.current();
+      // Same reason as the two above: fidgetTally lives in this component's
+      // scope, and a controller-scoped copy throws ReferenceError on every call
+      // — which surfaces as a silent `undefined`, not as an error.
+      api.fidgetReady = () => fidgetLiveRef.current;
+      api.fidgetTally = () => fidgetTallyRef.current;
+      api.resetFidgetTally = () => { fidgetTallyRef.current.picked = {}; fidgetTallyRef.current.drawn = {}; };
     }, []);
     /**
      * The pins the USER owns (slot choices, flashes) and the pins the SESSION
@@ -1793,6 +1799,14 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
      */
     /** Fires one idle fidget immediately; used by the panel and by tests. */
     const fidgetRef = useRef(() => {});
+    /** Set when the fidget effect has actually installed its trigger. */
+    const fidgetLiveRef = useRef(false);
+    /** Draw counts, for working out whether the weighting itself is wrong. */
+    // A REF, not a plain object: a plain one is rebuilt on every render, so the
+    // API attached in a [] effect and the fire() closure in a [ready, pet] effect
+    // would end up mutating two different objects, and the tally would read 0
+    // forever while the fidget worked perfectly.
+    const fidgetTallyRef = useRef({ picked: {}, drawn: {} });
     const slotMotionRef = useRef(null);
     /** slot id -> chosen option label, for the panel highlight and diagnostics. */
     const slotSelectionsRef = useRef({});
@@ -2597,6 +2611,7 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
         timer = window.setTimeout(fire, wait);
       };
       const fire = (force = false) => {
+        fidgetTallyRef.current.fired = (fidgetTallyRef.current.fired ?? 0) + 1;
         const quietFor = Date.now() - lastInteraction.current;
         const busy = motion.current.isPlaying() || dragState.current !== null;
         // 'fixed' means a session owns the look; leave it alone. A forced call
@@ -2638,6 +2653,7 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
           return entries[entries.length - 1][0];
         };
         const pool = slots.filter((slot) => usable(slot).length > 0);
+        fidgetTallyRef.current.poolSize = slots.length + "/" + pool.length;
         if (pool.length === 0) { schedule(); return; }
         // "可以只选其中一个或者多个": one or two slots at a time.
         const count = 1 + Math.floor(Math.random() * 2);
@@ -2647,18 +2663,21 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
         // alone, force one HAND slot that can play a motion — the hands are where
         // the pet's actions live, and forcing the mouth would defeat the point of
         // weighting it.
-        if (changes.every(([, option]) => option === null)) {
-          const lively = pool.filter((slot) => slot.id !== "mouth"
-            && usable(slot).some((o) => typeof o.motion === "string"));
-          if (lively.length > 0) {
-            const slot = lively[Math.floor(Math.random() * lively.length)];
-            const moves = usable(slot).filter((o) => typeof o.motion === "string");
-            changes[0] = [slot, moves[Math.floor(Math.random() * moves.length)]];
-          }
+        // NO "make sure something happens" fallback. There used to be one, and
+        // it fired on 82% of draws — overriding the very weights that decide how
+        // often each slot should move, and collapsing the pet onto whichever
+        // option happened to be the only lively one. The weights alone control
+        // the mix now; fidgetNone is the knob for "how often does this slot
+        // move at all".
+        for (const [slot, option] of changes) {
+          fidgetTallyRef.current.picked[slot.id] = (fidgetTallyRef.current.picked[slot.id] ?? 0) + 1;
+          const key = slot.id + ":" + (option === null ? "无" : option.label);
+          fidgetTallyRef.current.drawn[key] = (fidgetTallyRef.current.drawn[key] ?? 0) + 1;
+          chooseSlotOptionRef.current(slot, option);
         }
-        for (const [slot, option] of changes) chooseSlotOptionRef.current(slot, option);
         schedule();
       };
+      fidgetLiveRef.current = true;
       fidgetRef.current = () => fire(true);
       schedule();
       return () => window.clearTimeout(timer);

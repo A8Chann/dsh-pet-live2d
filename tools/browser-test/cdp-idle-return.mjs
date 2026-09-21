@@ -92,7 +92,7 @@ await ev('(()=>{const bs=Array.from(document.querySelectorAll("[data-dsh-live2d-
   + ' const b=bs.find((x)=>x.textContent.indexOf("装扮")===0); if(b) b.click(); return !!b})()')
 await sleep(600)
 const slots = await ev('document.querySelectorAll("[data-dsh-live2d-pet] [data-panel] [data-slot]").length')
-check('the 装扮 tab lists every slot', slots === 16, 'slots=' + slots)
+check('the 装扮 tab lists every slot', slots === 17, 'slots=' + slots)
 await ev('(()=>{const g=document.querySelector(\'[data-dsh-live2d-pet] [data-panel] [data-slot="glasses"]\');'
   + ' const b=Array.from(g.querySelectorAll("[data-chips] button")).find((x)=>x.textContent==="圆眼镜");'
   + ' if(!b) return false; b.click(); return true})()')
