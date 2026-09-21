@@ -1480,7 +1480,7 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
    */
   const MOUTH_FOLLOW = 0.65;
 
-  const FIDGET_SLOTS = ["rhand", "lhand", "mood", "cheek", "mouth"];
+  const FIDGET_SLOTS = ["rhand", "lhand", "mood", "cheek", "mouth", "eyes"];
 
 
   /**
@@ -2330,6 +2330,47 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
         // panel then shows that slot as 蛋包饭 because the pin is there, not
         // because this code touched the slot.
         for (const name of option.requires ?? []) next[name] = true;
+      }
+      // 'pairs' and 'breaks' reach across slots, so they are resolved here rather
+      // than in the fidget: choosing 喵喵手 from the PANEL must pull the cat
+      // sticker in just the same, and choosing any other hand pose must take it
+      // off. Both loop until stable, so a pair that triggers another settles.
+      if (option !== null || option === null) {
+        const slots = petRef.current?.expressionSlots ?? [];
+        const applyLabel = (slotId, label, wanted) => {
+          const target = slots.find((s) => s.id === slotId);
+          if (target === undefined) return;
+          for (const candidate of target.options) {
+            for (const name of candidate.expressions) {
+              if (wanted) next[name] = true;
+              else delete next[name];
+            }
+            if (!wanted) for (const name of candidate.requires ?? []) delete next[name];
+          }
+          const chosen = Object.assign({}, slotSelectionsRef.current);
+          if (wanted) chosen[slotId] = label;
+          else delete chosen[slotId];
+          slotSelectionsRef.current = chosen;
+          if (!wanted && typeof target.options.find((o) => o.label === label)?.motion === "string") {
+            slotMotionRef.current = null;
+          }
+        };
+        // Choosing "none" applies the slot's UNION of breaks: leaving the hand
+        // empty must take the cat sticker off just as any other hand pose does,
+        // otherwise the sticker stays on with no cat paws to justify it.
+        const sources = option === null
+          ? slot.options
+          : [option];
+        for (const source of sources) {
+          for (const [slotId, label] of Object.entries(source.pairs ?? {})) {
+            if (option !== null) applyLabel(slotId, label, true);
+          }
+          for (const label of source.breaks ?? []) {
+            for (const other of slots) {
+              if (other.options.some((o) => o.label === label)) applyLabel(other.id, label, false);
+            }
+          }
+        }
       }
       // An option may name labels it cannot coexist with. Nothing in the engine
       // enforces this: 吐魂 and 吹泡泡糖 write disjoint parameters, so both would

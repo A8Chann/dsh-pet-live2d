@@ -1,6 +1,6 @@
 {
   "name": "dsh-live2d-pet",
-  "version": "1.17.0",
+  "version": "1.18.0",
   "description": "Live2D 桌宠插件：为 DSH Web GUI 挂一只可拖动、会跟随鼠标、能换动作与表情的 Live2D 宠物。",
   "type": "module",
   "main": "lib/index.js",

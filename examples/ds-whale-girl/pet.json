@@ -85,7 +85,8 @@
             "label": "猫猫",
             "expressions": [
               "猫猫贴纸"
-            ]
+            ],
+            "fidget": false
           },
           {
             "label": "兔兔",
@@ -186,6 +187,17 @@
         ]
       },
       {
+        "id": "phone",
+        "label": "手机",
+        "none": "收着",
+        "options": [
+          {
+            "label": "掏出手机",
+            "motion": "OpenCase"
+          }
+        ]
+      },
+      {
         "id": "rhand",
         "label": "右手",
         "none": "无",
@@ -194,17 +206,20 @@
             "label": "喵喵手",
             "expressions": [
               "喵喵手"
-            ]
+            ],
+            "pairs": {
+              "sticker": "猫猫"
+            },
+            "fidgetWeight": 1
           },
           {
             "label": "双手比耶",
             "expressions": [
               "双手比耶"
+            ],
+            "breaks": [
+              "猫猫"
             ]
-          },
-          {
-            "label": "掏出手机",
-            "motion": "OpenCase"
           },
           {
             "label": "挤番茄酱",
@@ -214,6 +229,9 @@
             ],
             "requires": [
               "蛋包饭"
+            ],
+            "breaks": [
+              "猫猫"
             ]
           },
           {
@@ -235,9 +253,13 @@
               "loopMs": 2800,
               "driftMs": 21000,
               "driftY": 3
-            }
+            },
+            "breaks": [
+              "猫猫"
+            ]
           }
-        ]
+        ],
+        "fidgetNone": 3
       },
       {
         "id": "lhand",
@@ -248,19 +270,22 @@
             "label": "撤回",
             "expressions": [
               "撤回"
-            ]
+            ],
+            "fidget": false
           },
           {
             "label": "画笔",
             "expressions": [
               "画笔"
-            ]
+            ],
+            "fidget": false
           },
           {
             "label": "橡皮",
             "expressions": [
               "橡皮"
-            ]
+            ],
+            "fidget": false
           },
           {
             "label": "蛋包饭",
@@ -268,7 +293,8 @@
               "蛋包饭"
             ]
           }
-        ]
+        ],
+        "fidgetNone": 2
       },
       {
         "id": "eyes",
@@ -279,33 +305,42 @@
             "label": "星星眼",
             "expressions": [
               "星星眼"
-            ]
+            ],
+            "fidget": false
           },
           {
             "label": "爱心眼",
             "expressions": [
               "爱心眼"
-            ]
+            ],
+            "pairs": {
+              "ambient": "冒爱心"
+            },
+            "fidgetWeight": 1
           },
           {
             "label": "呆呆眼",
             "expressions": [
               "呆呆眼"
-            ]
+            ],
+            "fidget": false
           },
           {
             "label": "晕晕",
             "expressions": [
               "晕晕"
-            ]
+            ],
+            "fidget": false
           },
           {
             "label": "阴暗",
             "expressions": [
               "阴暗"
-            ]
+            ],
+            "fidget": false
           }
-        ]
+        ],
+        "fidgetNone": 11
       },
       {
         "id": "mood",
@@ -322,19 +357,22 @@
             "label": "悲伤",
             "expressions": [
               "悲伤"
-            ]
+            ],
+            "fidget": false
           },
           {
             "label": "大哭",
             "expressions": [
               "大哭"
-            ]
+            ],
+            "fidget": false
           },
           {
             "label": "生气",
             "expressions": [
               "生气"
-            ]
+            ],
+            "fidget": false
           },
           {
             "label": "调皮",
@@ -355,9 +393,11 @@
             ],
             "conflicts": [
               "吹泡泡糖"
-            ]
+            ],
+            "fidget": false
           }
-        ]
+        ],
+        "fidgetNone": 6
       },
       {
         "id": "mouth",
@@ -428,9 +468,11 @@
             "label": "冒爱心",
             "expressions": [
               "冒爱心"
-            ]
+            ],
+            "fidget": false
           }
-        ]
+        ],
+        "fidgetNone": 20
       },
       {
         "id": "cheek",
@@ -496,12 +538,12 @@
     },
     "motionGuards": {
       "Selfie": {
-        "rhand": [
+        "phone": [
           "掏出手机"
         ]
       },
       "SelfieQuick": {
-        "rhand": [
+        "phone": [
           "掏出手机"
         ]
       },

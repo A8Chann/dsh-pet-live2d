@@ -222,6 +222,19 @@ function normaliseSlots(raw) {
           conflicts.push(label.trim())
         }
       }
+      // Pairs and breaks, for options that travel with (or rule out) another
+      // slot's choice: 喵喵手 only makes sense with the cat sticker on, and any
+      // other hand pose means the sticker should come off.
+      const pairs = {}
+      if (typeof option.pairs === 'object' && option.pairs !== null) {
+        for (const [slotId, label] of Object.entries(option.pairs)) {
+          if (typeof slotId === 'string' && typeof label === 'string' && label !== '') pairs[slotId] = label
+        }
+      }
+      const breaks = []
+      for (const label of Array.isArray(option.breaks) ? option.breaks : []) {
+        if (typeof label === 'string' && label.trim() !== '' && !breaks.includes(label.trim())) breaks.push(label.trim())
+      }
       const sweep = normaliseSweep(option.sweep)
       // Fidget weighting. Most of the time the mouth should simply be normal,
       // and a couple of options should never come up on their own at all, so the
@@ -241,6 +254,8 @@ function normaliseSlots(raw) {
         ...(clears.length === 0 ? {} : { clears }),
         ...(sweep === null ? {} : { sweep }),
         ...(conflicts.length === 0 ? {} : { conflicts }),
+        ...(Object.keys(pairs).length === 0 ? {} : { pairs }),
+        ...(breaks.length === 0 ? {} : { breaks }),
         ...(fidgetOff ? { fidget: false } : {}),
         ...(fidgetWeight === 1 ? {} : { fidgetWeight }),
       })
