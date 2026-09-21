@@ -120,7 +120,9 @@ check('the held pose releases on its own (9s)', await until(async () => (await e
 // Polled, not read once: after the pose is released the pet is free to start a
 // random 摸鱼, and OpenCase is itself in the fidget pool, so a single sample can
 // legitimately catch it mid-replay. What matters is that it does not STAY parked.
-check('the held group is really given up', await until(async () => (await ev('window.__dshLive2dPet.currentGroup()')) === null, 15000),
+check('the held group is really given up', await until(async () => // NOT 'currentGroup() === null': a fidget may legitimately park a motion of
+  // its own now that fidget choices persist. What must be gone is the PANEL's.
+  (await ev('window.__dshLive2dPet.currentGroup()')) !== 'OpenCase', 15000),
   'currentGroup=' + await ev('window.__dshLive2dPet.currentGroup()'))
 stopKeepAlive()
 

@@ -32,16 +32,16 @@
         "preset": {
           "jingyu": 1
         },
-        "fidget": false
+        "fidget": false,
+        "hold": true,
+        "persist": true
+      },
+      "BubbleGum": {
+        "hold": true,
+        "persist": true
       },
       "OpenCase": {
         "hold": true
-      },
-      "Selfie": {
-        "prepend": "OpenCase"
-      },
-      "SelfieQuick": {
-        "prepend": "OpenCase"
       }
     },
     "expressionSlots": [
@@ -483,6 +483,29 @@
         "lhand": "画笔",
         "mood": "大哭",
         "symbol": "流汗"
+      }
+    },
+    "motionGuards": {
+      "Selfie": {
+        "rhand": [
+          "掏出手机"
+        ]
+      },
+      "SelfieQuick": {
+        "rhand": [
+          "掏出手机"
+        ]
+      },
+      "SprayWater": {
+        "whale": [
+          "头顶鲸",
+          "放桌上"
+        ]
+      },
+      "Ketchup": {
+        "lhand": [
+          "蛋包饭"
+        ]
       }
     }
   },

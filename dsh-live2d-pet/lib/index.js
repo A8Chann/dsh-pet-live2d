@@ -384,6 +384,10 @@ export function scanPet(dir, id) {
     // ({ whale: "头顶鲸", lhand: "画笔" }), so a phase drives several slots at
     // once instead of a single expression.
     looksByPhase: typeof block.looksByPhase === 'object' && block.looksByPhase !== null ? block.looksByPhase : {},
+    // motion group -> { slotId: [acceptable option labels] }. A motion whose
+    // premise is missing (a selfie with no phone out, a spray with no whale)
+    // must not play at all, from ANY path: the panel, a fidget or a phase.
+    motionGuards: typeof block.motionGuards === 'object' && block.motionGuards !== null ? block.motionGuards : {},
     translate: {
       x: typeof block.translate?.x === 'number' ? block.translate.x : 0,
       y: typeof block.translate?.y === 'number' ? block.translate.y : 0,
@@ -537,6 +541,7 @@ function catalogRoute() {
           expressionsByPhase: pet.expressionsByPhase,
           expressionSlots: pet.expressionSlots,
           looksByPhase: pet.looksByPhase,
+          motionGuards: pet.motionGuards,
           motionOptions: pet.motionOptions,
           motions: pet.motions,
           expressions: pet.expressions,

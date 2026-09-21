@@ -360,6 +360,8 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
     let sweepSpec = null;
     /** Last normalized gaze target, for diagnostics. */
     let gazeTarget = { x: 0, y: 0 };
+    /** Answers whether a motion group's premise currently holds. */
+    let guardFor = null;
     /** Last pen position, for diagnostics. */
     let sweepLast = null;
 
@@ -638,6 +640,8 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
     const playOnce = (group, index, options) => {
       const entry = entryFor(group, index);
       if (entry === null || model === null || vendor === null) return false;
+      // A motion whose premise is missing must not play from ANY caller.
+      if (guardFor !== null && guardFor(group) !== true) return false;
       // The pet's declared policy is the default; an explicit caller option
       // (the panel, or the session-phase driver) still wins.
       const opts = Object.assign({}, optionsFor(group), options || {});
@@ -808,10 +812,22 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       },
       /** Diagnostic: where the procedural sweep currently has the pen. */
       sweepPosition: () => (sweepSpec === null ? null : sweepLast),
-      /** Diagnostic: slot id -> chosen option label, as the panel shows it. */
-      slotSelections: () => slotSelectionsRef.current,
       /** Diagnostic: how many parameter writes the pinned set contributes. */
       expressionLayerCount: () => expressionLayers.length,
+      /**
+       * Install the premise check for a motion group.
+       *
+       * Some motions only make sense in a particular state: a selfie needs the
+       * phone already out, the whale spray needs a whale on screen, the ketchup
+       * squeeze needs the omurice under it. The resolver answers whether the
+       * pet is currently in that state, and playOnce REFUSES the motion when it
+       * is not — so no path (panel, fidget, phase) can play an impossible one.
+       */
+      setGuardResolver(fn) {
+        guardFor = typeof fn === "function" ? fn : null;
+      },
+      /** Diagnostic: may this group play right now? */
+      canPlay: (group) => guardFor === null || guardFor(group),
       /** Install the phase -> group resolver the sustain loop needs. */
       setPhaseResolver(fn) {
         phaseMotionFor = typeof fn === "function" ? fn : () => undefined;
@@ -1527,6 +1543,16 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
     // without reaching through React internals.
     if (typeof window !== "undefined") window.__dshLive2dPet = motion.current;
     const pinnedRef = useRef({});
+
+    // Two diagnostics have to be attached from HERE, not from inside the
+    // controller: they read refs that live in this component's scope, and a
+    // controller-scoped copy throws ReferenceError on every call, which shows
+    // up as a silent `undefined` rather than as an error.
+    useEffect(() => {
+      const api = motion.current;
+      api.slotSelections = () => slotSelectionsRef.current;
+      api.fidgetNow = () => fidgetRef.current();
+    }, []);
     /**
      * The pins the USER owns (slot choices, flashes) and the pins the SESSION
      * phase imposes, kept apart so a phase can drive the look without destroying
@@ -1542,6 +1568,8 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
      * pinned" is vacuously true for it and it would match every time — which
      * parked the phone forever after any fidget.
      */
+    /** Fires one idle fidget immediately; used by the panel and by tests. */
+    const fidgetRef = useRef(() => {});
     const slotMotionRef = useRef(null);
     /** slot id -> chosen option label, for the panel highlight and diagnostics. */
     const slotSelectionsRef = useRef({});
@@ -1554,6 +1582,10 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
     /** Slot ids the live phase owns; their user pins are dropped while it lasts. */
     const phaseSlotsRef = useRef([]);
     const slotByIdRef = useRef(new Map());
+    /** motion group -> premise, from the manifest. */
+    const guardsRef = useRef({});
+    /** slot id -> option label the USER chose, and the phase's own picks. */
+    const phaseChoicesRef = useRef({});
     const applySweep = useCallback(() => {
       motion.current.setSweep(phaseSweepRef.current ?? userSweepRef.current);
     }, []);
@@ -1705,6 +1737,7 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       phaseExpressionRef.current = Object.assign({}, PHASE_EXPRESSION, pet.expressionsByPhase || {});
       looksByPhaseRef.current = pet.looksByPhase || {};
       slotByIdRef.current = new Map((pet.expressionSlots ?? []).map((slot) => [slot.id, slot]));
+      guardsRef.current = pet.motionGuards || {};
       phaseRef.current = "idle";
 
       fitRef.scale = typeof pet.scale === "number" && pet.scale > 0 ? pet.scale : 1;
@@ -2073,8 +2106,6 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
           const target = (pet?.expressionSlots ?? []).find((s) => s.id === slotId);
           for (const candidate of target?.options ?? []) {
             for (const name of candidate.expressions) delete next[name];
-          }
-          for (const name of target?.options ?? []) {
             for (const name of candidate.requires ?? []) delete next[name];
           }
         }
@@ -2103,6 +2134,11 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       // after a few seconds would make the panel feel broken.
       window.clearTimeout(expressionTimer.current);
     }, [applyExpressions]);
+
+    // The fidget effect below subscribes on a different dependency list, so it
+    // reaches the chooser through a ref. Without this assignment the ref keeps
+    // its no-op default and every fidget silently does nothing at all.
+    chooseSlotOptionRef.current = chooseSlotOption;
 
     const resetAll = useCallback(() => {
       window.clearTimeout(expressionTimer.current);
@@ -2151,6 +2187,7 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
         }
         phasePinsRef.current = pins;
         phaseSlotsRef.current = Object.keys(look ?? {});
+        phaseChoicesRef.current = Object.assign({}, look ?? {});
         // A phase may also need a generated animation (the tool phase writes).
         let sweep = null;
         if (look !== undefined) {
@@ -2186,6 +2223,17 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       // The sustain loop lives in the controller, but the phase -> group map
       // comes from the pet manifest, so hand the resolver over.
       motion.current.setPhaseResolver((phase) => phaseMotionRef.current[phase]);
+      // Premise check for a motion group. Evaluated against the CURRENT slot
+      // selections, so it stays true while the look keeps the phone out and goes
+      // false the moment the slot changes.
+      motion.current.setGuardResolver((group) => {
+        const guard = guardsRef.current[group];
+        if (guard === undefined) return true;
+        return Object.entries(guard).every(([slotId, labels]) => {
+          const chosen = phaseChoicesRef.current[slotId] ?? slotSelectionsRef.current[slotId];
+          return chosen !== undefined && labels.includes(chosen);
+        });
+      });
       // The motion subscription (declared above) flushes a deferred phase here.
       flushPhaseRef.current = applyPhase;
       const onMessage = (event) => {
@@ -2219,6 +2267,7 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
         phaseRef.current = "idle";
         phasePinsRef.current = {};
         phaseSlotsRef.current = [];
+        phaseChoicesRef.current = {};
         phaseSweepRef.current = null;
         applySweep();
         commitPinsRef.current();
@@ -2250,11 +2299,13 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
         const wait = IDLE_FIDGET_MIN_MS + Math.random() * (IDLE_FIDGET_MAX_MS - IDLE_FIDGET_MIN_MS);
         timer = window.setTimeout(fire, wait);
       };
-      const fire = () => {
+      const fire = (force = false) => {
         const quietFor = Date.now() - lastInteraction.current;
         const busy = motion.current.isPlaying() || dragState.current !== null;
-        // 'fixed' means a session owns the look; leave it alone.
-        if (busy || quietFor < IDLE_FIDGET_MIN_MS || phaseRef.current !== "idle") {
+        // 'fixed' means a session owns the look; leave it alone. A forced call
+        // (the diagnostic, and the tests) skips the idle gate — otherwise the
+        // trigger is unreachable for the first 12 seconds and looks broken.
+        if (!force && (busy || quietFor < IDLE_FIDGET_MIN_MS || phaseRef.current !== "idle")) {
           schedule();
           return;
         }
@@ -2268,12 +2319,26 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
         // "可以只选其中一个或者多个": one or two slots at a time.
         const count = 1 + Math.floor(Math.random() * 2);
         const picked = slots.slice().sort(() => Math.random() - 0.5).slice(0, count);
+        // A fidget should be MOVEMENT, not merely a different face. Most slot
+        // options are static, so a purely random draw often changed nothing
+        // visible; if none of the picks can play a motion, swap one for a slot
+        // that can.
+        const hasMotion = (slot) => slot.options.some((o) => typeof o.motion === "string" && motion.current.canPlay(o.motion));
+        if (!picked.some(hasMotion)) {
+          const lively = slots.filter(hasMotion);
+          if (lively.length > 0) picked[0] = lively[Math.floor(Math.random() * lively.length)];
+        }
         for (const slot of picked) {
-          const option = slot.options[Math.floor(Math.random() * slot.options.length)];
-          chooseSlotOptionRef.current(slot, option);
+          // Skip options whose motion cannot play right now — a selfie with no
+          // phone, a spray with no whale. Picking one would set the pins and
+          // then silently play nothing.
+          const usable = slot.options.filter((o) => typeof o.motion !== "string" || motion.current.canPlay(o.motion));
+          const pool = usable.length > 0 ? usable : slot.options;
+          chooseSlotOptionRef.current(slot, pool[Math.floor(Math.random() * pool.length)]);
         }
         schedule();
       };
+      fidgetRef.current = () => fire(true);
       schedule();
       return () => window.clearTimeout(timer);
     }, [ready, pet]);

@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process'
 import { rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { browserPath, PROFILES, BASE } from './paths.mjs'
-import { waitReady } from './ready.mjs'
+import { openPanel,  waitReady } from './ready.mjs'
 
 const EDGE = browserPath()
 const PORT = 9379
@@ -98,6 +98,51 @@ const pool = Object.keys(allowed).filter((g) => g !== idle && allowed[g])
 check('a non-empty fidget pool remains', pool.length > 0, 'pool=' + JSON.stringify(pool))
 check('the fidget pool excludes both verbs', !pool.includes('Hammer') && !pool.includes('SprayWater'), 'pool=' + JSON.stringify(pool))
 
+// --- motion premises, and a fidget that actually does something ------------
+// A selfie needs the phone already out, the whale spray needs a whale, the
+// ketchup squeeze needs the omurice under it. playOnce refuses a motion whose
+// premise is missing, so NO path (panel, fidget, phase) can play one.
+const can = async (g) => ev('window.__dshLive2dPet.canPlay(' + JSON.stringify(g) + ')')
+check('a selfie is refused with no phone out', (await can('Selfie')) === false)
+check('a quick selfie is refused with no phone out', (await can('SelfieQuick')) === false)
+check('the whale spray is refused with no whale', (await can('SprayWater')) === false)
+check('the ketchup squeeze is refused with no omurice', (await can('Ketchup')) === false)
+check('an unguarded motion is always allowed', (await can('BubbleGum')) === true)
+// Checked HERE, while the premise is still missing: further down the panel puts
+// the phone out on purpose, and then a selfie SHOULD start.
+check('a blocked motion refuses to start',
+  (await ev('window.__dshLive2dPet.playOnce("Selfie", 0, { kind: "probe" })')) === false)
+
+// The fidget used to do NOTHING: it reaches the slot chooser through a ref, and
+// that ref was never assigned, so every draw silently hit a no-op default.
+await openPanel(ev)
+await sleep(700)
+await ev('(()=>{const bs=Array.from(document.querySelectorAll("[data-dsh-live2d-pet] [data-tabs] button"));'
+  + ' const b=bs.find((x)=>x.textContent.indexOf("装扮")===0); if(b) b.click(); return !!b})()')
+await sleep(700)
+await ev('(()=>{const g=document.querySelector(\'[data-dsh-live2d-pet] [data-panel] [data-slot="rhand"]\');'
+  + ' if(!g) return false; const b=Array.from(g.querySelectorAll("[data-chips] button")).find((x)=>x.textContent==="掏出手机");'
+  + ' if(!b) return false; b.click(); return true})()')
+await sleep(1200)
+check('with the phone out, a selfie is allowed', (await can('Selfie')) === true)
+check('but the ketchup squeeze is still refused', (await can('Ketchup')) === false)
+await ev('window.__dshLive2dPet.setExpressions([])')
+await sleep(600)
+let changed = 0
+let sawMotion = false
+for (let i = 0; i < 10; i += 1) {
+  await ev('window.__dshLive2dPet.fidgetNow()')
+  await sleep(700)
+  const state = await ev('JSON.stringify(window.__dshLive2dPet.slotSelections())')
+  if (state !== '{}') changed += 1
+  if ((await attr('data-motion')) !== 'idle') sawMotion = true
+}
+check('a fidget actually changes the pet', changed >= 4, changed + '/10 draws changed something')
+check('a fidget plays a MOTION, not just a face', sawMotion, 'saw a non-idle motion')
+// The unblocking side is asserted on a clean state BEFORE any fidget runs: a
+// fidget legitimately opens the selfie by drawing 掏出手机 for the hand, so
+// checking it afterwards would be testing the fidget, not the guard.
+await ev('window.__dshLive2dPet.setExpressions([])')
 const bad = results.filter(r => !r.ok)
 console.log((bad.length === 0 ? 'OK' : 'FAILED') + '  ' + (results.length - bad.length) + '/' + results.length + ' checks passed')
 ws.close()
