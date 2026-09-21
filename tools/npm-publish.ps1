@@ -1,33 +1,46 @@
-# 发布到 npm。token 从仓库外的文件读，**不写进 .npmrc**（用 ${NPM_TOKEN} 占位 + 环境变量）。
-# 用法： pwsh tools/npm-publish.ps1 [-DryRun]
+# Publish this package to npm.
+#
+# The token is read from a file OUTSIDE the repo (%USERPROFILE%\.dsh\npm-token.txt) and passed
+# via the NPM_TOKEN environment variable: the .npmrc we generate only holds the ${NPM_TOKEN}
+# placeholder, so no secret is ever written to disk.
+#
+# ASCII-ONLY ON PURPOSE: Windows PowerShell reads .ps1 as ANSI unless the file has a UTF-8 BOM,
+# so non-ASCII comments here would turn into mojibake and break the parser (hit that once).
+#
+# Usage:  & tools/npm-publish.ps1 [-DryRun]
 param([switch]$DryRun)
 $ErrorActionPreference = 'Stop'
+
 $tokenPath = Join-Path $env:USERPROFILE '.dsh\npm-token.txt'
-if (-not (Test-Path $tokenPath)) { Write-Error "读不到 token：$tokenPath`n先放一份：Set-Content -Path ""$tokenPath"" -Value ""npm_xxx"" -NoNewline -Encoding ascii"; exit 2 }
+if (-not (Test-Path $tokenPath)) { throw "no token file at $tokenPath (put one line, no quotes)" }
 $token = (Get-Content $tokenPath -Raw).Trim()
-if ($token.Length -lt 20) { Write-Error 'token 文件内容太短，确认只放了一行'; exit 2 }
+if ($token.Length -lt 20) { throw 'token file looks too short; expected a single-line token' }
 
 $pkg = Join-Path $PSScriptRoot '..\dsh-live2d-pet'
-$name = (Get-Content (Join-Path $pkg 'package.json') -Raw | ConvertFrom-Json).name
-$ver = (Get-Content (Join-Path $pkg 'package.json') -Raw | ConvertFrom-Json).version
-Write-Host "包：$name@$ver"
+# Read as UTF-8 explicitly: package.json carries Chinese and the default ANSI read breaks JSON.
+$meta = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes((Join-Path $pkg 'package.json'))) | ConvertFrom-Json
+Write-Host "package: $($meta.name)@$($meta.version)"
 
-# .npmrc 里只放占位符，真 token 走环境变量 —— 磁盘上不留密钥。
-$rc = Join-Path $env:TEMP 'dsh-npmrc'
+$rc = Join-Path $PSScriptRoot '.npmrc-publish'
 Set-Content -Path $rc -Value '//registry.npmjs.org/:_authToken=${NPM_TOKEN}' -Encoding ascii
 $env:NPM_TOKEN = $token
 try {
   Push-Location $pkg
   $who = (npm whoami --userconfig $rc 2>&1 | Out-String).Trim()
-  if ($LASTEXITCODE -ne 0) { Write-Error "token 不可用（npm whoami 失败）：$who"; exit 1 }
-  Write-Host "账号：$who"
-  if ($DryRun) { npm publish --dry-run --userconfig $rc; exit $LASTEXITCODE }
+  if ($LASTEXITCODE -ne 0) { throw "token rejected by npm whoami: $who" }
+  Write-Host "account: $who"
+  if ($DryRun) {
+    npm publish --dry-run --userconfig $rc
+    if ($LASTEXITCODE -ne 0) { throw "dry-run failed (exit $LASTEXITCODE)" }
+    Write-Host 'DRYRUN_OK'
+    return
+  }
   npm publish --userconfig $rc
   $code = $LASTEXITCODE
-  Pop-Location
-  if ($code -eq 0) { Write-Host "已发布：https://www.npmjs.com/package/$name" }
-  exit $code
+  if ($code -ne 0) { throw "npm publish failed (exit $code)" }
+  Write-Host "PUBLISH_OK https://www.npmjs.com/package/$($meta.name)"
 } finally {
+  Pop-Location
   Remove-Item $rc -ErrorAction SilentlyContinue
   Remove-Item Env:\NPM_TOKEN -ErrorAction SilentlyContinue
 }

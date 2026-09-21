@@ -28,7 +28,10 @@
 ## 安装
 
 ```bash
-# 从仓库装（路径写法是 pnpm 的 #path: 协议，注意开头的斜杠）
+# 从 npm 装（推荐；插件和自带宠物一起下好）
+dsh plugin --profile web add dsh-pet-live2d
+
+# 或从仓库装（# 后面是 pnpm 的 path: 协议，注意那个斜杠）
 dsh plugin --profile web add "github:A8Chann/dsh-pet-live2d#path:/dsh-live2d-pet"
 
 # 或先克隆再装本地目录

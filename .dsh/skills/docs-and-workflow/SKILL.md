@@ -105,6 +105,31 @@ dsh plugin --profile web add github:owner/repo#path:/<子目录>
 让用户点网页预填链接 `/new/main/data/plugins?filename=<owner>__<repo>.yml`，
 或者用户给 token 走 REST API（fork → ref → contents → pulls）。
 
+## 发 npm（本项目的实际流程）
+
+- 包名 **`dsh-pet-live2d`**（和仓库同名）。`dsh-live2d-pet` 在 npm 上已被 ankesu 占用。
+  **改包名要同时改三处**：`package.json` 的 name、`cordis.patch.yml` 的 `name:`
+  （DSH 按包名 import，不改就加载不了）、`lib/client.js` 里 `__ModuleLoader__.load({id})`，
+  外加测试 harness 的 `/plugins/<包名>/client.js` 寻址（不改的话客户端整个不挂载，cdds-exp 会 slots=0）。
+- 脚本 `tools/npm-publish.ps1`：token 从 `%USERPROFILE%\.dsh\npm-token.txt` 读，生成的 .npmrc
+  里只放 `${NPM_TOKEN}` 占位符 + 环境变量传值，**磁盘上不留密钥**；`-DryRun` 先看清单。
+  权限只需要 npmjs.com 的 Granular Token（packages: read and write，2FA 账号要勾 Bypass 2FA）。
+- **npm 发布后**：README 的安装命令换成 `dsh plugin --profile web add dsh-pet-live2d`；
+  市场条目不用改，重新生成时会自动带上 npm 信息（install 命令变成 npm 那条）。
+
+### PowerShell 脚本一律写成纯 ASCII
+
+Windows PowerShell 读 `.ps1` **按 ANSI/GBK**，除非文件带 UTF-8 BOM。write/edit 工具写出的是
+无 BOM 的 UTF-8，于是脚本里的中文变成乱码、**解析器直接崩，而且报的行号全是错的**
+（我因此对着正确的代码查了三轮"行号对不上"）。工具脚本里注释和提示语都写英文，一劳永逸。
+
+另外两条 PowerShell 坑：
+
+- **脚本里别用 `exit`**：用 `&` 在本 shell 里调用时，`exit` 会把**宿主 shell 一起退掉**，
+  后面的命令全不执行、也看不到输出。改成 `throw`，成功时打一行 `XXX_OK`。
+- **`Write-Host` 走 information 流**，`> file` 抓不到，要用 `*> file`。
+- 脚本里 `$env:TEMP` 在子进程里可能是空的，别依赖它；临时文件放脚本目录旁边用完删掉。
+
 ## 测试环境的第一个开关：暂停摸鱼
 
 `waitReady()` 现在会自动调 `window.__dshLive2dPet.setFidgetEnabled(false)`。

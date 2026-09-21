@@ -26,8 +26,11 @@
 ## 安装
 
 ```pwsh
+# 从 npm 装（包名 dsh-pet-live2d）
+dsh plugin --profile web add dsh-pet-live2d
+
+# 或从本地目录装（开发时用）
 dsh plugin --profile web add "link:D:\HTML\DSH_Pet_Live2d\dsh-live2d-pet"
-# 或从目录安装
 dsh plugin --profile web add "link:<本目录绝对路径>"
 ```
 
