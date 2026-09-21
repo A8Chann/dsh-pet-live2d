@@ -214,6 +214,28 @@ console.log('  动作之后还在动的参数 ' + (await movers(5)).map((p) => p
 // 拿那一刻"最活跃的参数"当探针，和稳定之后根本不是同一件事（实测 291 -> 0）。
 // 真正的判据是上面那条 ParamAngleX/Y。
 
+// (8) **同时**选两个动作 —— 用户报的那一条。
+//     一次只有一个动作在播（desired 只认第一个带 motion 的槽位），但两个槽位都
+//     还选着，两个动作都"停在那里"各自钉着一批参数。收掉第二个时如果还原表被
+//     整张替换，第一个的还原就没了 —— 泡泡会挂回脸上。
+await clickSlot('mouth', '吹泡泡糖')
+check('两个一起测：先吹起泡泡', (await until(async () => (await drawn('chuipaopao')) === 1)) === true,
+  'drawn=' + (await drawn('chuipaopao')))
+await clickSlot('rhand', '掏出手机')
+const phoneTogether = await until(async () => ((await drawn('phone')) ?? 0) > 0.5)
+check('再掏出手机（身体只有一个动作在播，泡泡被还原按住）',
+  phoneTogether === true && (await drawn('chuipaopao')) === 0,
+  'phone=' + (await drawn('phone')) + ' chuipaopao=' + (await drawn('chuipaopao')))
+await clickSlot('rhand', null)
+await sleep(1200)
+check('收掉手机：嘴部槽位还选着吹泡泡糖，泡泡该回来',
+  (await until(async () => (await drawn('chuipaopao')) === 1)) === true,
+  'drawn=' + (await drawn('chuipaopao')) + ' phone=' + (await drawn('phone')))
+await clickSlot('mouth', null)
+check('再把嘴部切回无：两个动作都收得回去（还原表不能被整张替换）',
+  (await until(async () => (await drawn('chuipaopao')) === 0 && ((await drawn('phone')) ?? 1) <= 0.05)) === true,
+  'chuipaopao=' + (await drawn('chuipaopao')) + ' phone=' + (await drawn('phone')))
+
 const bad = results.filter((r) => !r.ok)
 console.log((bad.length === 0 ? 'OK' : 'FAILED') + '  ' + (results.length - bad.length) + '/' + results.length + ' checks passed')
 ws.close()

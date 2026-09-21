@@ -764,7 +764,17 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
      */
     const restoreHeld = () => {
       if (heldParams === null) return;
-      releasedOverrides = heldParams.saved;
+      // 合并，**不是替换**。
+      //
+      // 一次只有一个动作在播（desired 只认第一个带 motion 的槽位），但可以有好几个
+      // 动作"停在那里"，各自钉着一批参数——点了吹泡泡糖再点掏出手机，两个槽位都还
+      // 选着。替换会让先收起来的那个动作凭空失去还原：收掉手机时还原表只剩
+      // OpenCase 的快照，chuipaopao:0 那条没了，泡泡就永远挂回脸上。
+      // 这就是"三个里任意点两个就还原不回去"。
+      //
+      // 同名项由新表覆盖：新动作启动时快照读的就是还原缝上的值，也就是旧表正要写的
+      // 那个值，两者本来就一致。
+      releasedOverrides = Object.assign({}, releasedOverrides, heldParams.saved);
       heldParams = null;
     };
 
