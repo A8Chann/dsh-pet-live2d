@@ -360,8 +360,28 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
     let sweepSpec = null;
     /** Last normalized gaze target, for diagnostics. */
     let gazeTarget = { x: 0, y: 0 };
-    /** 0..1 pointer distance, driving the mouth. */
+    /** 0..1 pointer distance, driving the mouth. Eased, not raw. */
     let mouthFollow = 0;
+    /** -1..1 pointer height, driving the mouth's shape: up positive. Eased. */
+    let mouthLean = 0;
+    /** Where the pointer currently says the mouth should be. */
+    let mouthTargetFollow = 0;
+    let mouthTargetLean = 0;
+    /** Timestamp of the previous frame, for frame-rate independent easing. */
+    let mouthEasedAt = 0;
+    /** When the next blink starts, and when the current one started. */
+    let blinkAt = 0;
+    let blinkStart = 0;
+    /** How shut the eyes were on the last frame, for diagnostics. */
+    let blinkWrote = 0;
+    /**
+     * Blinks started since load.
+     *
+     * Counted here rather than sampled from outside: a blink is ~225ms end to
+     * end and a CDP round trip is easily 100ms+, so a polling test misses most
+     * of them and reports "never blinks" for a pet that blinks fine.
+     */
+    let blinkCount = 0;
     /** The mouth values as last written inside a frame, for diagnostics. */
     let mouthWritten = { open: 0, form: 0 };
     /** Answers whether a motion group's premise currently holds. */
@@ -373,7 +393,56 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       // The mouth follows the pointer even with nothing pinned and no sweep, so
       // it has to be part of this condition — otherwise the whole pass bails out
       // before reaching it and the mouth never moves.
-      if (expressionLayers.length === 0 && sweepSpec === null && mouthFollow <= 0) {
+      // Ease the mouth toward the pointer BEFORE the early return below: when
+      // the pointer leaves the focus range the target drops to 0, and bailing
+      // out here would leave the mouth frozen half-open instead of closing.
+      {
+        const now = (typeof performance !== "undefined" ? performance.now() : Date.now());
+        const dt = mouthEasedAt === 0 ? 16 : Math.min(120, now - mouthEasedAt);
+        mouthEasedAt = now;
+        // Exponential, so it is smooth and frame-rate independent.
+        const k = 1 - Math.exp(-dt / MOUTH_EASE_MS);
+        mouthFollow += (mouthTargetFollow - mouthFollow) * k;
+        mouthLean += (mouthTargetLean - mouthLean) * k;
+        if (Math.abs(mouthTargetFollow - mouthFollow) < 0.002) mouthFollow = mouthTargetFollow;
+        if (Math.abs(mouthTargetLean - mouthLean) < 0.002) mouthLean = mouthTargetLean;
+      }
+      // Blink. Runs before the early return because it is unconditional — it
+      // has nothing to do with what is pinned, and the engine's own blink is
+      // disabled precisely because its gate never opens for this model.
+      try {
+        const values = core._model.parameters.values;
+        const left = parameterIndex(core, EYE_L_PARAM);
+        const right = parameterIndex(core, EYE_R_PARAM);
+        const now = (typeof performance !== "undefined" ? performance.now() : Date.now());
+        if (blinkAt === 0) blinkAt = now + BLINK_MIN_MS + Math.random() * (BLINK_MAX_MS - BLINK_MIN_MS);
+        if (blinkStart === 0 && now >= blinkAt) { blinkStart = now; blinkCount += 1; }
+        if (blinkStart !== 0) {
+          const elapsed = now - blinkStart;
+          const shut = BLINK_CLOSE_MS + BLINK_HOLD_MS;
+          let open = 1;
+          if (elapsed < BLINK_CLOSE_MS) open = 1 - elapsed / BLINK_CLOSE_MS;
+          else if (elapsed < shut) open = 0;
+          else if (elapsed < shut + BLINK_OPEN_MS) open = (elapsed - shut) / BLINK_OPEN_MS;
+          else {
+            blinkStart = 0;
+            blinkAt = now + BLINK_MIN_MS + Math.random() * (BLINK_MAX_MS - BLINK_MIN_MS);
+          }
+          if (open < 1) {
+            // Multiply rather than assign: a pinned expression may already have
+            // narrowed the eyes, and a blink must close whatever is there.
+            // Skipped when the eyes are already shut, so it cannot fight a wink.
+            if (left >= 0 && values[left] > 0.2) values[left] *= open;
+            if (right >= 0 && values[right] > 0.2) values[right] *= open;
+            blinkWrote = 1 - open;
+          } else {
+            blinkWrote = 0;
+          }
+        }
+      } catch {
+        /* a torn-down model */
+      }
+      if (expressionLayers.length === 0 && sweepSpec === null && mouthFollow <= 0 && mouthLean === 0) {
         // The mouth contributes nothing at rest, and saying so is part of the
         // contract: leaving the last moving values here would report an open
         // mouth after the pointer had already come back to the centre.
@@ -402,13 +471,15 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
           if (openAt >= 0) {
             add(MOUTH_OPEN_PARAM, mouthFollow * (params.maximumValues[openAt] - params.minimumValues[openAt]) * MOUTH_FOLLOW);
           }
-          // Drive the shape the way the author's own open-mouth keyframes do.
-          add(MOUTH_FORM_PARAM, mouthFollow * MOUTH_DROP);
+          // Scale the author's own open-mouth direction by how high the pointer
+          // is: up leans the shape the way selfie.motion3.json does, down leans
+          // it the other way.
+          add(MOUTH_FORM_PARAM, mouthLean * MOUTH_DROP);
           // The CONTRIBUTION, not the absolute value: the absolute one also
           // carries the pose's own resting shape, which is not ours to assert.
           mouthWritten = {
             open: Number((mouthFollow * MOUTH_FOLLOW).toFixed(3)),
-            form: Number((mouthFollow * MOUTH_DROP).toFixed(3)),
+            form: Number((mouthLean * MOUTH_DROP).toFixed(3)),
           };
         }
         if (sweepSpec !== null) {
@@ -546,7 +617,14 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       // supposed to do the spraying is a separate parameter (`jingyu`) that
       // nothing in that motion touches — which is why it looked like a no-op.
       const preset = opts.preset ?? null;
-      stopAll();
+      // Stop ONLY when replaying the very same group+index, which is the one
+      // case the engine refuses on its own. Clearing the queue unconditionally
+      // removed the outgoing motion instantly, so there was nothing left to
+      // fade OUT of and every switch became a hard cut — the transitions were
+      // being destroyed by this one line.
+      const replaying = currentEntry !== null
+        && currentEntry.group === entry.group && currentEntry.index === entry.index;
+      if (replaying) stopAll();
       // Releasing the previous action's pins before the new one starts keeps
       // two actions from fighting over the same parameter.
       if (keep === undefined) restoreHeld();
@@ -868,6 +946,26 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       setGuardResolver(fn) {
         guardFor = typeof fn === "function" ? fn : null;
       },
+      /** Diagnostic: blinks started since load. */
+      blinkCount: () => blinkCount,
+      /** Diagnostic: how shut the eyes were on the last frame, 0..1. */
+      blinkAmount: () => blinkWrote,
+      /** Force a blink now, so a test does not have to wait for one. */
+      blinkNow: () => { blinkAt = 0; blinkStart = (typeof performance !== "undefined" ? performance.now() : Date.now()); },
+      /** Diagnostic: how many motions the engine is cross-fading right now. */
+      blending: () => {
+        try {
+          const manager = motionManager();
+          if (manager === null || manager === undefined) return -1;
+          for (const key of Object.keys(manager)) {
+            const value = manager[key];
+            if (Array.isArray(value)) return value.length;
+          }
+          return -2;
+        } catch {
+          return -3;
+        }
+      },
       /** Diagnostic: may this group play right now? */
       canPlay: (group) => guardFor === null || guardFor(group),
       /** Install the phase -> group resolver the sustain loop needs. */
@@ -934,7 +1032,11 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
         gazeTarget = { x: nx, y: ny };
         // How far the pointer is, on the SAME normalized scale the gaze uses, so
         // the mouth and the eyes agree about how far away it is.
-        mouthFollow = Math.min(1, Math.hypot(nx, ny));
+        mouthTargetFollow = Math.min(1, Math.hypot(nx, ny));
+        // The mouth SHAPE follows the pointer VERTICALLY instead: up is positive
+        // and down is negative, so the opening leans with the cursor rather than
+        // always curving the same way. ny is screen-down-positive, hence the flip.
+        mouthTargetLean = -ny;
         try {
           model.internalModel?.focusController?.focus(nx, -ny);
         } catch {
@@ -1331,6 +1433,44 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
 
   /** How far POSITIVE the form is driven at full mouth opening. */
   const MOUTH_DROP = 0.7;
+
+  /**
+   * Time constant for the mouth easing, in milliseconds.
+   *
+   * The gaze is already smooth because the engine lerps its focus controller,
+   * but the mouth was written straight from the pointer event, so moving in or
+   * out of range snapped it open and shut. ~170ms reads as a reaction rather
+   * than a cut.
+   */
+  const MOUTH_EASE_MS = 170;
+
+  /**
+   * Blinking, driven by US rather than by the engine.
+   *
+   * The engine's own eye blink is gated behind "no motion drove parameters this
+   * frame":
+   *
+   *     const motionUpdated = this.updateMotions(coreModel, now)
+   *     ... motionUpdated || this.eyeBlink?.updateParameters?.(coreModel, dt)
+   *
+   * Every motion in this model declares Loop:true, and the controller keeps the
+   * idle loop running more or less continuously, so `motionUpdated` is true on
+   * essentially every frame — which means the engine's blink NEVER ran and the
+   * pet simply never blinked.
+   *
+   * So the engine's blink is switched off at load (options.eyeBlink = false) and
+   * reproduced here, at the same per-frame seam as everything else, where no
+   * engine gate can suppress it.
+   */
+  const EYE_L_PARAM = "ParamEyeLOpen";
+  const EYE_R_PARAM = "ParamEyeROpen";
+  /** Gap between blinks: a random interval in this range. */
+  const BLINK_MIN_MS = 2200;
+  const BLINK_MAX_MS = 6400;
+  /** Closing, shut, and opening durations. */
+  const BLINK_CLOSE_MS = 70;
+  const BLINK_HOLD_MS = 45;
+  const BLINK_OPEN_MS = 110;
 
   /**
    * How much of the model's mouth range a fully-deflected pointer uses.
@@ -1902,6 +2042,12 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
           autoUpdate: false,
           autoHitTest: true,
           autoFocus: false,
+          // The engine's blink is gated behind "no motion drove parameters this
+          // frame", and this model's idle loop runs continuously — so its gate
+          // never opened and the pet never blinked. Blinking is driven by this
+          // plugin instead; leaving the engine's on as well would double up on
+          // whatever frames its gate did happen to open.
+          eyeBlink: false,
           // Textures stay at full resolution and are minified by a real mip
           // chain instead of the engine's LOD copies.
           //
