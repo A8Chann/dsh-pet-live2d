@@ -1836,7 +1836,41 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     if (override !== undefined && override.expression !== undefined) return override.expression;
     return base[phase];
   };
-  /** 摸鱼权重：默认（pet.json） <- 用户覆盖。 */
+  /**
+   * 摸鱼池的**条目表**：一条 = 一个候选（label=null 表示「保持不变」）。
+   *
+   * 这是用户可增删的那份数据 —— 界面上每条一行、带 × 可删、底下有 ＋ 可加。
+   * 没被覆盖过的槽位用 pet.json 的默认（none + 各选项的 fidgetWeight）。
+   */
+  const fidgetEntriesFor = (slot) => {
+    const override = PHASE_OVERRIDES.fidget[slot.id];
+    if (override !== undefined && Array.isArray(override.entries)) return override.entries;
+    const out = [{ label: null, weight: typeof slot.fidgetNone === "number" ? slot.fidgetNone : 1 }];
+    for (const option of slot.options ?? []) {
+      if (option.fidget === false) continue;
+      out.push({
+        label: option.label,
+        weight: typeof option.fidgetWeight === "number" && option.fidgetWeight > 0 ? option.fidgetWeight : 1,
+      });
+    }
+    return out;
+  };
+
+  /** 写入某个槽位的条目表（增删都走这里）。 */
+  const setFidgetEntries = (slotId, entries) => {
+    PHASE_OVERRIDES.fidget[slotId] = { entries };
+    saveOverrides();
+    notifySettings();
+  };
+
+  /** 删掉某个相位的覆盖（＝那一行从列表里消失，回到内置行为）。 */
+  const removePhaseRow = (phase) => {
+    delete PHASE_OVERRIDES.phases[phase];
+    saveOverrides();
+    notifySettings();
+  };
+
+  /** 旧接口：界面上已改成条目表，这两个只在默认值推导里还用得到。 */
   const fidgetNoneFor = (slot) => {
     const override = PHASE_OVERRIDES.fidget[slot.id];
     if (override !== undefined && typeof override.none === "number") return override.none;
@@ -3409,20 +3443,32 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         // out (a selfie with no phone would set the pins and play nothing), and
         // so is anything the pet marked fidget:false — 吐舌 does not belong in
         // an idle 摸鱼.
-        const usable = (slot) => slot.options.filter((o) =>
-          (typeof o.motion !== "string" || motion.current.canPlay(o.motion)) && o.fidget !== false
-          // 权重被设置页调成 0 的选项等于「关掉」：直接从池子里拿掉，
-          // 免得它靠"权重 0 也占一个名额"的边角情况偶尔冒出来。
-          && fidgetWeightFor(slot, o) > 0);
+        // 条目表 -> 可用的 (选项|null, 权重) 对。
+        // 权重 0 或条目被删掉 = 不参与；动作前提不满足（比如没有蛋包饭就挤不了番茄酱）
+        // 也在这一刻过滤掉。
+        const entriesOf = (slot) => {
+          const out = [];
+          for (const entry of fidgetEntriesFor(slot)) {
+            if (!(entry.weight > 0)) continue;
+            if (entry.label === null || entry.label === undefined) {
+              out.push([null, entry.weight]);
+              continue;
+            }
+            const option = (slot.options ?? []).find((o) => o.label === entry.label);
+            if (option === undefined || option.fidget === false) continue;
+            if (typeof option.motion === "string" && !motion.current.canPlay(option.motion)) continue;
+            out.push([option, entry.weight]);
+          }
+          return out;
+        };
+        const usable = (slot) => entriesOf(slot).map((pair) => pair[0]).filter((option) => option !== null);
         // Weighted draw over "leave it alone" plus the usable options. The mouth
         // carries a heavy fidgetNone so the pet mostly looks normal rather than
         // pulling a face every time it idles.
         const draw = (slot) => {
-          const opts = usable(slot);
-          if (opts.length === 0) return null;
-          // 权重：pet.json 的默认值，可以被设置页覆盖（0 = 永不触发）。
-          const entries = [[null, fidgetNoneFor(slot)]]
-            .concat(opts.map((o) => [o, fidgetWeightFor(slot, o)]));
+          // 条目已经是 (选项|null, 权重)，直接加权抽 —— 增删条目就是改池子本身。
+          const entries = entriesOf(slot);
+          if (entries.length === 0) return null;
           let total = 0;
           for (const [, w] of entries) total += w;
           let roll = Math.random() * total;
@@ -3920,6 +3966,10 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   const rowStyle = { display: "flex", alignItems: "center", gap: 6, fontSize: 11, padding: "2px 0" };
   const labelStyle = { flex: "0 0 88px", opacity: .85 };
   const selectStyle = { flex: 1, minWidth: 0, fontSize: 11 };
+  /** 行尾的 ×（删掉这一条）。 */
+  const removeStyle = { flex: "0 0 auto", border: 0, background: "transparent", color: "#9fb0cf", cursor: "pointer", fontSize: 13, lineHeight: 1, padding: "0 4px" };
+  /** 分组里的 ＋（加一条）。 */
+  const addStyle = { fontSize: 11, opacity: .85 };
 
   /**
    * 会话相位 → 动作 / 表情。
@@ -3930,18 +3980,22 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     useSettings();
     const pet = MANIFEST.current;
     if (pet === null) return h("div", { "data-empty": "phases" }, "宠物还没加载好");
-    const phases = Array.from(new Set([...Object.keys(PHASE_MOTION), ...Object.keys(pet.motionsByPhase ?? {})]));
+    const known = Array.from(new Set([...Object.keys(PHASE_MOTION), ...Object.keys(pet.motionsByPhase ?? {})])).sort();
+    // 列表里只出现**被覆盖过**的相位：一行 = 一条定制。删掉一行就回到内置行为。
+    const rows = known.filter((phase) => PHASE_OVERRIDES.phases[phase] !== undefined);
+    const missing = known.filter((phase) => PHASE_OVERRIDES.phases[phase] === undefined);
     const groups = (pet.motions ?? []).map((entry) => entry.group);
     const expressions = manifestExpressions(pet);
+    const base = { motions: Object.assign({}, PHASE_MOTION, pet.motionsByPhase ?? {}), expressions: Object.assign({}, PHASE_EXPRESSION, pet.expressionsByPhase ?? {}) };
     const current = (phase) => ({
-      motion: phaseMotionFor(Object.assign({}, PHASE_MOTION, pet.motionsByPhase ?? {}), phase) ?? "",
-      expression: phaseExpressionFor(Object.assign({}, PHASE_EXPRESSION, pet.expressionsByPhase ?? {}), phase) ?? "",
+      motion: phaseMotionFor(base.motions, phase) ?? "",
+      expression: phaseExpressionFor(base.expressions, phase) ?? "",
     });
     const pick = (phase, key, value) => applyOverride({ phases: { [phase]: { [key]: value === "" ? null : value } } });
     return h("div", { "data-settings": "", "data-setting": "phases" },
-      phases.map((phase) => {
+      rows.map((phase) => {
         const now = current(phase);
-        return h("label", { key: phase, "data-phase": phase, style: rowStyle },
+        return h("div", { key: phase, "data-phase": phase, style: rowStyle },
           h("span", { style: labelStyle }, phase),
           h("select", {
             "data-phase-motion": phase,
@@ -3961,49 +4015,96 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           h("option", { value: "" }, "（默认）"),
           expressions.map((expr) => h("option", { key: expr, value: expr }, expr)),
           ),
+          h("button", {
+            type: "button",
+            "data-phase-remove": phase,
+            title: "删掉这一行（回到内置行为）",
+            style: removeStyle,
+            onClick: () => removePhaseRow(phase),
+          }, "×"),
         );
       }),
+      missing.length === 0 ? null : h("select", {
+        "data-phase-add": "",
+        value: "",
+        style: addStyle,
+        onChange: (event) => {
+          if (event.target.value === "") return;
+          applyOverride({ phases: { [event.target.value]: {} } });
+        },
+      },
+      h("option", { value: "" }, "＋ 添加相位"),
+      missing.map((phase) => h("option", { key: phase, value: phase }, phase)),
+      ),
     );
   }
 
   /**
-   * 摸鱼：每个槽位一个「保持不变」权重，每个选项一个权重。
+   * 摸鱼：每个槽位一张**条目表**，每条一行、可删，右上角 ＋ 可加。
    *
-   * 权重 0 = 永不触发（选项会被直接移出池子，见 usable()）。
+   * 一条 = 一个候选：`保持不变`（label 为 null）或某个选项。删掉某条就是把它
+   * 移出池子；整张表空了，这个槽位就彻底不参与摸鱼。
    */
   function FidgetControls() {
     useSettings();
     const pet = MANIFEST.current;
     if (pet === null) return h("div", { "data-empty": "fidget" }, "宠物还没加载好");
     const slots = (pet.expressionSlots ?? []).filter((slot) => FIDGET_SLOTS.includes(slot.id));
-    const numberInput = (key, value, onChange, extra) => h("input", Object.assign({
+    const numberInput = (value, onChange, extra) => h("input", Object.assign({
       type: "number", min: 0, max: 99, step: 1, value: String(value),
       style: { width: 46, fontSize: 11 },
       onChange: (event) => onChange(Number(event.target.value)),
     }, extra));
+    const keyOf = (entry) => (entry.label === null || entry.label === undefined ? "__none" : entry.label);
+    const labelOf = (entry) => (entry.label === null || entry.label === undefined ? "保持不变" : entry.label);
     return h("div", { "data-settings": "", "data-setting": "fidget" },
-      slots.map((slot) => h("div", { key: slot.id, "data-fidget-slot": slot.id, style: { padding: "3px 0" } },
-        h("div", { style: { display: "flex", alignItems: "center", gap: 6, fontSize: 11 } },
-          h("span", { style: labelStyle }, slot.label),
-          h("span", { style: { opacity: .7 } }, "保持不变"),
-          numberInput("none", fidgetNoneFor(slot), (value) => applyOverride({ fidget: { [slot.id]: { none: value } } }),
-            { "data-fidget-none": slot.id }),
-        ),
-        h("div", { "data-chips": "", style: { display: "flex", flexWrap: "wrap", gap: 6, paddingLeft: 94 } },
-          (slot.options ?? []).map((option) => h("label", {
-            key: option.label,
-            "data-fidget-option": slot.id + ":" + option.label,
-            style: { display: "flex", alignItems: "center", gap: 3, fontSize: 11 },
+      slots.map((slot) => {
+        const entries = fidgetEntriesFor(slot);
+        const present = new Set(entries.map(keyOf));
+        const addable = [{ value: "__none", label: "保持不变" }]
+          .concat((slot.options ?? []).filter((option) => option.fidget !== false)
+            .map((option) => ({ value: option.label, label: option.label })))
+          .filter((item) => !present.has(item.value));
+        return h("div", { key: slot.id, "data-fidget-slot": slot.id, style: { padding: "3px 0" } },
+          h("div", { style: { display: "flex", alignItems: "center", gap: 6, fontSize: 11 } },
+            h("span", { style: labelStyle }, slot.label),
+            addable.length === 0 ? null : h("select", {
+              "data-fidget-add": slot.id,
+              value: "",
+              style: addStyle,
+              onChange: (event) => {
+                const value = event.target.value;
+                if (value === "") return;
+                setFidgetEntries(slot.id, entries.concat([{ label: value === "__none" ? null : value, weight: 1 }]));
+              },
+            },
+            h("option", { value: "" }, "＋ 添加"),
+            addable.map((item) => h("option", { key: item.value, value: item.value }, item.label)),
+            ),
+          ),
+          entries.map((entry, index) => h("div", {
+            key: keyOf(entry) + ":" + index,
+            "data-fidget-row": slot.id + ":" + keyOf(entry),
+            style: { display: "flex", alignItems: "center", gap: 6, fontSize: 11, paddingLeft: 12 },
           },
-          h("span", { style: { opacity: .8 } }, option.label),
-          numberInput("w", fidgetWeightFor(slot, option), (value) => applyOverride({ fidget: { [slot.id]: { options: { [option.label]: value } } } }),
-            { "data-fidget-weight": slot.id + ":" + option.label }),
+          h("span", { style: { flex: "0 0 96px", opacity: .8 } }, labelOf(entry)),
+          numberInput(entry.weight, (value) => {
+            const next = entries.slice();
+            next[index] = { label: entry.label ?? null, weight: value };
+            setFidgetEntries(slot.id, next);
+          }, { "data-fidget-weight": slot.id + ":" + keyOf(entry) }),
+          h("button", {
+            type: "button",
+            "data-fidget-remove": slot.id + ":" + keyOf(entry),
+            title: "删掉这一条",
+            style: removeStyle,
+            onClick: () => setFidgetEntries(slot.id, entries.filter((_, at) => at !== index)),
+          }, "×"),
           )),
-        ),
-      )),
+        );
+      }),
     );
   }
-
   /** DSH 设置页里的「桌宠」一节：手感 / 会话相位 / 摸鱼。 */
   function PetSettingsSection() {
     useSettings();

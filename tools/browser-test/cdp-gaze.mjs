@@ -317,9 +317,16 @@ const afterDshChange = await gazeAt(0.60, 0.5)
 check('在 DSH 设置页改死区，宠物立刻跟着变', Math.abs(afterDshChange.x) < 0.01, JSON.stringify(afterDshChange))
 
 // --- DSH 设置页里的「会话相位」和「摸鱼」两节 --------------------------------
+// 相位列表只显示**被定制过**的行（一行 = 一条定制），所以先加一行 tool。
+const addedTool = await ev('(() => {'
+  + ' const el = document.querySelector("#dsh-settings-probe [data-phase-add]");'
+  + ' if (!el) return false;'
+  + ' const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value").set;'
+  + ' setter.call(el, "tool"); el.dispatchEvent(new Event("change", { bubbles: true })); return true })()')
+await sleep(400)
 const hasPhaseUi = await ev('!!document.querySelector("#dsh-settings-probe [data-phase=\'tool\'] select[data-phase-motion]")')
-check('DSH 设置页有「会话相位」下拉', hasPhaseUi === true)
-const hasFidgetUi = await ev('!!document.querySelector("#dsh-settings-probe [data-fidget-slot=\'mouth\'] input[data-fidget-none]")')
+check('DSH 设置页能加一行「会话相位」并出现动作下拉', addedTool === true && hasPhaseUi === true)
+const hasFidgetUi = await ev('!!document.querySelector("#dsh-settings-probe [data-fidget-slot=\'mouth\'] input[data-fidget-weight]")')
 check('DSH 设置页有「摸鱼」权重输入', hasFidgetUi === true)
 
 // 选一个和默认不同的动作，然后真的推一个 tool 相位过去 —— 必须播这个动作。
@@ -365,6 +372,31 @@ const poolAfter = await ev('window.__dshLive2dPet.fidgetTally().poolSize')
 check('权重 0 的槽位退出摸鱼池（池子少一个）',
   String(poolBefore) !== String(poolAfter) && String(poolAfter).endsWith(String(Number(String(poolBefore).split("/")[1]) - 1)),
   poolBefore + ' -> ' + poolAfter)
+
+// --- 条目可增删（用户画的 ×/＋：列表本身是数据，不是固定项改数值）-----------
+check('吹泡泡糖那一条还在表里（权重 0 只是不参与，不是删掉）',
+  (await ev('!!document.querySelector("[data-dsh-live2d-pet] [data-fidget-row=\'mouth:吹泡泡糖\']")')) === true)
+await ev('document.querySelector("[data-dsh-live2d-pet] [data-fidget-remove=\'mouth:吹泡泡糖\']").click()')
+await sleep(400)
+check('点 × 之后那一条真的消失了',
+  (await ev('!!document.querySelector("[data-dsh-live2d-pet] [data-fidget-row=\'mouth:吹泡泡糖\']")')) === false)
+const pickInSelect = (selector, value) => ev('(() => {'
+  + ' const el = document.querySelector(' + JSON.stringify(selector) + ');'
+  + ' if (!el) return false;'
+  + ' const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value").set;'
+  + ' setter.call(el, ' + JSON.stringify(value) + ');'
+  + ' el.dispatchEvent(new Event("change", { bubbles: true }));'
+  + ' return true })()')
+check('用 ＋ 能把它加回来',
+  (await pickInSelect('[data-dsh-live2d-pet] [data-fidget-add=\'mouth\']', "吹泡泡糖")) === true
+  && (await sleep(350), await ev('!!document.querySelector("[data-dsh-live2d-pet] [data-fidget-row=\'mouth:吹泡泡糖\']")')) === true)
+check('能加一行会话相位',
+  (await pickInSelect('#dsh-settings-probe [data-phase-add]', "thinking")) === true
+  && (await sleep(350), await ev('!!document.querySelector("#dsh-settings-probe [data-phase=\'thinking\']")')) === true)
+await ev('document.querySelector("#dsh-settings-probe [data-phase-remove=\'thinking\']").click()')
+await sleep(350)
+check('能删掉那一行相位',
+  (await ev('!!document.querySelector("#dsh-settings-probe [data-phase=\'thinking\']")')) === false)
 
 // --- 摸鱼节奏 + 装扮存档开关 -----------------------------------------------
 const hasFidgetGap = await ev('!!document.querySelector("#dsh-settings-probe [data-input=\'fidgetQuietMs\']")')
