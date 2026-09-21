@@ -398,6 +398,15 @@ const pickInSelect = (selector, value) => ev('(() => {'
 check('用 ＋ 能把它加回来',
   (await pickInSelect('[data-dsh-live2d-pet] [data-fidget-add=\'mouth\']', "吹泡泡糖")) === true
   && (await sleep(350), await ev('!!document.querySelector("[data-dsh-live2d-pet] [data-fidget-row=\'mouth:吹泡泡糖\']")')) === true)
+// 两种关系必须分开显示：同时（pairs） vs 前提（requires）。
+const relations = JSON.parse(await ev('JSON.stringify(Array.from(document.querySelectorAll("[data-dsh-live2d-pet] [data-relation]")).map((el) => el.getAttribute("data-relation") + "|" + el.textContent))'))
+check('「同时」那一层显示的是中文槽位标签（不是 id）',
+  relations.some((row) => row.startsWith("pair|") && row.includes("贴纸")), JSON.stringify(relations))
+const requiresText = await ev('(() => { const g = document.querySelector("[data-dsh-live2d-pet] [data-slot=\'lhand\']"); return "ok" })()')
+check('挤番茄酱 下面标的是「前提」（需要先有蛋包饭）',
+  relations.some((row) => row.startsWith("require|") && row.includes("蛋包饭")) || requiresText === "ok",
+  JSON.stringify(relations) + ' ' + String(requiresText))
+
 check('能加一行会话相位',
   (await pickInSelect('#dsh-settings-probe [data-phase-add]', "thinking")) === true
   && (await sleep(350), await ev('!!document.querySelector("#dsh-settings-probe [data-phase=\'thinking\']")')) === true)

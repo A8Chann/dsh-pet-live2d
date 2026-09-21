@@ -4014,6 +4014,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   const removeStyle = { flex: "0 0 auto", border: 0, background: "transparent", color: "#9fb0cf", cursor: "pointer", fontSize: 13, lineHeight: 1, padding: "0 4px" };
   /** 分组里的 ＋（加一条）。 */
   const addStyle = { fontSize: 11, opacity: .85 };
+  /** 关系行：缩进一级、小一号、淡一点，和它所属的条目区分开。 */
+  const relationStyle = { paddingLeft: 26, fontSize: 10, opacity: .6, lineHeight: "1.5" };
 
   /**
    * 会话相位 → 动作 / 表情。
@@ -4089,6 +4091,33 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
    * 一条 = 一个候选：`保持不变`（label 为 null）或某个选项。删掉某条就是把它
    * 移出池子；整张表空了，这个槽位就彻底不参与摸鱼。
    */
+  /**
+   * 一条目下面的「关系」行（缩进一级）。
+   *
+   * 两种关系刻意用不同前缀，别让它们看起来像同一件事：
+   *   同时 → pairs（选了它就一起点亮）
+   *   前提 → requires（必须已经在该状态，否则这个条目根本播不出来）
+   * 数据来自 pet.json 的槽位选项（options[].pairs / options[].requires），
+   * 这里只做**只读展示** —— 增删关系等池子那块一起做。
+   */
+  function relationRows(slot, entry) {
+    const option = (slot.options ?? []).find((o) => o.label === entry.label);
+    if (option === undefined) return [];
+    // 显示**槽位标签**（贴纸）而不是 id（sticker）：这是给人看的。
+    const labelOfSlot = (slotId) => (MANIFEST.current?.expressionSlots ?? [])
+      .find((s) => s.id === slotId)?.label ?? slotId;
+    const rows = [];
+    for (const [slotId, label] of Object.entries(option.pairs ?? {})) {
+      rows.push(h("div", { key: "pair:" + slotId, "data-relation": "pair", "data-relation-of": slot.id + ":" + entry.label, style: relationStyle },
+        "同时：" + labelOfSlot(slotId) + " = " + label));
+    }
+    for (const label of option.requires ?? []) {
+      rows.push(h("div", { key: "req:" + label, "data-relation": "require", "data-relation-of": slot.id + ":" + entry.label, style: relationStyle },
+        "前提：" + label));
+    }
+    return rows;
+  }
+
   function FidgetControls() {
     useSettings();
     const pet = MANIFEST.current;
@@ -4143,6 +4172,10 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
             style: removeStyle,
             onClick: () => setFidgetEntries(slot.id, entries.filter((_, at) => at !== index)),
           }, "×"),
+          // 两种关系**必须分开显示**，它们不是一回事：
+          //   pairs    = 同时触发（选了它就一起点亮，比如 喵喵手 会带出「贴纸=猫猫」）
+          //   requires = 播放前提（必须先处于那个状态才播得出来，比如 挤番茄酱 要先有蛋包饭）
+          ...relationRows(slot, entry),
           )),
         );
       }),
