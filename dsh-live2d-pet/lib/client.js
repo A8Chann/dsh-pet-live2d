@@ -362,6 +362,8 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
     let gazeTarget = { x: 0, y: 0 };
     /** 0..1 pointer distance, driving the mouth. */
     let mouthFollow = 0;
+    /** The mouth values as last written inside a frame, for diagnostics. */
+    let mouthWritten = { open: 0, form: 0 };
     /** Answers whether a motion group's premise currently holds. */
     let guardFor = null;
     /** Last pen position, for diagnostics. */
@@ -371,23 +373,44 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
       // The mouth follows the pointer even with nothing pinned and no sweep, so
       // it has to be part of this condition — otherwise the whole pass bails out
       // before reaching it and the mouth never moves.
-      if (expressionLayers.length === 0 && sweepSpec === null && mouthFollow <= 0) return;
+      if (expressionLayers.length === 0 && sweepSpec === null && mouthFollow <= 0) {
+        // The mouth contributes nothing at rest, and saying so is part of the
+        // contract: leaving the last moving values here would report an open
+        // mouth after the pointer had already come back to the centre.
+        mouthWritten = { open: 0, form: 0 };
+        return;
+      }
       try {
         const values = core._model.parameters.values;
         // The mouth follows the pointer too. It has to be written per frame —
         // setting it once from the pointermove handler would be overwritten by
         // the very next frame the motion system runs.
-        if (mouthFollow > 0) {
-          const at = parameterIndex(core, MOUTH_OPEN_PARAM);
-          if (at >= 0) {
-            const min = core._model.parameters.minimumValues[at];
-            const max = core._model.parameters.maximumValues[at];
-            const span = (max - min) * MOUTH_FOLLOW;
+        if (true) {
+          const params = core._model.parameters;
+          const add = (id, delta) => {
+            const at = parameterIndex(core, id);
+            if (at < 0) return;
+            const min = params.minimumValues[at];
+            const max = params.maximumValues[at];
             // Added on top of whatever the pose or a pinned face already wrote,
-            // then clamped: an open mouth must not push past the model's range.
-            const opened = values[at] + mouthFollow * span;
-            values[at] = opened > max ? max : (opened < min ? min : opened);
+            // then clamped to the model's own range.
+            const next = values[at] + delta;
+            values[at] = next > max ? max : (next < min ? min : next);
+          };
+          const openAt = parameterIndex(core, MOUTH_OPEN_PARAM);
+          const formAt = parameterIndex(core, MOUTH_FORM_PARAM);
+          if (openAt >= 0) {
+            add(MOUTH_OPEN_PARAM, mouthFollow * (params.maximumValues[openAt] - params.minimumValues[openAt]) * MOUTH_FOLLOW);
           }
+          // Pull the shape down with it, so the opening is the jaw rather than
+          // the upper lip.
+          add(MOUTH_FORM_PARAM, -mouthFollow * MOUTH_DROP);
+          // The CONTRIBUTION, not the absolute value: the absolute one also
+          // carries the pose's own resting shape, which is not ours to assert.
+          mouthWritten = {
+            open: Number((mouthFollow * MOUTH_FOLLOW).toFixed(3)),
+            form: Number((-mouthFollow * MOUTH_DROP).toFixed(3)),
+          };
         }
         if (sweepSpec !== null) {
           const spec = sweepSpec;
@@ -919,6 +942,14 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
           /* an engine without a focus controller simply does not follow */
         }
       },
+      /**
+       * Diagnostic: the mouth parameters as written INSIDE the frame.
+       *
+       * Deliberately not a live read: outside the frame the engine has already
+       * restored the pose, so a read there reports the resting value and looks
+       * like nothing happened. That mistake is recorded in the project skill.
+       */
+      mouthDebug: () => mouthWritten,
       /** Diagnostic: 0..1 pointer distance driving the mouth. */
       mouthFollow: () => mouthFollow,
       /** Diagnostic: the normalized gaze target the pointer last produced. */
@@ -1284,6 +1315,19 @@ window.__ModuleLoader__.load({ id: "dsh-live2d-pet", factory: (require) => {
 
   /** The model's mouth-opening parameter. */
   const MOUTH_OPEN_PARAM = "ParamMouthOpenY";
+
+  /**
+   * The mouth's SHAPE parameter (range -2..1 on this model).
+   *
+   * Opening ParamMouthOpenY alone reads as the UPPER lip lifting, which looks
+   * like a gasp. Driving the form negative at the same time rounds the opening
+   * and drops it, so it reads as the lower jaw coming down instead — the same
+   * shape 吐舌 makes, minus the tongue.
+   */
+  const MOUTH_FORM_PARAM = "ParamMouthForm";
+
+  /** How far negative the form is pulled at full mouth opening. */
+  const MOUTH_DROP = 0.7;
 
   /**
    * How much of the model's mouth range a fully-deflected pointer uses.

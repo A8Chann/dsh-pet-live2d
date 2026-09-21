@@ -91,6 +91,12 @@ const mouthAt = async (fx, fy) => {
   await gazeAt(fx, fy)
   return ev('window.__dshLive2dPet.mouthFollow()')
 }
+// Read the two mouth parameters straight off the model: the shape claim has to
+// be checked on what the engine ends up with, not on our own math.
+await ev('(() => {'
+  + ' const c = window.__dshLive2dPet'
+  + ' })()')
+const mouthParams = () => ev('JSON.stringify(window.__dshLive2dPet.mouthDebug())')
 const mouthCentre = await mouthAt(0.5, 0.5)
 const mouthHalf = await mouthAt(0.75, 0.5)
 const mouthEdge = await mouthAt(1.0, 0.5)
@@ -99,6 +105,17 @@ check('the mouth is closed with the pointer at the centre', mouthCentre === 0, '
 check('the mouth opens with the pointer offset', mouthHalf > 0.2 && mouthEdge > mouthHalf,
   [mouthCentre, mouthHalf, mouthEdge].map((v) => Number(v).toFixed(3)).join(' < '))
 check('the mouth closes again when the pointer comes back', mouthBack === 0, 'follow=' + mouthBack)
+// Opening ParamMouthOpenY alone lifts the UPPER lip, which reads as a gasp.
+// The shape has to be pulled negative at the same time so the opening reads as
+// the lower jaw dropping — the same thing 吐舌 does, minus the tongue.
+const shapeCentre = JSON.parse(await mouthParams())
+await mouthAt(1.0, 0.5)
+const shapeEdge = JSON.parse(await mouthParams())
+check('the jaw drops with the mouth, not just the upper lip',
+  shapeCentre.open === 0 && shapeCentre.form === 0
+  && shapeEdge.open > 0.2 && shapeEdge.form < -0.2,
+  'contribution at centre ' + JSON.stringify(shapeCentre) + ' vs edge ' + JSON.stringify(shapeEdge))
+await mouthAt(0.5, 0.5)
 
 const bad = results.filter((r) => !r.ok)
 console.log((bad.length === 0 ? 'OK' : 'FAILED') + '  ' + (results.length - bad.length) + '/' + results.length + ' checks passed')
