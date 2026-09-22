@@ -703,22 +703,49 @@ check('手动清掉被配对钉住的槽位，配对会把它补回来（不变�
 // `love` 只是**开关**，爱心的**位置**是爱心左/右那 58 个 `j*`，而只有待机循环在驱动
 // 它们。`hold: true` 的动作（掏出手机/吹泡泡糖/自拍）定格之后待机不再跑，引擎就把
 // 这些位置参数放回基线 0 —— 于是 love=1 却**一颗爱心都看不见**。
-// 现在定格期间会把待机最后那一份保住（computeAmbientOnly + preserveAmbient）。
+// 现在定格期间会把待机**录下来**的那一份按同样节奏回放（computeAmbientOnly +
+// preserveAmbient）：既不塌、也不冻 —— 爱心继续飘。
 const animHearts = ['j8', 'j16', 'j24', 'j45', 'j57']
+const readHearts = async () => JSON.parse(await ev('JSON.stringify(' + JSON.stringify(animHearts)
+  + '.map((n) => window.__dshLive2dPet.drawn(n)))'))
+// 录像只在**真待机**时录 —— 这个 driver 前面一直在强制摸鱼，所以先回待机让它录一会儿。
+// 等待要给足：headless 的帧率只有个位数，2 秒才录到十几帧，采样正好卡在阈值上。
+// （这条曾经假红过：录像只有几帧 → 回放退回"冻住最后一帧"，5 次采样同一个形状。）
+await ev('window.__dshLive2dPet.playIdle()')
+await sleep(3500)
 await slotPick("rhand", "掏出手机")
-let heartAlive = false
+const heartFrames = []
 for (let i = 0; i < 5; i += 1) {
   await sleep(300)
-  const vals = JSON.parse(await ev('JSON.stringify(' + JSON.stringify(animHearts)
-    + '.map((n) => window.__dshLive2dPet.drawn(n)))'))
-  if (vals.some((v) => Math.abs(v ?? 0) > 0.02)) heartAlive = true
+  heartFrames.push(await readHearts())
 }
 check('动作定格时爱心的位置参数没塌成 0（塌了就是"开着开关却看不见"）',
-  heartAlive === true, 'j*=' + await ev('JSON.stringify(' + JSON.stringify(animHearts)
-    + '.map((n) => window.__dshLive2dPet.drawn(n)))'))
+  heartFrames.some((f) => f.some((v) => Math.abs(v ?? 0) > 0.02)), 'j*=' + JSON.stringify(heartFrames))
+// 「不能只是冻住」：只写回一份静态快照也能过上面那条，但用户一眼就看出"它不动了"，
+// 所以这条断言的是"帧与帧之间不一样"。
+const heartShapes = new Set(heartFrames.map((f) => f.map((v) => Math.round((v ?? 0) * 100)).join(',')))
+check('定格时爱心还在动（回放待机录下来的那份，不是冻住的一帧）',
+  heartShapes.size >= 3, heartShapes.size + ' 种形状 / ' + heartFrames.length + ' 次采样 | '
+  + await ev('JSON.stringify(window.__dshLive2dPet.ambientDebug())'))
 check('定格时开关仍是开的（love=1）',
   (await ev('window.__dshLive2dPet.drawn("love")')) === 1,
   'love=' + await ev('window.__dshLive2dPet.drawn("love")'))
+await slotPick("rhand", "无")
+await sleep(600)
+// --- 最后一个动作槽位说了算（右手拿着手机时点吹泡泡糖）-------------------------
+// `desired` 原来是"扫描全部槽位、取第一个带 motion 的选中项"，而右手在清单里排在
+// 嘴部之前 —— 于是右手拿着手机时点吹泡泡糖会被**静默忽略**：面板显示已选中、
+// 画面纹丝不动（用户报的"吹泡泡糖又不出来了"，probe-bubble-order 复现）。
+await slotPick("rhand", "掏出手机")
+await sleep(900)
+await slotPick("mouth", "吹泡泡糖")
+await sleep(900)
+check('右手拿着手机时点吹泡泡糖，真的换成吹泡泡糖（最后点的那个说了算）',
+  (await ev('document.querySelector("[data-dsh-live2d-pet]").getAttribute("data-motion")')) === "BubbleGum",
+  'data-motion=' + await ev('document.querySelector("[data-dsh-live2d-pet]").getAttribute("data-motion")'))
+check('泡泡真的鼓起来了', ((await ev('window.__dshLive2dPet.drawn("chuipaopao")')) ?? 0) > 0.5,
+  'chuipaopao=' + await ev('window.__dshLive2dPet.drawn("chuipaopao")'))
+await slotPick("mouth", "闭嘴")
 await slotPick("rhand", "无")
 await sleep(600)
 // 残留路径：以前摸鱼有一条隐藏的"手机在手就 40% 顺手自拍"，现在自拍只能由槽位触发。

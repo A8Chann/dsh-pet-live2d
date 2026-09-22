@@ -1,11 +1,7 @@
-// 量清楚"动作一播，冒爱心就失效"到底死在哪一环。
+// 验证「吹泡泡糖不出来」的假设：`desired` 是**扫描全部槽位、取第一个带 motion 的选中项**，
+// 而右手（掏出手机）在嘴部（吹泡泡糖）之前 —— 所以右手拿着手机时点吹泡泡糖会被静默忽略。
 //
-// 三个要区分的结果：
-//   pins 里还有冒爱心 + love≈1  → 是画面之外的事（图层顺序）
-//   pins 里有冒爱心 + love≈0    → pin 在、写不进模型
-//   pins 里没有冒爱心           → 上游把 pin 弄丢了
-//
-//   node drivers/probe-heart2.mjs
+//   node drivers/probe-bubble-order.mjs
 import { spawn } from 'node:child_process'
 import { rmSync } from 'node:fs'
 import { browserPath, PROFILES, HERE } from '../paths.mjs'
@@ -13,9 +9,9 @@ import { waitReady } from '../ready.mjs'
 import { join } from 'node:path'
 
 const EDGE = browserPath()
-const PORT = 9392
-const SERVER_PORT = 8894
-const PROFILE = join(PROFILES, '_probe-heart2')
+const PORT = 9394
+const SERVER_PORT = 8896
+const PROFILE = join(PROFILES, '_probe-bubble-order')
 const server = spawn(process.execPath, [join(HERE, 'server.mjs'), String(SERVER_PORT)], { stdio: 'ignore', cwd: HERE })
 process.env.PET_BASE = 'http://127.0.0.1:' + SERVER_PORT
 rmSync(PROFILE, { recursive: true, force: true })
@@ -42,28 +38,6 @@ for (let i = 0; i < 240; i += 1) { await sleep(500); if (await ev('document.titl
 await waitReady(ev)
 await sleep(1200)
 
-const snap = async (tag) => {
-  const s = JSON.parse(await ev('JSON.stringify({'
-    + ' pins: window.__dshLive2dPet.expressions(),'
-    + ' love: window.__dshLive2dPet.drawn("love"),'
-    + ' hearts: ["j1","j8","j16","j24","j33","j45","j57"].map((n) => window.__dshLive2dPet.drawn(n)),'
-    + ' ambient: typeof window.__dshLive2dPet.ambientDebug === "function" ? window.__dshLive2dPet.ambientDebug() : "无此读口",'
-    + ' motion: document.querySelector("[data-dsh-live2d-pet]").getAttribute("data-motion")'
-    + ' })'))
-  const h = (s.hearts ?? []).map((v) => (v === null || v === undefined ? 'null' : Number(v).toFixed(1)))
-  console.log(tag.padEnd(20),
-    '| 冒爱心pin=' + (s.pins.includes('冒爱心') ? '有' : '无'),
-    '| love=' + (s.love === null || s.love === undefined ? 'null' : Number(s.love).toFixed(2)),
-    '| j*=' + JSON.stringify(h),
-    '| motion=' + s.motion)
-  console.log(' '.repeat(22) + '环境: ' + JSON.stringify(s.ambient))
-  return s
-}
-
-// 用 **槽位选项**重现用户的路（不是 playOnce 裸播）：掏出手机 / 吹泡泡糖 / 自拍
-// 都是槽位选项，走的是 `kind:"slot", hold+persist` 那条路。
-await ev('window.__dshLive2dPet.setExpressions([])')
-await sleep(400)
 await ev(`(() => { const h = document.querySelector("[data-dsh-live2d-pet] [data-hit]")
   || document.querySelector("[data-dsh-live2d-pet] [data-stage]");
   h.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })); return true })()`)
@@ -76,25 +50,29 @@ const pick = async (slotId, label) => {
   const ok = await ev('(() => { const g = document.querySelector(' + JSON.stringify('[data-dsh-live2d-pet] [data-panel] [data-slot="' + slotId + '"]')
     + '); if (!g) return "no-slot"; const b = Array.from(g.querySelectorAll("[data-chips] button")).find((x) => x.textContent === '
     + JSON.stringify(label) + '); if (!b) return "no-chip"; b.click(); return "OK" })()')
-  await sleep(1200)
+  await sleep(1500)
   return ok
 }
-
-console.log('点爱心眼：', await pick('eyes', '爱心眼'))
-await sleep(600)
-await snap('静止（爱心眼已选）')
-
-for (const [slotId, label, name] of [['rhand', '掏出手机', '掏出手机'], ['mouth', '吹泡泡糖', '吹泡泡糖'], ['selfie', '自拍', '自拍']]) {
-  console.log('点 ' + name + '：', await pick(slotId, label))
-  await snap('刚选 ' + name)
-  await sleep(1000)
-  await snap('  +1.0s')
-  await sleep(2500)
-  await snap('  +3.5s')
-  await sleep(2500)
-  await snap('  +6.0s')
-  await pick(slotId, slotId === 'mouth' ? '闭嘴' : '无')
-  await sleep(1200)
-  await snap('  清回默认')
+const state = async (tag) => {
+  const s = JSON.parse(await ev('JSON.stringify({'
+    + ' motion: document.querySelector("[data-dsh-live2d-pet]").getAttribute("data-motion"),'
+    + ' slots: window.__dshLive2dPet.slotSelections(),'
+    + ' bubble: window.__dshLive2dPet.drawn("chuipaopao") })'))
+  console.log(tag.padEnd(30), '| data-motion=' + String(s.motion).padEnd(10),
+    '| chuipaopao=' + s.bubble, '| 右手=' + (s.slots.rhand ?? '无'), '| 嘴部=' + (s.slots.mouth ?? '闭嘴'))
+  return s
 }
+
+console.log('A) 只点吹泡泡糖')
+console.log('   点嘴部 =', await pick('mouth', '吹泡泡糖'))
+await state('   → 期望 BubbleGum')
+
+console.log('')
+console.log('B) 先点掏出手机，再点吹泡泡糖（右手槽位在嘴部之前）')
+console.log('   点右手 =', await pick('rhand', '掏出手机'))
+await state('   右手拿着手机时')
+console.log('   点嘴部 =', await pick('mouth', '吹泡泡糖'))
+await state('   → 期望 BubbleGum，实际？')
+await sleep(1500)
+await state('   +1.5s')
 ws.close(); edge.kill(); server.kill(); await sleep(300); process.exit(0)

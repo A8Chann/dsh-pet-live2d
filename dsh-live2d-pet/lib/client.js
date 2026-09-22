@@ -117,6 +117,21 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     let ambientOnly = [];
     let ambientSaved = null;
     /**
+     * 待机时逐帧录下来的「氛围装饰」参数，以及回放用的游标。
+     *
+     * 定格时不能只把值**冻住**：爱心本来是飘的，冻住了用户一眼就看出"它不动了"。
+     * 引擎没有"逐帧采样某条动作曲线"的接口，motion3 的 `Segments` 又是一串按段类型
+     * 交错的裸数字（实测 58 个数里 25 组 (t,v) + 8 个段类型，边界靠"时间单调"推），
+     * 与其去猜格式，不如**直接录**：待机在跑时每帧存一份（就是作者原本的动画输出），
+     * 定格时按同样的节奏循环回放 —— 既不碰引擎内部，也不会跟原动画走样。
+     */
+    let ambientTrace = [];
+    let ambientCursor = 0;
+    /** 待机一个周期多长（录像按它截断，回放的接缝才对得上）。 */
+    let ambientPeriodMs = 4000;
+    /** ~5 秒 @60fps，够盖住这只模型 4 秒的待机循环。 */
+    const AMBIENT_TRACE_MAX = 300;
+    /**
      * Parameters this controller has deliberately written and must undo.
      * See restoreHeld() — a motion's own curves are not reset by the engine,
      * so anything we pinned on purpose has to be un-pinned on purpose.
@@ -525,17 +540,35 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
      */
     const preserveAmbient = (core, values) => {
       if (ambientOnly.length === 0 || values === null) return;
-      // 待机（或没有动作）在跑：每帧刷新那一份快照。
+      // 待机（或没有动作）在跑：每帧录一份进环形缓冲（见 ambientTrace 的注释）。
+      // **按"一个待机周期"截断**：多录一点，循环回放的接缝处就会跳一下；正好一个
+      // 周期（动画本身是周期的）才对得上。
       if (currentGroup === null || currentGroup === idleName) {
-        const next = ambientSaved ?? {};
+        const frame = {};
         for (const id of ambientOnly) {
           const at = parameterIndex(core, id);
-          if (at >= 0) next[id] = values[at];
+          if (at >= 0) frame[id] = values[at];
         }
-        ambientSaved = next;
+        ambientSaved = frame;
+        const now = Date.now();
+        ambientTrace.push({ at: now, values: frame });
+        while (ambientTrace.length > 1 && now - ambientTrace[0].at > ambientPeriodMs) ambientTrace.shift();
+        if (ambientTrace.length > AMBIENT_TRACE_MAX) ambientTrace.shift();
+        ambientCursor = 0;
         return;
       }
-      // 别的动作接管了身体：把待机最后那一份写回去（至少不会消失）。
+      // 别的动作接管了身体：把录下来的那一份**按同样的节奏回放**，爱心继续飘。
+      // 录得还不够（刚加载完就播动作）时退回"冻住最后一帧"——至少不会消失。
+      if (ambientTrace.length >= 10) {
+        const frame = ambientTrace[ambientCursor % ambientTrace.length].values;
+        ambientCursor += 1;
+        for (const id of ambientOnly) {
+          const at = parameterIndex(core, id);
+          const value = frame[id];
+          if (at >= 0 && value !== undefined) values[at] = value;
+        }
+        return;
+      }
       if (ambientSaved === null) return;
       for (const id of ambientOnly) {
         const at = parameterIndex(core, id);
@@ -1201,9 +1234,13 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         groups = indexGroups(nextModel, catalogMotions);
         motionOptions = nextOptions ?? null;
         idleName = resolveIdleName(groups);
-        // 氛围装饰参数（只有待机在动的那些）：换模型就重算，快照作废。
+        // 氛围装饰参数（只有待机在动的那些）：换模型就重算，录像与快照作废。
         ambientOnly = computeAmbientOnly(groups, idleName);
         ambientSaved = null;
+        ambientTrace = [];
+        ambientCursor = 0;
+        const idleDuration = idleName === null ? 0 : (groups[idleName]?.[0]?.duration ?? 0);
+        ambientPeriodMs = idleDuration > 0 ? idleDuration : 4000;
         // Locate the head once, from the model's own geometry; it is stored in
         // model space so it survives every later resize and drag.
         headBox = measureHead(nextModel);
@@ -1435,6 +1472,24 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       mouthDebug: () => mouthWritten,
       /** Diagnostic: 0..1 pointer distance driving the mouth. */
       mouthFollow: () => mouthFollow,
+      /**
+       * 诊断：氛围装饰这一层的内部状态。
+       *
+       * **必须在控制器里定义**：`ambientOnly`/`ambientTrace`/`currentGroup` 都是控制器
+       * 闭包里的变量，写成组件作用域的读口会 ReferenceError —— 而且表现为**静默
+       * undefined**，不是报错（探针里踩过一次：`JSON.parse(undefined)`）。
+       *
+       * `trace` 是录到的帧数（< 10 就会退回"冻住最后一帧"）、`group`/`idle` 用来看
+       * 当时谁在驱动身体 —— "爱心不动"这类问题先看这几个数。
+       */
+      ambientDebug: () => ({
+        only: ambientOnly.length,
+        trace: ambientTrace.length,
+        cursor: ambientCursor,
+        period: ambientPeriodMs,
+        group: currentGroup,
+        idle: idleName,
+      }),
       /** Diagnostic: the normalized gaze target the pointer last produced. */
       gazeTarget: () => gazeTarget,
       setExpressionApplier(fn) {
@@ -3140,6 +3195,18 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     /** Whether the SCHEDULED fidget may run. Forced calls ignore it. */
     const fidgetEnabledRef = useRef(true);
     const slotMotionRef = useRef(null);
+    /**
+     * 身体只有一个：多个槽位同时挂着动作（右手=掏出手机、嘴部=吹泡泡糖）时，
+     * **最后点的那个槽位**说了算。
+     *
+     * 原来是"扫描全部槽位、取第一个带 motion 的选中项"，而右手在清单里排在嘴部
+     * 之前 —— 于是右手拿着手机时点吹泡泡糖会被**静默忽略**：面板显示已选中，
+     * 画面纹丝不动（用户报的"吹泡泡糖又不出来了"，probe-bubble-order 复现）。
+     *
+     * 这里只记"动作归谁"；那个槽位不再持有动作选项（被清掉/换成表情）时回退到扫描，
+     * 所以相位换装、归位这些路径仍然按当前选择算。
+     */
+    const motionOwnerRef = useRef(null);
     /** slot id -> chosen option label, for the panel highlight and diagnostics. */
     const slotSelectionsRef = useRef({});
     /**
@@ -3849,6 +3916,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       saveOutfit();
           if (!wanted && typeof target.options.find((o) => o.label === label)?.motion === "string") {
             slotMotionRef.current = null;
+            // 配对撤销掉的如果正是"动作归属者"，归属也要交出去。
+            if (motionOwnerRef.current === slotId) motionOwnerRef.current = null;
           }
         };
         // Choosing "none" applies the slot's UNION of breaks: leaving the hand
@@ -3930,12 +3999,28 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       if (option === null || option.sweep === undefined) userSweepRef.current = null;
       else userSweepRef.current = option.sweep;
       applySweep();
-      let desired = null;
-      for (const other of petRef.current?.expressionSlots ?? []) {
-        const label = slotSelectionsRef.current[other.id];
-        if (label === undefined) continue;
-        const picked = other.options.find((o) => o.label === label);
-        if (typeof picked?.motion === "string") { desired = picked.motion; break; }
+      // 身体只有一个动作。**最后点的那个槽位**优先（见 motionOwnerRef），它不再是动作
+      // 选项时回退到"扫描全部槽位取第一个带 motion 的" —— 后者是原来的唯一规则，也正是
+      // "右手拿着手机时点吹泡泡糖被静默忽略"的原因（右手在清单里排在嘴部之前）。
+      const motionOf = (slotId) => {
+        const label = slotSelectionsRef.current[slotId];
+        if (label === undefined) return null;
+        const picked = (petRef.current?.expressionSlots ?? [])
+          .find((slot) => slot.id === slotId)?.options.find((o) => o.label === label);
+        return typeof picked?.motion === "string" ? picked.motion : null;
+      };
+      // 先把归属改掉，再算 desired：否则"刚点的这个"要等下一次点击才生效。
+      if (option !== null && typeof option.motion === "string") motionOwnerRef.current = slot.id;
+      else if (motionOwnerRef.current === slot.id) motionOwnerRef.current = null;
+      let desired = motionOwnerRef.current === null ? null : motionOf(motionOwnerRef.current);
+      if (desired === null) {
+        for (const other of petRef.current?.expressionSlots ?? []) {
+          const found = motionOf(other.id);
+          if (found !== null) {
+            desired = found;
+            break;
+          }
+        }
       }
       const previous = slotMotionRef.current;
       slotMotionRef.current = desired;
@@ -3975,6 +4060,10 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         if (label !== undefined) keepOutfit[id] = label;
       }
       slotSelectionsRef.current = keepOutfit;
+      // 归位清掉了所有非装扮槽位 → 动作归属也可能一起没了，交回给扫描。
+      if (motionOwnerRef.current !== null && keepOutfit[motionOwnerRef.current] === undefined) {
+        motionOwnerRef.current = null;
+      }
       commitPinsRef.current();
       motion.current.resetToRest();
       say(pick(LINES.reset));
