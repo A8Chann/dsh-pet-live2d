@@ -426,6 +426,10 @@ export function scanPet(dir, id) {
     // premise is missing (a selfie with no phone out, a spray with no whale)
     // must not play at all, from ANY path: the panel, a fidget or a phase.
     motionGuards: typeof block.motionGuards === 'object' && block.motionGuards !== null ? block.motionGuards : {},
+    // 摸鱼默认盯哪几个槽位。以前这六个是**写死在浏览器半区**的（"宠物自己的身子"），
+    // 但宠物作者（和用户）会想改：这只宠物把「自拍」也放进了摸鱼池。写在这里之后，
+    // "默认集合"也成了宠物自己声明的东西，用户加的槽位照样覆盖在上面。
+    fidgetSlots: Array.isArray(block.fidgetSlots) ? block.fidgetSlots.filter((id) => typeof id === 'string') : [],
     // Motion groups that belong to the SLOT menu rather than the 动作 tab.
     // 掏出手机 and 吹泡泡糖 are slot choices now; listing them twice made the
     // same thing reachable two ways, and the tab copy could not hold a pose.
@@ -620,6 +624,7 @@ function catalogRoute() {
           expressionSlots: pet.expressionSlots,
           looksByPhase: pet.looksByPhase,
           motionGuards: pet.motionGuards,
+          fidgetSlots: pet.fidgetSlots,
           hiddenMotions: pet.hiddenMotions,
           motionOptions: pet.motionOptions,
           motions: pet.motions,

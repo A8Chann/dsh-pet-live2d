@@ -194,7 +194,7 @@
           {
             "label": "掏出手机",
             "motion": "OpenCase",
-            "fidgetWeight": 1
+            "fidgetWeight": 4
           },
           {
             "label": "喵喵手",
@@ -214,7 +214,7 @@
             "breaks": [
               "猫猫"
             ],
-            "fidgetWeight": 1
+            "fidgetWeight": 4
           },
           {
             "label": "挤番茄酱",
@@ -256,7 +256,7 @@
             "fidget": false
           }
         ],
-        "fidgetNone": 0
+        "fidgetNone": 1
       },
       {
         "id": "selfie",
@@ -265,14 +265,19 @@
         "options": [
           {
             "label": "自拍",
-            "motion": "Selfie"
+            "motion": "Selfie",
+            "fidgetWeight": 1,
+            "requires": [
+              "掏出手机"
+            ]
           },
           {
             "label": "快速自拍",
-            "motion": "SelfieQuick"
+            "motion": "SelfieQuick",
+            "fidget": false
           }
         ],
-        "fidgetNone": 8
+        "fidgetNone": 1
       },
       {
         "id": "lhand",
@@ -353,7 +358,7 @@
             "fidget": false
           }
         ],
-        "fidgetNone": 11
+        "fidgetNone": 10
       },
       {
         "id": "mood",
@@ -364,7 +369,8 @@
             "label": "开心兴奋",
             "expressions": [
               "开心兴奋"
-            ]
+            ],
+            "fidgetWeight": 5
           },
           {
             "label": "悲伤",
@@ -391,13 +397,15 @@
             "label": "调皮",
             "expressions": [
               "调皮"
-            ]
+            ],
+            "fidgetWeight": 5
           },
           {
             "label": "闭眼口水",
             "expressions": [
               "闭眼口水"
-            ]
+            ],
+            "fidgetWeight": 1
           },
           {
             "label": "吐魂",
@@ -410,7 +418,7 @@
             "fidget": false
           }
         ],
-        "fidgetNone": 6
+        "fidgetNone": 20
       },
       {
         "id": "mouth",
@@ -515,7 +523,7 @@
             ]
           }
         ],
-        "fidgetNone": 1
+        "fidgetNone": 10
       },
       {
         "id": "other",
@@ -589,6 +597,15 @@
     "hiddenMotions": [
       "OpenCase",
       "BubbleGum"
+    ],
+    "fidgetSlots": [
+      "rhand",
+      "lhand",
+      "mood",
+      "cheek",
+      "mouth",
+      "eyes",
+      "selfie"
     ]
   },
   "remarks": {

@@ -2567,14 +2567,19 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   };
 
   /**
-   * 摸鱼要遍历的槽位：**默认六个 + 用户自己加过的**。
+   * 摸鱼要遍历的槽位：**宠物声明的默认槽位 + 用户自己加过的**。
    *
-   * 默认集合（`FIDGET_SLOTS`）只是宠物给的一份建议 —— 手、情绪、脸红、嘴、眼睛。
-   * 用户问过"为什么摸鱼里面不能加槽位和候选"，答案是这两件事当时都被我写死在代码里
-   * 了：界面上只列那六个，运行时也只认那六个。没有任何理由，删掉这个限制。
+   * 默认集合来自 `pet.json` 的 `live2d.fidgetSlots`（手、情绪、脸红、嘴、眼睛、自拍），
+   * `FIDGET_SLOTS` 只是**没声明时的兜底**。原来是写死的那六个 —— 用户问过"为什么摸鱼
+   * 里面不能加槽位和候选"，当时把这两件事都写死在代码里了（界面上只列那六个、运行时也只
+   * 认那六个），没有任何理由。声明挪进 pet.json 之后，"默认"也成了宠物自己给的建议。
    */
+  const defaultFidgetSlots = (pet) => {
+    const declared = pet?.fidgetSlots;
+    return Array.isArray(declared) && declared.length > 0 ? declared : FIDGET_SLOTS;
+  };
   const fidgetSlotsFor = (pet) => {
-    const ids = FIDGET_SLOTS.slice();
+    const ids = defaultFidgetSlots(pet).slice();
     for (const id of Object.keys(PHASE_OVERRIDES.fidget)) {
       if (ids.indexOf(id) === -1) ids.push(id);
     }
@@ -5427,8 +5432,9 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         // "能不能配"。原先这里传 false，于是 吐舌 / 星星眼 这些在界面上根本点不到。
         allowAll: true,
         owner: "fidget",
-        // 默认那六个不给删（它们是宠物自己的身子，删了列表就空了）；加进来的可以。
-        removeSlot: FIDGET_SLOTS.includes(slot.id) ? null : () => removeFidgetSlot(slot.id),
+        // 宠物**声明过的**默认槽位不给整个删掉（它们是宠物自己的身子，删了列表就空了）；
+        // 用户自己加进来的可以。默认集合来自 pet.json 的 `live2d.fidgetSlots`。
+        removeSlot: defaultFidgetSlots(pet).includes(slot.id) ? null : () => removeFidgetSlot(slot.id),
         rowAttr: "data-fidget-row",
         addAttr: "data-fidget-add",
         weightAttr: "data-fidget-weight",

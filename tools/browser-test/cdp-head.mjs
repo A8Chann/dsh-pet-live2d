@@ -103,12 +103,16 @@ check('the fidget pool excludes both verbs', !pool.includes('Hammer') && !pool.i
 // playOnce refuses a motion whose premise is missing, so NO path (panel, fidget,
 // phase) can play one.
 //
-// 自拍**不再**带前提：它现在是独立槽位（自拍 / 快速自拍），动作自己就把手机抬起来
-// （`phone` 曲线 0→1，查过 motion3）。以前那条"需要右手 = 掏出手机"的守卫会把
-// 选中自拍的操作**静默挡掉**（playOnce 直接返回 false），所以去掉了。
+// 自拍**带前提**：pet.json 里那只宠物的「自拍」选项写着 `requires: ["掏出手机"]`
+// （用户调好的默认值），所以手机不在右手时它不播 —— 这正是"摸鱼不会先比耶再拍照"的那条
+// 规则在动作层的表现。手动点选时插件会先把手机掏出来（见 cdp-gaze 的对照实验）。
+//
+// 顺带：这条曾经是反的（"自拍没有前提"）。那时守卫只认 pet.json 的 `motionGuards`、
+// 不认选项上的 `requires`，所以选项写了前提也不生效。
 const can = async (g) => ev('window.__dshLive2dPet.canPlay(' + JSON.stringify(g) + ')')
-check('自拍没有前提了（动作自己会抬手）', (await can('Selfie')) === true)
-check('快速自拍也没有前提', (await can('SelfieQuick')) === true)
+check('自拍的前提是右手拿着手机（宠物默认带这条）', (await can('Selfie')) === false)
+// 前提写在**选项**上，不是动作上：只有「自拍」那条带 requires，「快速自拍」没有。
+check('快速自拍没有那条前提（前提是选项级的）', (await can('SelfieQuick')) === true)
 check('the whale spray is refused with no whale', (await can('SprayWater')) === false)
 check('the ketchup squeeze is refused with no omurice', (await can('Ketchup')) === false)
 check('an unguarded motion is always allowed', (await can('BubbleGum')) === true)

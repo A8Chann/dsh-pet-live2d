@@ -670,6 +670,19 @@ const setWeight = (key, value) => ev('(() => {'
   + ' setter.call(el, ' + JSON.stringify(String(value)) + ');'
   + ' el.dispatchEvent(new Event("input", { bubbles: true }));'
   + ' return true })()')
+/**
+ * 把一个槽位的池子压成"只有 keepKey 有权重"（keepKey 传空串就是全压 0 = 移出池子）。
+ *
+ * 定义在这一段的最前面：后面好几个段落都要用它，写在后面会 TDZ
+ * （`Cannot access 'setSlotWeights' before initialization` —— 踩过一次）。
+ */
+const setSlotWeights = async (slotId, keepKey) => {
+  const keys = JSON.parse(await ev('JSON.stringify(Array.from(document.querySelectorAll('
+    + JSON.stringify('#dsh-settings-probe [data-fidget-weight^="' + slotId + ':"]')
+    + ')).map((el) => el.getAttribute("data-fidget-weight")))'))
+  for (const key of keys) await setWeight(key, key === keepKey ? 1 : 0)
+  return keys
+}
 check('在右键面板里把「吹泡泡糖」的摸鱼权重改成 0', (await setWeight("mouth:吹泡泡糖", 0)) === true)
 await sleep(300)
 await ev('window.__dshLive2dPet.fidgetNow()')
@@ -809,9 +822,16 @@ check('泡泡真的鼓起来了', ((await ev('window.__dshLive2dPet.drawn("chuip
 await slotPick("mouth", "闭嘴")
 await slotPick("rhand", "无")
 await sleep(600)
-// 残留路径：以前摸鱼有一条隐藏的"手机在手就 40% 顺手自拍"，现在自拍只能由槽位触发。
-const selfieSlotEmpty = JSON.parse(await ev('JSON.stringify(window.__dshLive2dPet.slotSelections())'))
-check('自拍槽位空着（没选自拍）', selfieSlotEmpty.selfie === undefined, JSON.stringify(selfieSlotEmpty))
+// 残留路径：以前摸鱼有一条**隐藏**的"手机在手就 40% 顺手自拍"（`SELFIE_CHANCE`），
+// 跟池子无关。现在自拍只由池子决定 —— 所以"池子里没有它"时就不该拍。
+// 注意 pet.json 的默认**已经**把自拍槽放进摸鱼池了（用户调好的默认值），
+// 所以这里先把它的权重全压到 0（= 移出池子），再看还会不会自己拍。
+await pickTab("设置")
+await sleep(500)
+check('把自拍槽从摸鱼池里清空（权重全 0）', (await setSlotWeights("selfie", "")).length >= 1)
+await pickTab("装扮")
+await sleep(500)
+await slotPick("selfie", "无")
 await slotPick("rhand", "掏出手机")
 await sleep(1200)
 let sawSelfie = false
@@ -821,7 +841,7 @@ for (let i = 0; i < 8; i += 1) {
   const playing = await ev('(document.querySelector("[data-dsh-live2d-pet]") || {}).getAttribute?.("data-motion")')
   if (playing === "Selfie" || playing === "SelfieQuick") sawSelfie = true
 }
-check('手机掏出来了，但没选自拍 → 摸鱼不会自己拍（残留路径已删）',
+check('手机掏出来了，但池子里没有自拍 → 摸鱼不会自己拍（没有隐藏路径）',
   sawSelfie === false, 'sawSelfie=' + sawSelfie)
 
 // --- 「前提」真的管用（用户给自拍加了「前提：右手=掏出手机」）------------------
@@ -832,24 +852,22 @@ check('手机掏出来了，但没选自拍 → 摸鱼不会自己拍（残留�
 //   ② 摸鱼是按"这一轮开始前"的状态把**所有**池子掷完、再逐个应用的，所以自拍看到的
 //      前提是旧状态（右手还拿着手机），应用时右手已经变成比耶了。
 // 用权重把这一轮变成必然，做一组只差"这轮有没有掏出手机"的对照实验。
-const setSlotWeights = async (slotId, keepKey) => {
-  const keys = JSON.parse(await ev('JSON.stringify(Array.from(document.querySelectorAll('
-    + JSON.stringify('#dsh-settings-probe [data-fidget-weight^="' + slotId + ':"]')
-    + ')).map((el) => el.getAttribute("data-fidget-weight")))'))
-  for (const key of keys) await setWeight(key, key === keepKey ? 1 : 0)
-  return keys
-}
 await openSettings()
 await sleep(600)
-check('把 selfie 加进摸鱼池',
-  (await clickChip('#dsh-settings-probe [data-fidget-slot-add="selfie"]')) === true)
-await sleep(500)
-check('把「自拍」加进它的池子',
-  (await clickChip('#dsh-settings-probe [data-fidget-add="selfie"][data-add-option="自拍"]')) === true)
-await sleep(500)
-check('给「自拍」加一条「前提：右手 = 掏出手机」',
-  (await pickInSelect('#dsh-settings-probe [data-relation-add="selfie:自拍"]', "require|rhand|掏出手机")) === true)
-await sleep(400)
+// 自拍槽**默认就在摸鱼池里**（pet.json 的 `fidgetSlots` 声明了它），所以这里不是"加进来"，
+// 而是确认它作为**默认槽位**存在：有行、且没有"整个拿掉"的 ×。
+check('自拍槽默认就在摸鱼池里（pet.json 的 fidgetSlots 声明）',
+  (await ev('(() => {'
+    + ' const row = document.querySelector("#dsh-settings-probe [data-pool=\'fidget\'][data-pool-slot=\'selfie\']");'
+    + ' const chip = document.querySelector("#dsh-settings-probe [data-fidget-slot-add=\'selfie\']");'
+    + ' return row !== null && chip === null })()')) === true)
+check('「自拍」默认也在它的池子里',
+  (await ev('!!document.querySelector("#dsh-settings-probe [data-fidget-row=\'selfie:自拍\']")')) === true)
+await sleep(300)
+check('「自拍」默认就带着「前提：右手 = 掏出手机」（宠物默认值）',
+  (await ev('!!document.querySelector('
+    + JSON.stringify('#dsh-settings-probe [data-relation-of="selfie:自拍"][data-relation-key="rhand:掏出手机"]')
+    + ')')) === true)
 // 新加的槽位表是**空的**，所以只有「自拍」这一条（没有「默认」那条）。
 check('右手池只剩「双手比耶」', (await setSlotWeights("rhand", "rhand:双手比耶")).length >= 2)
 check('自拍池只剩「自拍」', (await setSlotWeights("selfie", "selfie:自拍")).length >= 1)
@@ -922,9 +940,9 @@ const fidgetAdd = (slotId, label) => clickChip('#dsh-settings-probe [data-fidget
 // `[data-pool="fidget"]` 这个归属标记 —— 否则 `[data-pool-remove-slot="symbol"]`
 // 会先命中相位里那张同名表。这个坑当场踩了一次（删错了池子）。
 const fidgetPool = (sel) => '#dsh-settings-probe [data-pool="fidget"]' + sel
-check('摸鱼那一节列出了可加的槽位（「符号」不在默认六个里）',
+check('摸鱼那一节列出了可加的槽位（「符号」不在宠物声明的默认槽位里）',
   (await ev('!!document.querySelector("#dsh-settings-probe [data-fidget-slot-add=\'symbol\']")')) === true)
-check('默认那六个槽位没有「整个拿掉」的 ×',
+check('宠物声明的默认槽位没有「整个拿掉」的 ×',
   (await ev('!!document.querySelector(' + JSON.stringify(fidgetPool(' [data-pool-remove-slot="mouth"]')) + ')')) === false)
 await clickChip('#dsh-settings-probe [data-fidget-slot-add="symbol"]')
 await sleep(400)

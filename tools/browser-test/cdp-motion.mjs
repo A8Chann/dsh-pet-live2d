@@ -117,10 +117,13 @@ check('and HOLDS it rather than relaxing', openHeld.phone_drawn > 0.5, 'phone=' 
 // (4) 自拍不再有前提
 // 原来这里是作为一个"已知 GAP"记录下来的：守卫读的是**槽位选择**，而这个 driver 是
 // 用裸动作把手机举起来的，于是手机明明在手里（phone=1）守卫却说不行。
-// 现在自拍是独立槽位、动作自己抬手，守卫整个去掉了 —— GAP 随之消失。
+//
+// 现在 pet.json 里「自拍」带着 `requires: ["掏出手机"]`（用户调好的默认值），
+// 这个"GAP"反而是**正确行为**：前提问的是"你选了什么"，不是"画面现在长什么样"。
+// 手动点「自拍」时插件会先把槽位补上（见 cdp-gaze 的对照实验）。
 const selfieWithRawPhone = await ev('window.__dshLive2dPet.canPlay("Selfie")')
-check('自拍不再被守卫拦住（手机是裸动作举起来的也照样能播）',
-  selfieWithRawPhone === true && openHeld.phone_drawn > 0.5,
+check('裸动作举起的手机不算数 —— 前提读槽位选择',
+  selfieWithRawPhone === false && openHeld.phone_drawn > 0.5,
   'phone=' + openHeld.phone_drawn + ' canPlay(Selfie)=' + selfieWithRawPhone)
 
 // (5) motion switches must CROSS-FADE
