@@ -693,6 +693,26 @@ check('连做 3 次摸鱼之后，手选的爱心眼还在（「默认」不再�
   eyesAfter.eyes === "爱心眼" && heartAfter.includes("爱心眼"), JSON.stringify(eyesAfter))
 check('配对的冒爱心也还在（"一起点亮"不该被摸鱼从侧面拆掉）',
   heartAfter.includes("冒爱心"), JSON.stringify(heartAfter))
+// 「同时」是**不变量**：手动去清配对目标，它也得回来 —— 用户报的"一直出不来"就是
+// 配对被清掉一次之后就再也没人点亮它了。
+await slotPick("heart", "无")
+await sleep(700)
+check('手动清掉被配对钉住的槽位，配对会把它补回来（不变量）',
+  (await pins()).includes("冒爱心"), JSON.stringify(await pins()))
+// 残留路径：以前摸鱼有一条隐藏的"手机在手就 40% 顺手自拍"，现在自拍只能由槽位触发。
+const selfieSlotEmpty = JSON.parse(await ev('JSON.stringify(window.__dshLive2dPet.slotSelections())'))
+check('自拍槽位空着（没选自拍）', selfieSlotEmpty.selfie === undefined, JSON.stringify(selfieSlotEmpty))
+await slotPick("rhand", "掏出手机")
+await sleep(1200)
+let sawSelfie = false
+for (let i = 0; i < 8; i += 1) {
+  await ev('window.__dshLive2dPet.fidgetNow()')
+  await sleep(400)
+  const playing = await ev('(document.querySelector("[data-dsh-live2d-pet]") || {}).getAttribute?.("data-motion")')
+  if (playing === "Selfie" || playing === "SelfieQuick") sawSelfie = true
+}
+check('手机掏出来了，但没选自拍 → 摸鱼不会自己拍（残留路径已删）',
+  sawSelfie === false, 'sawSelfie=' + sawSelfie)
 await pickTab("设置")
 await sleep(500)
 

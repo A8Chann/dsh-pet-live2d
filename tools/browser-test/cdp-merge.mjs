@@ -95,8 +95,15 @@ const apply = async (names, expect) => {
   return last
 }
 const at = (values, name) => values[WATCH.indexOf(name)]
+/**
+ * 「全部关掉」的期望值：WATCH 里**每一个**都得到 0。
+ *
+ * 必须列全 —— `apply()` 是"轮询到期望值就返回"，漏掉谁就会在它还在淡出的时候
+ * 读到中途值（实测抓到 mozhua2 = 0.24，表情有了 200ms 淡入淡出之后才显形）。
+ */
+const ALL_OFF = WATCH.reduce((acc, name) => Object.assign(acc, { [name]: 0 }), {})
 
-const empty = await apply([], { ParamCheek70: 0, ParamCheek83: 0, cc2: 0 })
+const empty = await apply([], ALL_OFF)
 check('with nothing pinned every switch is off', WATCH.every((n) => at(empty, n) === 0), JSON.stringify(empty))
 
 const glasses = await apply(['圆眼镜'], { ParamCheek70: 1 })
@@ -182,7 +189,7 @@ const only = await apply(['圆眼镜'], { ParamCheek70: 1, ParamCheek83: 0 })
 check('dropping a slot turns its switch back off',
   at(only, 'ParamCheek70') === 1 && at(only, 'ParamCheek83') === 0, JSON.stringify(only))
 
-const back = await apply([], { ParamCheek70: 0, ParamCheek83: 0, cc2: 0 })
+const back = await apply([], ALL_OFF)
 check('clearing turns them all back off', WATCH.every((n) => at(back, n) === 0), JSON.stringify(back))
 
 const bad = results.filter(r => !r.ok)

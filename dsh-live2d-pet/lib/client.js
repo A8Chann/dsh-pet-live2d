@@ -2370,6 +2370,45 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     notifySettings();
   };
 
+  /**
+   * 对着当前清单剪一遍存档里的覆盖。
+   *
+   * 换了宠物、或者 pet.json 改了槽位结构之后（比如氛围从一个大槽拆成三个独立槽、
+   * 自拍独立成槽），存档里会留着**已经不存在的槽位/选项**的覆盖。它们不会报错，
+   * 只会静默失效 —— 或者更糟：让"关系指向一个不存在的槽位"，配对就再也点不亮了。
+   * 每次加载对一遍，剪完写回。
+   */
+  const pruneOverrides = (pet) => {
+    const slotById = new Map((pet?.expressionSlots ?? []).map((slot) => [slot.id, slot]));
+    let touched = false;
+    for (const slotId of Object.keys(PHASE_OVERRIDES.fidget)) {
+      if (!slotById.has(slotId)) {
+        delete PHASE_OVERRIDES.fidget[slotId];
+        touched = true;
+      }
+    }
+    for (const key of Object.keys(PHASE_OVERRIDES.relations)) {
+      const at = key.indexOf(":");
+      const slotId = at < 0 ? key : key.slice(0, at);
+      const label = at < 0 ? "" : key.slice(at + 1);
+      const known = (slotById.get(slotId)?.options ?? []).some((option) => option.label === label);
+      if (!known) {
+        delete PHASE_OVERRIDES.relations[key];
+        touched = true;
+      }
+    }
+    for (const entry of Object.values(PHASE_OVERRIDES.phases)) {
+      const pools = entry?.pools;
+      if (pools === undefined) continue;
+      for (const slotId of Object.keys(pools)) {
+        if (slotById.has(slotId)) continue;
+        delete pools[slotId];
+        touched = true;
+      }
+    }
+    if (touched) saveOverrides();
+  };
+
   /** 把一个槽位从某个相位的池子里拿掉。 */
   const removePhasePool = (phase, slotId) => {
     const pools = {};
@@ -2633,9 +2672,6 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
 
 
   const FIDGET_SLOTS = ["rhand", "lhand", "mood", "cheek", "mouth", "eyes"];
-
-  /** Chance that a fidget with the phone out also takes a photo. */
-  const SELFIE_CHANCE = 0.4;
 
 
   /**
@@ -2987,6 +3023,26 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       api.phaseNow = (phase) => { if (typeof phase === "string") flushPhaseRef.current?.(phase); };
       api.phaseTally = () => phaseTallyRef.current;
       api.resetPhaseTally = () => { phaseTallyRef.current = {}; };
+      // 诊断：**有效关系**（pet.json + 用户覆盖合并后的结果）与存档里的覆盖。
+      // "配对点不亮"这类问题先看这两个 —— 如果覆盖里出现 `pairs: {}`（那条关系被
+      // 删过），那就不是代码的问题，是存档；剪枝只会删掉**不存在**的槽位/选项。
+      api.effectiveRelations = () => {
+        const out = {};
+        for (const slot of MANIFEST.current?.expressionSlots ?? []) {
+          for (const option of slot.options ?? []) {
+            const { pairs, requires } = relationsOf(slot.id, option.label);
+            if (Object.keys(pairs).length > 0 || requires.length > 0) {
+              out[slot.id + ":" + option.label] = { pairs, requires };
+            }
+          }
+        }
+        return out;
+      };
+      api.settingsOverrides = () => ({
+        fidgetSlots: Object.keys(PHASE_OVERRIDES.fidget),
+        relationKeys: Object.keys(PHASE_OVERRIDES.relations),
+        phases: Object.keys(PHASE_OVERRIDES.phases),
+      });
     }, []);
     /**
      * The pins the USER owns (slot choices, flashes) and the pins the SESSION
@@ -3224,6 +3280,9 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       phaseExpressionRef.current = Object.assign({}, phaseBaseRef.current.expressions);
       // 设置界面（含 DSH 设置页那个独立组件）需要清单里有哪些动作/表情/槽位。
       MANIFEST.current = pet;
+      // 清单换了（换宠物 / pet.json 改了槽位结构）就先剪一遍存档：
+      // 旧槽位的覆盖会让"关系指向不存在的槽位"这类问题**静默**发生。
+      pruneOverrides(pet);
       slotByIdRef.current = new Map((pet.expressionSlots ?? []).map((slot) => [slot.id, slot]));
       guardsRef.current = pet.motionGuards || {};
       phaseRef.current = "idle";
@@ -3510,12 +3569,41 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       motion.current.playOnce(group, index, { kind: "panel" });
     }, []);
 
+    /**
+     * 「同时」(pairs) 的**不变量**：把当前选择里所有配对的目标表达式补进来。
+     *
+     * 配对以前只是"选中那一刻"点亮一次，之后任何把它清掉的东西（摸鱼重掷、手动改目标
+     * 槽位、归零）都会让配对**永久**失效 —— 用户报的"冒爱心一直出不来"就是这个：
+     * 爱心眼还选中着，冒爱心却再也没人点亮它。
+     *
+     * 放在这里而不是 commitPins：**这是所有路径都经过的那个漏斗**（面板点选、摸鱼抽中、
+     * 相位切换、归位、换宠物），只有一处的规则才不会走岔。
+     *
+     * 源头取**有效选择**：相位正在接管某个槽位时以相位为准，否则相位演别的表情时
+     * 还会硬把配对目标钉在脸上（相位结束后自动回来）。
+     */
+    const pairPinsNow = () => {
+      const pins = {};
+      for (const slotId of slotByIdRef.current.keys()) {
+        const owns = Object.prototype.hasOwnProperty.call(phaseChoicesRef.current, slotId);
+        const label = owns ? phaseChoicesRef.current[slotId] : slotSelectionsRef.current[slotId];
+        if (label === null || label === undefined) continue;
+        for (const [targetSlot, targetLabel] of Object.entries(relationsOf(slotId, label).pairs)) {
+          const target = slotByIdRef.current.get(targetSlot)?.options.find((o) => o.label === targetLabel);
+          for (const name of target?.expressions ?? []) pins[name] = true;
+          for (const name of target?.requires ?? []) pins[name] = true;
+        }
+      }
+      return pins;
+    };
+
     // The pinned expression is re-layered after every motion start: a motion
     // resets expression parameters as it takes over, so a pinned face would
     // otherwise be wiped the moment the pet plays a reaction.
     const applyExpressions = useCallback((next) => {
-      setPinned(next);
-      pinnedRef.current = next;
+      const withPairs = Object.assign({}, next, pairPinsNow());
+      setPinned(withPairs);
+      pinnedRef.current = withPairs;
       const model = modelRef.current;
       if (model === null) return;
       // The engine's own expression pass is deliberately NOT used, in either
@@ -3597,6 +3685,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           for (const name of option.expressions) delete merged[name];
         }
       }
+      // 「同时」(pairs) 的不变量在 applyExpressions 里统一补（那是所有路径的漏斗），
+      // 这里不用再算一遍 —— 同一个规则写两处，就一定会走岔。
       // 装扮最后合并：相位即使点名了这些槽位，也压不过用户自己的选择。
       applyExpressions(Object.assign(merged, phasePinsRef.current, outfitPins()));
     };
@@ -3752,13 +3842,16 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           }
         }
       }
-      applyExpressions(next);
-      // A motion attached to a slot plays and PARKS on its last frame, so the
-      // chosen look stays put instead of dropping back to the idle loop.
+      // **先更新选择，再推 pin**。反过来的话，applyExpressions 里的配对不同步会读到
+      // 旧状态：把眼部切回「默认」时，源头看起来还是爱心眼，于是配对又把冒爱心补回来
+      // —— 表现是"切回普通眼，氛围却回不去"（cdp-exp 抓到过这条）。
       const chosen = Object.assign({}, slotSelectionsRef.current);
       if (option === null) delete chosen[slot.id];
       else chosen[slot.id] = option.label;
       slotSelectionsRef.current = chosen;
+      applyExpressions(next);
+      // A motion attached to a slot plays and PARKS on its last frame, so the
+      // chosen look stays put instead of dropping back to the idle loop.
       saveOutfit();
       // The body follows whichever slot currently holds a motion option, worked
       // out from the selections rather than remembered. Remembering only the
@@ -4177,24 +4270,13 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         // option happened to be the only lively one. The weights alone control
         // the mix now; fidgetNone is the knob for "how often does this slot
         // move at all".
-        // With the phone already out, a fidget sometimes takes a photo — the
-        // whole reason the phone slot exists. The selfie's own guard requires the
-        // phone, so this can only fire when it is genuinely out.
-        const phoneOut = () => slotSelectionsRef.current.rhand === "掏出手机";
-        const phoneWanted = changes.some(([slot, option]) => slot.id === "rhand" && option?.label === "掏出手机")
-          || phoneOut();
-        if (phoneWanted && motion.current.canPlay("Selfie") && Math.random() < SELFIE_CHANCE) {
-          changes.push([null, { label: "__selfie__", selfie: true }]);
-        }
+        // 这里原来还有一条**隐藏**的自动自拍：手机在手时，40% 的摸鱼会顺手拍一张
+        // （`SELFIE_CHANCE` + 一个 `__selfie__` 伪条目，`slot === null` 那条分支）。
+        //
+        // 自拍变成独立槽位之后它就是残留了 —— 用户明确问过"是不是有以前的残留代码会
+        // 调自拍和快速自拍"。现在自拍只有一条路：**槽位**。池子里配了就按池子抽，
+        // 没配就不拍，不再有"明明没配它却自己拍了一张"。
         for (const [slot, option] of changes) {
-          if (slot === null) {
-            // Not a slot choice: a one-shot reaction that parks like the rest.
-            const group = Math.random() < 0.5 ? "Selfie" : "SelfieQuick";
-            if (motion.current.canPlay(group)) {
-              motion.current.playOnce(group, 0, { kind: "fidget", hold: true, persist: true });
-            }
-            continue;
-          }
           fidgetTallyRef.current.picked[slot.id] = (fidgetTallyRef.current.picked[slot.id] ?? 0) + 1;
           const key = slot.id + ":" + (option === null ? "无" : option.label);
           fidgetTallyRef.current.drawn[key] = (fidgetTallyRef.current.drawn[key] ?? 0) + 1;
