@@ -131,6 +131,13 @@ dsh plugin --profile web add github:owner/repo#path:/<子目录>
   权限只需要 npmjs.com 的 Granular Token（packages: read and write，2FA 账号要勾 Bypass 2FA）。
 - **npm 发布后**：README 的安装命令换成 `dsh plugin --profile web add dsh-pet-live2d`；
   市场条目不用改，重新生成时会自动带上 npm 信息（install 命令变成 npm 那条）。
+- 脚本用 `--userconfig` 指向**临时那份最小配置**，所以本机
+  `npm config get registry` 指向镜像（`registry.npmmirror.com`）**不影响发布** ——
+  发布走的是默认的 npmjs ✓（日志里那行 `Publishing to https://registry.npmjs.org/` 是真的）。
+- **别拿"包级"接口判断发布是不是成功**：`curl …/dsh-pet-live2d`（packument）会命中 CDN 缓存，
+  发完几分钟还可能只列旧版本，害我以为发布失败、白查一轮。看**版本级**接口
+  `…/dsh-pet-live2d/<版本>`（200 就是上了），或者干脆再发一次 —— npm 会明确拒绝覆盖 ✓
+  （那条报错反而是"已经发布成功"的证据）。
 
 ### PowerShell 脚本一律写成纯 ASCII
 
