@@ -466,6 +466,67 @@ check('权重旋钮低调了（去边框去底色，不再是全行最抢眼的�
   wr !== null && wr.inputBorder === "0px" && wr.inputBg === "rgba(0, 0, 0, 0)", String(weightRow))
 check('权重数字居中（用户要的）', wr !== null && wr.align === "center", String(weightRow))
 
+// --- 面板跟随宿主主题（浅色模式下不该弹出深色面板）---------------------------
+// 用户报的："现在是浅色模式，点开却是深色面板"。面板是插件自己的表面，配色按
+// 宿主主题切：读侧边栏（取不到就 body/html）的底色算亮度，写成根节点的 data-theme。
+const readTheme = () => ev('(() => {'
+  + ' const root = document.querySelector("[data-dsh-live2d-pet]");'
+  + ' const panel = document.querySelector("[data-dsh-live2d-pet] [data-panel]");'
+  + ' if (!root || !panel) return null;'
+  + ' const cs = getComputedStyle(panel);'
+  + ' return JSON.stringify({ theme: root.getAttribute("data-theme"), bg: cs.backgroundColor, ink: cs.color }); })()')
+const darkTheme = await readTheme()
+const dt = darkTheme === null ? null : JSON.parse(darkTheme)
+check('面板跟着宿主主题走（测试壳是深色，面板就该是深色）',
+  dt !== null && dt.theme === "dark" && dt.bg === "rgba(22, 29, 46, 0.95)", String(darkTheme))
+// 把宿主刷成浅色：面板必须跟着变（这就是用户报的那条）。
+await ev('document.body.style.backgroundColor = "rgb(242,245,250)"')
+await sleep(500)
+const lightTheme = await readTheme()
+const lt = lightTheme === null ? null : JSON.parse(lightTheme)
+check('宿主切成浅色后，面板也变浅色（同一个 DOM，不再是写死的深色）',
+  lt !== null && lt.theme === "light" && lt.bg === "rgba(255, 255, 255, 0.94)", String(lightTheme))
+check('浅色下面板的文字颜色也跟着换（不是白底白字）',
+  lt !== null && dt !== null && lt.ink !== dt.ink, String(lightTheme))
+// 还原成**原来的颜色**，不是清成 ""：清空等于透明，探测就取不到底色、退回默认的
+// 浅色（第一版就是这么假红的 —— 还原这一步本身得还原对）。
+await ev('document.body.style.backgroundColor = "#101725"')
+await sleep(500)
+check('宿主改回深色，面板也跟着回深色',
+  (await ev('document.querySelector("[data-dsh-live2d-pet]").getAttribute("data-theme")')) === "dark")
+
+// --- 表情淡入：参数不是瞬间跳到位的 ------------------------------------------
+// 引擎那套表情管理器带 ~1s 交叉淡入，但多槽位叠加用不了它（一次只持有最后一个），
+// 所以参数是我们自己按帧写的、本来是瞬时的 —— 用户反馈的"表情没有淡入"就是这个。
+//
+// **在页面内按帧采样**：淡入只有 200ms，一次 CDP 往返就 100ms+，在外面轮询读到的是
+// 采样器不是产品（verification-signals 里那条）。这里让页面自己 rAF 记一串。
+const fadeSeries = await ev(`(async () => {
+  const api = window.__dshLive2dPet;
+  api.setExpressions([]);
+  await new Promise((r) => setTimeout(r, 300));
+  const samples = [];
+  const t0 = performance.now();
+  api.setExpressions(["墨镜"]);
+  await new Promise((resolve) => {
+    const tick = () => {
+      const hit = api.expressionFade().find((pair) => pair[0] === "ParamCheek71");
+      samples.push(hit ? hit[1] : null);
+      if (performance.now() - t0 < 320) requestAnimationFrame(tick);
+      else resolve();
+    };
+    requestAnimationFrame(tick);
+  });
+  api.setExpressions([]);
+  return JSON.stringify(samples);
+})()`)
+const fadeWeights = (fadeSeries === null ? [] : JSON.parse(fadeSeries)).filter((w) => typeof w === "number")
+check('表情是淡入的（首个采样帧没到 1，最后到 1）',
+  fadeWeights.length >= 2 && fadeWeights[0] < 1 && fadeWeights[fadeWeights.length - 1] === 1,
+  JSON.stringify(fadeWeights.slice(0, 10)))
+check('淡入是渐进的（中间帧落在 0 和 1 之间）',
+  fadeWeights.some((w) => w > 0 && w < 1), JSON.stringify(fadeWeights.slice(0, 10)))
+
 // 「默认」＝这个槽位这次不动。它是池子里的**普通一条**：不置顶、不置灰，
 // 删掉它就是"这个槽位每次摸鱼都得出点东西"。所以断言的是"能删 + 没被灰掉"，
 // **不是**"它排在第几" —— 锁死位置反而跟"不给它特殊待遇"矛盾。

@@ -347,6 +347,17 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
      * exactly what those expressions' "Add" blend means.
      */
     let expressionLayers = [];
+    /**
+     * 表情的淡入淡出进度：参数 id -> { value, blend, weight }。
+     *
+     * 每帧朝目标权重逼近：本帧在场的 → 1（淡入），不在场的 → 0（淡出）。
+     * 权重到 0 就**把这条丢掉、不再写它** —— 留着 weight 0 的条目会让
+     * "参数永远关不掉"重演一次，只不过这次是一直写 0（或者更糟：写一个已经
+     * 不再需要的基线）。
+     */
+    const expressionFade = new Map();
+    /** 上一帧的时间戳（算 dt 用）；0 表示还没有基准。 */
+    let expressionFadeAt = 0;
     /** The core model whose saveParameters hook is installed. */
     let hookedCore = null;
     /**
@@ -552,7 +563,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       } catch {
         /* a torn-down model */
       }
-      if (expressionLayers.length === 0 && sweepSpec === null && mouthFollow <= 0 && mouthLean === 0
+      if (expressionLayers.length === 0 && expressionFade.size === 0 && sweepSpec === null
+        && mouthFollow <= 0 && mouthLean === 0
         && releasedOverrides === null) {
         // The mouth contributes nothing at rest, and saying so is part of the
         // contract: leaving the last moving values here would report an open
@@ -626,13 +638,47 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           add(spec.rz, spec.ampZ * Math.sin(half));
           add(spec.z, 0.6);
         }
-        for (const layer of expressionLayers) {
-          const at = parameterIndex(core, layer.id);
-          if (at < 0) continue;
-          const current = values[at];
-          if (layer.blend === "Multiply") values[at] = current * layer.value;
-          else if (layer.blend === "Overwrite") values[at] = layer.value;
-          else values[at] = current + layer.value;
+        // ---- 表情层：带淡入淡出 ------------------------------------------
+        // 引擎那套表情管理器有 ~1s 的交叉淡入，但多槽位叠加用不了它（一次只持有
+        // 一个表达式），所以参数是我们自己写的，而自己写是瞬时的。这里补上缓动。
+        {
+          const now = (typeof performance !== "undefined" ? performance.now() : Date.now());
+          // 首帧没有基准，按 60fps 估一个；上限 200ms 是给"标签页被挂起再回来"
+          // 那种长间隔兜底 —— 否则回来第一帧就直接跳到终值，等于没有淡入。
+          const dt = expressionFadeAt === 0 ? 16 : Math.min(200, now - expressionFadeAt);
+          expressionFadeAt = now;
+          const step = dt / EXPRESSION_FADE_MS;
+          const live = new Set();
+          for (const layer of expressionLayers) {
+            if (layer === null || typeof layer.id !== "string") continue;
+            live.add(layer.id);
+            const entry = expressionFade.get(layer.id);
+            if (entry === undefined) {
+              // 首次出现：从 0 开始，这就是"淡入"。
+              expressionFade.set(layer.id, { value: layer.value, blend: layer.blend, weight: 0 });
+            } else {
+              entry.value = layer.value;
+              entry.blend = layer.blend;
+            }
+          }
+          for (const [id, entry] of Array.from(expressionFade)) {
+            const target = live.has(id) ? 1 : 0;
+            entry.weight = entry.weight < target
+              ? Math.min(target, entry.weight + step)
+              : Math.max(target, entry.weight - step);
+            if (target === 0 && entry.weight <= 0) expressionFade.delete(id);
+          }
+          for (const [id, entry] of expressionFade) {
+            const at = parameterIndex(core, id);
+            if (at < 0 || entry.weight <= 0) continue;
+            const w = entry.weight;
+            const current = values[at];
+            // 三种混合模式都要按权重插值，不能直接乘 —— Overwrite 乘权重会变成
+            // "写一个很小的值"，那比不淡入还糟。
+            if (entry.blend === "Multiply") values[at] = current * (1 + (entry.value - 1) * w);
+            else if (entry.blend === "Overwrite") values[at] = current * (1 - w) + entry.value * w;
+            else values[at] = current + entry.value * w;
+          }
         }
       } catch {
         /* a torn-down model: nothing to write */
@@ -1126,6 +1172,9 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         sustainTimer = 0;
         phaseMotionFor = () => undefined;
         expressionLayers = [];
+        // 淡入淡出的中间态也要清：换了宠物之后这些参数 id 属于上一个模型。
+        expressionFade.clear();
+        expressionFadeAt = 0;
         sweepSpec = null;
         hookedCore = null;
         drawnValues = null;
@@ -1153,6 +1202,13 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       sweepPosition: () => (sweepSpec === null ? null : sweepLast),
       /** Diagnostic: how many parameter writes the pinned set contributes. */
       expressionLayerCount: () => expressionLayers.length,
+      /**
+       * Diagnostic: 每个表情参数的淡入淡出进度（0–1）。
+       *
+       * 淡入是**时间**上的效果，光看"图层在不在"（expressionLayerCount）是看不出来的
+       * —— 断言只能读进度本身。
+       */
+      expressionFade: () => Array.from(expressionFade, ([id, entry]) => [id, Math.round(entry.weight * 1000) / 1000]),
       /**
        * Install the premise check for a motion group.
        *
@@ -1626,28 +1682,55 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     // Until the silhouette is known the whole box stays live, so the pet is
     // never inert; it degrades to the pre-mask behaviour instead of nothing.
     ROOT_SEL + " [data-stage][data-nomask]{pointer-events:auto;cursor:grab}",
-    ROOT_SEL + " [data-bubble]{position:absolute;left:50%;bottom:100%;transform:translateX(-50%);margin-bottom:6px;max-width:min(240px,60vw);width:max-content;padding:7px 11px;border-radius:12px;background:linear-gradient(160deg,rgba(38,52,84,.95),rgba(21,28,46,.95));border:1px solid rgba(120,170,255,.3);box-shadow:0 8px 24px rgba(0,0,0,.35);color:#e8eefc;font:400 12px/1.5 inherit;white-space:pre-wrap;pointer-events:none}",
+    // ---- 主题：面板 / 气泡的两套配色 ------------------------------------
+    // 面板和气泡是**我们自己的**表面，但宿主有浅色与深色两套主题，写死一套必然有一
+    // 边瞎（用户："现在是浅色模式，点开却是深色面板"）。
+    //
+    // 基准取**左侧边栏**的 backgroundColor（项目规则：主题色一律以它为准），
+    // 由 readHostTheme() 读出来写成根节点上的 `data-theme`，这里只负责配色。
+    ROOT_SEL + "{--pp-surface:rgba(22,29,46,.95);--pp-bubble-a:rgba(38,52,84,.95);"
+      + "--pp-bubble-b:rgba(21,28,46,.95);--pp-ink:#e8eefc;--pp-ink-strong:#eaf1ff;"
+      + "--pp-chip-ink:#dce6f8;--pp-muted:#9fb0cf;--pp-dim:#8ea3c8;--pp-faint:#7f90ad;"
+      + "--pp-line:rgba(120,170,255,.24);--pp-line-soft:rgba(120,170,255,.14);"
+      + "--pp-line-strong:rgba(160,200,255,.55);--pp-chip:rgba(255,255,255,.055);"
+      + "--pp-soft:rgba(255,255,255,.08);--pp-hover:rgba(255,255,255,.14);"
+      + "--pp-accent:rgba(120,170,255,.2);--pp-accent-2:rgba(120,170,255,.24);"
+      + "--pp-accent-3:rgba(120,170,255,.34);--pp-shadow:0 14px 40px rgba(0,0,0,.44);"
+      + "--pp-shadow-sm:0 8px 24px rgba(0,0,0,.35)}",
+    // 浅色：底色换白、墨色换近黑。强调色仍是同一个蓝，只把透明度降下来 ——
+    // 深底上合适的 20% 蓝放到白底上会发脏。
+    ROOT_SEL + "[data-theme='light']{--pp-surface:rgba(255,255,255,.94);"
+      + "--pp-bubble-a:rgba(255,255,255,.97);--pp-bubble-b:rgba(243,246,251,.97);"
+      + "--pp-ink:#1f2733;--pp-ink-strong:#101725;--pp-chip-ink:#26313f;"
+      + "--pp-muted:#5d6b82;--pp-dim:#6b7a91;--pp-faint:#7c8a9e;"
+      + "--pp-line:rgba(28,42,74,.16);--pp-line-soft:rgba(28,42,74,.1);"
+      + "--pp-line-strong:rgba(60,110,200,.45);--pp-chip:rgba(20,30,50,.045);"
+      + "--pp-soft:rgba(20,30,50,.05);--pp-hover:rgba(20,30,50,.09);"
+      + "--pp-accent:rgba(90,140,230,.15);--pp-accent-2:rgba(90,140,230,.18);"
+      + "--pp-accent-3:rgba(90,140,230,.26);--pp-shadow:0 14px 34px rgba(20,30,50,.18);"
+      + "--pp-shadow-sm:0 8px 20px rgba(20,30,50,.14)}",
+    ROOT_SEL + " [data-bubble]{position:absolute;left:50%;bottom:100%;transform:translateX(-50%);margin-bottom:6px;max-width:min(240px,60vw);width:max-content;padding:7px 11px;border-radius:12px;background:linear-gradient(160deg,var(--pp-bubble-a),var(--pp-bubble-b));border:1px solid var(--pp-line);box-shadow:var(--pp-shadow-sm);color:var(--pp-ink);font:400 12px/1.5 inherit;white-space:pre-wrap;pointer-events:none}",
     // Sits outside the pet's box entirely, so it must re-arm itself.
-    ROOT_SEL + " [data-panel]{position:absolute;right:calc(100% + 10px);bottom:0;width:270px;max-height:min(440px,72vh);display:flex;flex-direction:column;border-radius:14px;overflow:hidden;background:rgba(22,29,46,.95);backdrop-filter:blur(14px);border:1px solid rgba(120,170,255,.24);box-shadow:0 14px 40px rgba(0,0,0,.44);color:#e8eefc;font:400 12px/1.5 inherit;pointer-events:auto}",
-    ROOT_SEL + " [data-panel] header{display:flex;align-items:center;gap:6px;padding:9px 11px;border-bottom:1px solid rgba(120,170,255,.14);font-weight:600}",
-    ROOT_SEL + " [data-panel] header select{flex:1;min-width:0;background:rgba(255,255,255,.08);color:inherit;border:1px solid rgba(120,170,255,.24);border-radius:7px;padding:4px 6px;font:inherit}",
+    ROOT_SEL + " [data-panel]{position:absolute;right:calc(100% + 10px);bottom:0;width:270px;max-height:min(440px,72vh);display:flex;flex-direction:column;border-radius:14px;overflow:hidden;background:var(--pp-surface);backdrop-filter:blur(14px);border:1px solid var(--pp-line);box-shadow:var(--pp-shadow);color:var(--pp-ink);font:400 12px/1.5 inherit;pointer-events:auto}",
+    ROOT_SEL + " [data-panel] header{display:flex;align-items:center;gap:6px;padding:9px 11px;border-bottom:1px solid var(--pp-line-soft);font-weight:600}",
+    ROOT_SEL + " [data-panel] header select{flex:1;min-width:0;background:var(--pp-soft);color:inherit;border:1px solid var(--pp-line);border-radius:7px;padding:4px 6px;font:inherit}",
     ROOT_SEL + " [data-panel] header [data-title]{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
-    ROOT_SEL + " [data-panel] header [data-close]{margin-left:auto;flex:none;width:22px;height:22px;padding:0;line-height:1;border:0;border-radius:6px;background:transparent;color:#9fb0cf;font:400 15px/1 inherit;cursor:pointer}",
-    ROOT_SEL + " [data-panel] header [data-close]:hover{background:rgba(255,255,255,.14);color:#eaf1ff}",
+    ROOT_SEL + " [data-panel] header [data-close]{margin-left:auto;flex:none;width:22px;height:22px;padding:0;line-height:1;border:0;border-radius:6px;background:transparent;color:var(--pp-muted);font:400 15px/1 inherit;cursor:pointer}",
+    ROOT_SEL + " [data-panel] header [data-close]:hover{background:var(--pp-hover);color:var(--pp-ink-strong)}",
     // The panel is the whole UI now, so it also owns the hint that tells you
     // how to get rid of it.
-    ROOT_SEL + " [data-panel] [data-hintrow]{padding:0 10px 7px;color:#7f90ad;font-size:10px;line-height:1.5}",
+    ROOT_SEL + " [data-panel] [data-hintrow]{padding:0 10px 7px;color:var(--pp-faint);font-size:10px;line-height:1.5}",
     ROOT_SEL + " [data-panel] [data-tabs]{display:flex;gap:2px;padding:6px 8px 0}",
-    ROOT_SEL + " [data-panel] [data-tabs] button{flex:1;border:0;background:transparent;color:#9fb0cf;font:600 11px/2 inherit;border-radius:7px;cursor:pointer}",
-    ROOT_SEL + " [data-panel] [data-tabs] button[data-on]{background:rgba(120,170,255,.2);color:#eaf1ff}",
+    ROOT_SEL + " [data-panel] [data-tabs] button{flex:1;border:0;background:transparent;color:var(--pp-muted);font:600 11px/2 inherit;border-radius:7px;cursor:pointer}",
+    ROOT_SEL + " [data-panel] [data-tabs] button[data-on]{background:var(--pp-accent);color:var(--pp-ink-strong)}",
     ROOT_SEL + " [data-panel] [data-body]{flex:1;overflow:auto;padding:8px}",
     ROOT_SEL + " [data-panel] [data-group]{margin-bottom:9px}",
-    ROOT_SEL + " [data-panel] [data-group]>span{display:block;margin:0 0 4px 2px;color:#8ea3c8;font-size:10px;letter-spacing:.06em}",
+    ROOT_SEL + " [data-panel] [data-group]>span{display:block;margin:0 0 4px 2px;color:var(--pp-dim);font-size:10px;letter-spacing:.06em}",
     ROOT_SEL + " [data-panel] [data-chips]{display:flex;flex-wrap:wrap;gap:4px}",
-    ROOT_SEL + " [data-panel] [data-chips] button{border:1px solid rgba(120,170,255,.22);background:rgba(255,255,255,.055);color:#dce6f8;font:400 11px/1.5 inherit;padding:3px 8px;border-radius:999px;cursor:pointer;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
-    ROOT_SEL + " [data-panel] [data-chips] button:hover{background:rgba(120,170,255,.24)}",
-    ROOT_SEL + " [data-panel] [data-chips] button[data-on]{background:rgba(120,170,255,.34);border-color:rgba(160,200,255,.55)}",
-    ROOT_SEL + " [data-panel] footer{display:flex;align-items:center;gap:8px;padding:7px 10px;border-top:1px solid rgba(120,170,255,.14);color:#9fb0cf;font-size:11px}",
+    ROOT_SEL + " [data-panel] [data-chips] button{border:1px solid var(--pp-line);background:var(--pp-chip);color:var(--pp-chip-ink);font:400 11px/1.5 inherit;padding:3px 8px;border-radius:999px;cursor:pointer;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
+    ROOT_SEL + " [data-panel] [data-chips] button:hover{background:var(--pp-accent-2)}",
+    ROOT_SEL + " [data-panel] [data-chips] button[data-on]{background:var(--pp-accent-3);border-color:var(--pp-line-strong)}",
+    ROOT_SEL + " [data-panel] footer{display:flex;align-items:center;gap:8px;padding:7px 10px;border-top:1px solid var(--pp-line-soft);color:var(--pp-muted);font-size:11px}",
     ROOT_SEL + " [data-panel] footer input[type=range]{flex:1;min-width:0}",
     // 面板底部那根"大小"滑杆和设置页那排是同一套外观。
     ...sliderLook(ROOT_SEL + " [data-panel] footer input[type=range]"),
@@ -2591,6 +2674,17 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   const EXPRESSION_HOLD_MS = 12000;
 
   /**
+   * 表情淡入/淡出时长（ms）。
+   *
+   * 引擎自己的表情管理器带 ~1s 的交叉淡入，但这里**没有用它** —— 它一次只持有
+   * 一个表达式，多槽位叠加会只剩最后一个，所以参数是我们自己按帧写的，而自己写
+   * 是**瞬时**的。用户反馈的"表情没有淡入"就是这个。
+   *
+   * 200ms 足够软，又不会让断言在太长时间里读到半途的值。
+   */
+  const EXPRESSION_FADE_MS = 200;
+
+  /**
    * Motions that must never be picked as an idle "摸鱼" animation.
    *
    * These are the user's own interaction verbs: 重锤出击 is what a tap does and
@@ -2819,6 +2913,36 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   function reportGaze(target) {
     gazeSinkRef.current(target);
   }
+
+  /**
+   * 宿主现在是浅色还是深色。
+   *
+   * 基准取**左侧边栏**的 `backgroundColor`（项目规则：主题色一律以它为准），
+   * 取不到就往外套一层（[data-pane] → body → html），全透明也算取不到。
+   * 用亮度判深浅：0.299R + 0.587G + 0.114B，中值 0.5 是分界。
+   *
+   * 都取不到时按**浅色**处理 —— DSH 默认是浅色，猜深色会让浅色主题下先闪一下深色面板。
+   */
+  const readHostTheme = () => {
+    for (const selector of ['[data-pane="sidebar"]', "[data-pane]", "body", "html"]) {
+      const el = document.querySelector(selector);
+      if (el === null) continue;
+      let bg = "";
+      try {
+        bg = getComputedStyle(el).backgroundColor;
+      } catch {
+        continue;
+      }
+      const parts = /rgba?\(([^)]+)\)/.exec(bg);
+      if (parts === null) continue;
+      const nums = parts[1].split(",").map((n) => Number(n.trim()));
+      const [r, g, b] = nums;
+      if (!Number.isFinite(r) || !Number.isFinite(g) || !Number.isFinite(b)) continue;
+      if (nums.length > 3 && nums[3] === 0) continue; // 全透明：换个元素再看
+      return (0.299 * r + 0.587 * g + 0.114 * b) / 255 < 0.5 ? "dark" : "light";
+    }
+    return "light";
+  };
 
   function Pet() {
     const stageRef = useRef(null);
@@ -4105,6 +4229,39 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     // the next idle so a busy moment cannot make the mirror go stale).
     const [phase, setPhaseState] = useState("idle");
     /**
+     * 宿主主题（"light" / "dark"），写在根节点上给面板与气泡的配色用。
+     *
+     * 初值是浅色：DSH 默认浅色，宁可先浅一下，也别在浅色主题里先闪一个深色面板。
+     */
+    const [theme, setTheme] = useState("light");
+    useEffect(() => {
+      const sync = () => {
+        const next = readHostTheme();
+        setTheme((prev) => (prev === next ? prev : next));
+      };
+      sync();
+      // 宿主换主题的方式不止一种（换 class、换 data 属性、直接改 style），三种都盯
+      // 上；再加一个低频兜底 —— 漏掉一次就会一直显示错的那套配色。
+      const observer = new MutationObserver(sync);
+      for (const node of [document.documentElement, document.body]) {
+        if (node === null) continue;
+        try {
+          observer.observe(node, { attributes: true, attributeFilter: ["class", "style", "data-theme", "data-mode"] });
+        } catch { /* 观察不了就算，还有轮询兜底 */ }
+      }
+      const sidebar = document.querySelector('[data-pane="sidebar"]');
+      if (sidebar !== null) {
+        try {
+          observer.observe(sidebar, { attributes: true });
+        } catch { /* 同上 */ }
+      }
+      const timer = window.setInterval(sync, 2000);
+      return () => {
+        observer.disconnect();
+        window.clearInterval(timer);
+      };
+    }, []);
+    /**
      * The character's silhouette as CSS `clip-path` path data (requirement #5).
      * Empty until the alpha mask has been extracted; while empty the proxy is
      * hidden and the stage keeps its old full-box behaviour.
@@ -4443,6 +4600,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       "data-motion": motionGroup === "" ? "idle" : motionGroup,
       "data-gaze": gaze,
       "data-phase": phase,
+      // 宿主主题：面板与气泡的配色 token 按它切（见 CSS 里的 --pp-*）。
+      "data-theme": theme,
     },
       overlay !== null ? overlay : null,
       h("div", {
@@ -4675,24 +4834,29 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     if (entry.label === null || entry.label === undefined) return null;
     const key = slot.id + ":" + entry.label;
     const { pairs, requires } = relationsOf(slot.id, entry.label);
-    // 自己槽位的选项不能当关系：`同时` 指向本槽位 = 把自己换成另一个，没意义；
-    // `前提` 指向自己 = 永远满足不了。
-    const others = [];
-    for (const other of MANIFEST.current?.expressionSlots ?? []) {
-      if (other.id === slot.id) continue;
-      for (const option of other.options ?? []) {
-        if (option.label === entry.label) continue;
-        others.push({ slot: other.id, slotLabel: other.label, label: option.label });
+    // `同时` 指向本槽位 = 把自己换成另一个，没意义，所以本槽位的选项不进这一栏。
+    // `前提` 指向本槽位**是有意义的**：它是"必须先处于那个状态"，比如
+    // 「自拍 → 前提：右手 = 掏出手机」—— 同一个槽位的上一个状态。只排除它自己。
+    const others = (kind) => {
+      const out = [];
+      for (const other of MANIFEST.current?.expressionSlots ?? []) {
+        if (other.id === slot.id && kind === "pair") continue;
+        for (const option of other.options ?? []) {
+          if (option.label === entry.label) continue;
+          out.push({ slot: other.id, slotLabel: other.label, label: option.label });
+        }
       }
-    }
-    const options = (kind) => others
+      return out;
+    };
+    const options = (kind) => others(kind)
       .filter((item) => (kind === "pair"
         ? pairs[item.slot] !== item.label
         : !requires.some((row) => row.slot === item.slot && row.label === item.label)))
       .map((item) => h("option", {
         key: item.slot + ":" + item.label,
         value: kind + "|" + item.slot + "|" + item.label,
-      }, item.slotLabel + " = " + item.label));
+        // 本槽位的前提在显示上加一句说明，免得跟"同槽位互斥"混淆。
+      }, (item.slot === slot.id ? "（本槽位）" : item.slotLabel) + " = " + item.label));
     const pairOptions = options("pair");
     const requireOptions = options("require");
     if (pairOptions.length === 0 && requireOptions.length === 0) return null;

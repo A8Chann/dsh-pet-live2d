@@ -197,6 +197,16 @@
             "fidgetWeight": 1
           },
           {
+            "label": "自拍",
+            "motion": "Selfie",
+            "fidget": false
+          },
+          {
+            "label": "快速自拍",
+            "motion": "SelfieQuick",
+            "fidget": false
+          },
+          {
             "label": "喵喵手",
             "expressions": [
               "喵喵手"
@@ -544,12 +554,16 @@
     "motionGuards": {
       "Selfie": {
         "rhand": [
-          "掏出手机"
+          "掏出手机",
+          "自拍",
+          "快速自拍"
         ]
       },
       "SelfieQuick": {
         "rhand": [
-          "掏出手机"
+          "掏出手机",
+          "自拍",
+          "快速自拍"
         ]
       },
       "SprayWater": {
