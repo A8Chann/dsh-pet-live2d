@@ -57,9 +57,14 @@ const state = async (tag) => {
   const s = JSON.parse(await ev('JSON.stringify({'
     + ' motion: document.querySelector("[data-dsh-live2d-pet]").getAttribute("data-motion"),'
     + ' slots: window.__dshLive2dPet.slotSelections(),'
-    + ' bubble: window.__dshLive2dPet.drawn("chuipaopao") })'))
-  console.log(tag.padEnd(30), '| data-motion=' + String(s.motion).padEnd(10),
-    '| chuipaopao=' + s.bubble, '| 右手=' + (s.slots.rhand ?? '无'), '| 嘴部=' + (s.slots.mouth ?? '闭嘴'))
+    + ' bubble: window.__dshLive2dPet.drawn("chuipaopao"),'
+    + ' bubble2: window.__dshLive2dPet.drawn("chuipaopao2"),'
+    + ' phone: window.__dshLive2dPet.drawn("phone"),'
+    + ' kept: window.__dshLive2dPet.keptPoseDebug() })'))
+  console.log(tag.padEnd(30), '| motion=' + String(s.motion).padEnd(10),
+    '| 泡泡=' + s.bubble, '| 手机=' + s.phone,
+    '| 右手=' + (s.slots.rhand ?? '无'), '| 嘴部=' + (s.slots.mouth ?? '闭嘴'))
+  console.log(' '.repeat(32) + '保姿势: ' + JSON.stringify(s.kept))
   return s
 }
 

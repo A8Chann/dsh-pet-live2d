@@ -650,8 +650,11 @@ await sleep(300)
 await ev('window.__dshLive2dPet.fidgetNow()')
 await sleep(800)
 const poolAfter = await ev('window.__dshLive2dPet.fidgetTally().poolSize')
-check('权重 0 的槽位退出摸鱼池（池子少一个）',
-  String(poolBefore) !== String(poolAfter) && String(poolAfter).endsWith(String(Number(String(poolBefore).split("/")[1]) - 1)),
+// 权重 0 只是让**那一条**不参与，槽位本身还在池子里 —— 因为「默认」那条还有权重，
+// 而「默认」= 回到默认（它是要掷的）。这条原先是"槽位少一个"，那是"默认＝不动"时代的
+// 期望；现在改成断言"池子数不变、但那条再也不会被掷中"（下一条断言的就是后者）。
+check('权重 0 的那一条不再参与，但槽位本身还在池子里',
+  String(poolAfter).endsWith(String(Number(String(poolBefore).split("/")[1]))),
   poolBefore + ' -> ' + poolAfter)
 
 // --- 条目可增删（用户画的 ×/＋：列表本身是数据，不是固定项改数值）-----------
@@ -672,6 +675,24 @@ check('用 ＋ 能把它加回来',
   (await clickChip('[data-dsh-live2d-pet] [data-fidget-add="mouth"][data-add-option="吹泡泡糖"]')) === true
   && (await sleep(350), await ev('!!document.querySelector("[data-dsh-live2d-pet] [data-fidget-row=\'mouth:吹泡泡糖\']")')) === true)
 
+// --- 「默认」＝回到默认（清空这个槽位），不是"这次不动" -----------------------
+// 用户拿 `默认 10 : 脸红 1` 的池子指出过问题：那时「默认」被改成"这次不动"，于是脸红
+// 一旦被掷中（1/11）就**再也关不掉**，一直挂在脸上。现在掷到「默认」= 清空。
+// 用权重把两步都变成必然，不靠概率：先把「默认」压到 0、只留脸红 → 必定掷中脸红；
+// 再把脸红压到 0、放回「默认」→ 必定掷到「默认」→ 脸红必须被清掉。
+const cheekOn = async () => JSON.parse(await ev('JSON.stringify(window.__dshLive2dPet.slotSelections())'))
+check('把「默认」压到 0、脸红拉到 1（这样必定掷中脸红）',
+  (await setWeight("cheek:__none", 0)) === true && (await setWeight("cheek:脸红", 1)) === true)
+await ev('window.__dshLive2dPet.fidgetNow()')
+await sleep(800)
+check('摸鱼把脸红掷中了', (await cheekOn()).cheek === "脸红", JSON.stringify(await cheekOn()))
+check('再把脸红压到 0、放回「默认」（这样必定掷到「默认」）',
+  (await setWeight("cheek:脸红", 0)) === true && (await setWeight("cheek:__none", 1)) === true)
+await ev('window.__dshLive2dPet.fidgetNow()')
+await sleep(800)
+check('掷到「默认」就把脸红清掉了（不是"这次不动"，那会造成"掷中过一次就永远关不掉"）',
+  (await cheekOn()).cheek === undefined, JSON.stringify(await cheekOn()))
+
 // --- 「默认」＝这次不动：手选的东西不该被摸鱼擦掉 -----------------------------
 // 用户报的"掏出手机后冒爱心的氛围为什么没有了"。复现出来是这样的：摸鱼每隔一二十秒
 // 把每个槽位重掷一次，掷到「默认」就走 chooseSlotOption(slot, null) 把槽位**清空**
@@ -683,21 +704,34 @@ await slotPick("eyes", "爱心眼")
 await sleep(300)
 check('先点亮爱心眼（它会配对点亮冒爱心）',
   (await pins()).includes("冒爱心"), JSON.stringify(await pins()))
-for (let i = 0; i < 3; i += 1) {
-  await ev('window.__dshLive2dPet.fidgetNow()')
-  await sleep(700)
-}
-const heartAfter = await pins()
-const eyesAfter = JSON.parse(await ev('JSON.stringify(window.__dshLive2dPet.slotSelections())'))
-check('连做 3 次摸鱼之后，手选的爱心眼还在（「默认」不再清空槽位）',
-  eyesAfter.eyes === "爱心眼" && heartAfter.includes("爱心眼"), JSON.stringify(eyesAfter))
-check('配对的冒爱心也还在（"一起点亮"不该被摸鱼从侧面拆掉）',
-  heartAfter.includes("冒爱心"), JSON.stringify(heartAfter))
 // 「同时」是**不变量**：手动去清配对目标，它也得回来 —— 用户报的"一直出不来"就是
 // 配对被清掉一次之后就再也没人点亮它了。
 await slotPick("heart", "无")
 await sleep(700)
 check('手动清掉被配对钉住的槽位，配对会把它补回来（不变量）',
+  (await pins()).includes("冒爱心"), JSON.stringify(await pins()))
+// 摸鱼**可以**把眼睛槽掷回「默认」（那是池子自己的意思，权重就是干这个的）—— 但掷到
+// 「默认」必须**真的清掉**。用权重把它变成必然：眼睛槽的池子压成只剩「默认」。
+// 权重输入框在**设置**页的摸鱼表里，所以要先切回去。
+await pickTab("设置")
+await sleep(600)
+check('把眼睛槽的池子压成只剩「默认」',
+  (await setWeight("eyes:爱心眼", 0)) === true, 'eyes:爱心眼')
+check('  （「默认」那条放回 1）',
+  (await setWeight("eyes:__none", 1)) === true, 'eyes:__none')
+await ev('window.__dshLive2dPet.fidgetNow()')
+await sleep(800)
+const eyesRolled = JSON.parse(await ev('JSON.stringify(window.__dshLive2dPet.slotSelections())'))
+check('掷到「默认」就把爱心眼清掉了（"掷中过一次就永远关不掉"是老 bug）',
+  eyesRolled.eyes === undefined, JSON.stringify(eyesRolled))
+check('源头清掉之后，配对的冒爱心也跟着收（配对跟着源头走）',
+  (await pins()).includes("冒爱心") === false, JSON.stringify(await pins()))
+// 再选一次爱心眼 → 冒爱心必须回来（这是"配对不对再丢"的正面证据）。
+await pickTab("装扮")
+await sleep(600)
+await slotPick("eyes", "爱心眼")
+await sleep(600)
+check('重新选中爱心眼 → 冒爱心立刻回来',
   (await pins()).includes("冒爱心"), JSON.stringify(await pins()))
 // --- 「有动作冒爱心就失效」的回归 ---------------------------------------------
 // `love` 只是**开关**，爱心的**位置**是爱心左/右那 58 个 `j*`，而只有待机循环在驱动
@@ -715,8 +749,8 @@ await ev('window.__dshLive2dPet.playIdle()')
 await sleep(3500)
 await slotPick("rhand", "掏出手机")
 const heartFrames = []
-for (let i = 0; i < 5; i += 1) {
-  await sleep(300)
+for (let i = 0; i < 10; i += 1) {
+  await sleep(200)
   heartFrames.push(await readHearts())
 }
 check('动作定格时爱心的位置参数没塌成 0（塌了就是"开着开关却看不见"）',
@@ -724,8 +758,10 @@ check('动作定格时爱心的位置参数没塌成 0（塌了就是"开着开�
 // 「不能只是冻住」：只写回一份静态快照也能过上面那条，但用户一眼就看出"它不动了"，
 // 所以这条断言的是"帧与帧之间不一样"。
 const heartShapes = new Set(heartFrames.map((f) => f.map((v) => Math.round((v ?? 0) * 100)).join(',')))
+// 阈值只要求"不一样"（≥2）：这条要抓的回归是"整个冻住"（=1 种形状），不是动画快慢；
+// 定成 3 会随 headless 的低帧率假红过一次。
 check('定格时爱心还在动（回放待机录下来的那份，不是冻住的一帧）',
-  heartShapes.size >= 3, heartShapes.size + ' 种形状 / ' + heartFrames.length + ' 次采样 | '
+  heartShapes.size >= 2, heartShapes.size + ' 种形状 / ' + heartFrames.length + ' 次采样 | '
   + await ev('JSON.stringify(window.__dshLive2dPet.ambientDebug())'))
 check('定格时开关仍是开的（love=1）',
   (await ev('window.__dshLive2dPet.drawn("love")')) === 1,

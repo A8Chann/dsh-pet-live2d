@@ -223,8 +223,11 @@ check('两个一起测：先吹起泡泡', (await until(async () => (await drawn
   'drawn=' + (await drawn('chuipaopao')))
 await clickSlot('rhand', '掏出手机')
 const phoneTogether = await until(async () => ((await drawn('phone')) ?? 0) > 0.5)
-check('再掏出手机（身体只有一个动作在播，泡泡被还原按住）',
-  phoneTogether === true && (await drawn('chuipaopao')) === 0,
+// 两个槽位各选一个动作时，**两个姿势同时存在**（身体只播一个，但姿势不冲突：
+// phone* 和 chuipaopao* 两组参数不相交）。这条原先是"泡泡被还原按住 = 0"，那是
+// "拍手机就把泡泡顶掉"的旧行为 —— 用户报过"掏出手机跟吹泡泡糖又冲突起来了"。
+check('再掏出手机 → 手机在手里，泡泡也还在（两个姿势共存）',
+  phoneTogether === true && (await drawn('chuipaopao')) === 1,
   'phone=' + (await drawn('phone')) + ' chuipaopao=' + (await drawn('chuipaopao')))
 await clickSlot('rhand', null)
 await sleep(1200)

@@ -129,6 +129,21 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     let ambientCursor = 0;
     /** 待机一个周期多长（录像按它截断，回放的接缝才对得上）。 */
     let ambientPeriodMs = 4000;
+    /**
+     * 别的槽位还选着动作时，要替它们保住的姿势。
+     *
+     * 身体只有一个动作（引擎一次只播一个），但**姿势可以同时存在**：`掏出手机` 驱动
+     * `phone*` 五个参数、`吹泡泡糖` 驱动 `chuipaopao*` 八个，两组本来就不相交。默认的
+     * 交接逻辑会把上一个动作写过的参数**还原**掉，于是"点吹泡泡糖 → 手机没了"（用户报
+     * 的"掏出手机跟吹泡泡糖又冲突起来了"）。
+     *
+     * 这里按 group 录下每个动作最后一帧写过什么，轮到"另一个槽位还在选它、但它不是当前
+     * 动作"时，把那一帧写回去。
+     */
+    let keptPoses = [];
+    const poseSnapshots = new Map();
+    /** 参数名 -> 下标 的缓存（见 parameterIndex）。 */
+    const paramIndexCache = new Map();
     /** ~5 秒 @60fps，够盖住这只模型 4 秒的待机循环。 */
     const AMBIENT_TRACE_MAX = 300;
     /**
@@ -322,10 +337,16 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
      * runtimes the engine supports.
      */
     const parameterIndex = (core, id) => {
+      const raw = core?._model?.parameters;
+      if (raw === undefined || raw === null) return -1;
+      // 缓存：`Array.from(raw.ids)` 每次都**新建一个数组**，而帧内按 id 查找的次数是
+      // 上百次（氛围录像一帧 84 次 + 姿势录制 + 表情层），不缓存就是白烧 CPU。
+      const hit = paramIndexCache.get(id);
+      if (hit !== undefined && hit.raw === raw) return hit.at;
       try {
-        const raw = core?._model?.parameters;
-        if (raw === undefined || raw === null) return -1;
-        return Array.from(raw.ids).indexOf(id);
+        const at = Array.from(raw.ids).indexOf(id);
+        paramIndexCache.set(id, { raw, at });
+        return at;
       } catch {
         return -1;
       }
@@ -524,6 +545,42 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
      * 引擎自己的视线跟随和物理摆动每帧都在写 ParamAngle* / ParamEye* / ParamMouth*，
      * 把它们钉住会让宠物僵掉 —— 实测挤番茄酱收回之后头就不再跟着鼠标转。
      */
+    /**
+     * 录下当前动作写过的参数（最后一帧的姿势），供 applyKeptPoses 回放。
+     *
+     * 在帧内读的是**上一帧**的输出（我们的缝在动作更新之前），差一帧无所谓 ——
+     * 定格的动作本来就在最后一帧停着。
+     */
+    const recordPose = (core, values) => {
+      const entry = currentEntry;
+      if (entry === null) return;
+      // **永远录当前动作**，不能等"有人要保"才录：先播的那个动作（掏出手机）在后一个
+      // 动作开始时就停了，那时再录已经是空的。
+      const frame = poseSnapshots.get(entry.group) ?? {};
+      for (const id of entry.params ?? []) {
+        const at = parameterIndex(core, id);
+        if (at >= 0) frame[id] = values[at];
+      }
+      poseSnapshots.set(entry.group, frame);
+    };
+
+    /**
+     * 把"别的槽位还选着的动作"的姿势写回去 —— 右手拿着手机的同时嘴部吹泡泡糖。
+     *
+     * 写在 applyRelease **之后**（否则会被还原表顶掉），表达式层之前（表情仍然最大）。
+     */
+    const applyKeptPoses = (core, values) => {
+      if (keptPoses.length === 0 || values === null) return;
+      for (const group of keptPoses) {
+        const frame = poseSnapshots.get(group);
+        if (frame === undefined) continue;
+        for (const id of Object.keys(frame)) {
+          const at = parameterIndex(core, id);
+          if (at >= 0) values[at] = frame[id];
+        }
+      }
+    };
+
     const applyRelease = (values, core) => {
       if (releasedOverrides === null || values === null) return;
       for (const id of Object.keys(releasedOverrides)) {
@@ -650,12 +707,16 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         // 氛围参数也一样：**必须在早退之前**。动作定格时这一层是唯一还在写它们的人，
         // 漏在这里就是"开关开着、爱心全没了"。
         preserveAmbient(core, core._model.parameters.values);
+        applyKeptPoses(core, core._model.parameters.values);
+        recordPose(core, core._model.parameters.values);
         return;
       }
       try {
         const values = core._model.parameters.values;
         applyRelease(values, core);
         preserveAmbient(core, values);
+        applyKeptPoses(core, values);
+        recordPose(core, values);
         // The mouth follows the pointer too. It has to be written per frame —
         // setting it once from the pointermove handler would be overwritten by
         // the very next frame the motion system runs.
@@ -1239,6 +1300,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         ambientSaved = null;
         ambientTrace = [];
         ambientCursor = 0;
+        poseSnapshots.clear();
+        paramIndexCache.clear();
         const idleDuration = idleName === null ? 0 : (groups[idleName]?.[0]?.duration ?? 0);
         ambientPeriodMs = idleDuration > 0 ? idleDuration : 4000;
         // Locate the head once, from the model's own geometry; it is stored in
@@ -1492,6 +1555,19 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       }),
       /** Diagnostic: the normalized gaze target the pointer last produced. */
       gazeTarget: () => gazeTarget,
+      /**
+       * 别的槽位还选着动作时，替它们保住姿势（见 keptPoses 的注释）。
+       *
+       * 由组件在每次 `chooseSlotOption` 里重算并传进来：清掉某个槽位就等于把它从这张
+       * 名单里去掉，它写过的手就交还出去。
+       */
+      setKeptPoses(groups) {
+        keptPoses = Array.isArray(groups) ? groups.filter((g) => typeof g === "string") : [];
+        // **不清录像**：名单空掉之后还会再有（先掏出手机、再吹泡泡糖），那时需要的是
+        // 掏出手机**当时**录下的那一帧。录像是"永远录当前动作"，所以它一直都在。
+      },
+      /** Diagnostic: 正在替哪些动作保姿势。 */
+      keptPoseDebug: () => ({ kept: keptPoses.slice(), snapshots: Array.from(poseSnapshots.keys()) }),
       setExpressionApplier(fn) {
         applyExpression = typeof fn === "function" ? fn : null;
       },
@@ -4022,6 +4098,15 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           }
         }
       }
+      // 身体只有一个动作，但**姿势可以同时存在**：别的槽位还选着动作时，替它们把最后
+      // 一帧的姿势写回去（掏出手机 + 吹泡泡糖，两组参数不相交）。清掉那个槽位就等于把
+      // 它从名单里去掉，它写过的手会交还出去。
+      const keepGroups = [];
+      for (const other of petRef.current?.expressionSlots ?? []) {
+        const found = motionOf(other.id);
+        if (found !== null && found !== desired && keepGroups.indexOf(found) === -1) keepGroups.push(found);
+      }
+      motion.current.setKeptPoses(keepGroups);
       const previous = slotMotionRef.current;
       slotMotionRef.current = desired;
       // 只在"该播的动作真的换了"时才播 —— 原来还有个 `|| option !== null`，
@@ -4352,15 +4437,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           schedule();
           return;
         }
-        // 被别人的「同时」钉住的槽位，这一轮不抽：`爱心眼 → 冒爱心` 是"选了它就一起
-        // 点亮"，摸鱼不该从侧面把它拆掉 —— 那是配对，不是另一个可以随便改的槽位。
-        const pairedInto = new Set();
-        for (const [slotId, label] of Object.entries(slotSelectionsRef.current)) {
-          const option = slotByIdRef.current.get(slotId)?.options.find((o) => o.label === label);
-          if (option === undefined) continue;
-          for (const target of Object.keys(relationsOf(slotId, label).pairs)) pairedInto.add(target);
-        }
-        const slots = fidgetSlotsFor(pet).filter((slot) => !pairedInto.has(slot.id));
+        const slots = fidgetSlotsFor(pet);
         if (slots.length === 0) {
           schedule();
           return;
@@ -4390,10 +4467,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           }
           return out;
         };
-        const usable = (slot) => entriesOf(slot).map((pair) => pair[0]).filter((option) => option !== null);
-        // Weighted draw over "leave it alone" plus the usable options. The mouth
-        // carries a heavy fidgetNone so the pet mostly looks normal rather than
-        // pulling a face every time it idles.
+        // Weighted draw over the entries (选项 | 「默认」) — see `draw`.
         const draw = (slot) => {
           // 条目已经是 (选项|null, 权重)，直接加权抽 —— 增删条目就是改池子本身。
           const entries = entriesOf(slot);
@@ -4407,7 +4481,10 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           }
           return entries[entries.length - 1][0];
         };
-        const pool = slots.filter((slot) => usable(slot).length > 0);
+        // 只要池子里还有**有份量的东西**就参与抽签。注意「默认」本身算数：它就是"回到
+        // 默认"，一个只剩「默认」的池子仍然要掷 —— 否则用户把选项权重都压到 0 之后，
+        // 那个槽位就再也不会被清空（曾经用 `usable()` 过滤掉纯「默认」池，正是这个坑）。
+        const pool = slots.filter((slot) => entriesOf(slot).length > 0);
         fidgetTallyRef.current.poolSize = slots.length + "/" + pool.length;
         if (pool.length === 0) { schedule(); return; }
         // 每个池子各自 roll 一次 —— 手部、情绪、脸红、嘴、眼睛**同时**摇，
@@ -4437,16 +4514,14 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           fidgetTallyRef.current.picked[slot.id] = (fidgetTallyRef.current.picked[slot.id] ?? 0) + 1;
           const key = slot.id + ":" + (option === null ? "无" : option.label);
           fidgetTallyRef.current.drawn[key] = (fidgetTallyRef.current.drawn[key] ?? 0) + 1;
-          // 抽到「默认」= **这次不动**，不是"清空这个槽位"。
+          // 抽到「默认」= **回到默认**（把这个槽位清成 none），不是"这次不动"。
           //
-          // 以前这里照样调 chooseSlotOption(slot, null)，于是摸鱼每隔一二十秒就把每个
-          // 槽位擦一遍：用户手选的爱心眼被清掉，配对点亮的冒爱心跟着消失（用户报的
-          // "掏出手机后冒爱心为什么没了"）。不动就是不动 —— 想让它清空，把这条从池子
-          // 里删掉、或者手动点「无」。
+          // 曾经把它改成"不动"（为了修"摸鱼把用户手选的爱心眼擦掉"），结果制造了一个更
+          // 糟的坑：**掷中过的选项再也回不去**。用户拿 `默认 10 : 脸红 1` 的池子证明给我
+          // 看 —— 脸红一旦被掷中（1/11）就一直挂在脸上，因为"不动"永远不会关掉它。
           //
-          // 但**计数照记**（记成 `<槽位>:无`）：诊断要能回答"这个槽位多久动一次"，
-          // 跳过的抽签也是抽签。
-          if (option === null) continue;
+          // 现在语义回到"清空"，配对那边由 applyExpressions 的不变量兜着：爱心眼还在
+          // 选中，冒爱心就不会丢；眼睛被掷回默认，冒爱心跟着走（那本来就是配对的意思）。
           chooseSlotOptionRef.current(slot, option);
         }
         schedule();
