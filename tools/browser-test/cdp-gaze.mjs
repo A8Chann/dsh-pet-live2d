@@ -356,8 +356,10 @@ check('tool 相位的槽位 = pet.json 里那四个（鲸鱼/右手/左手/符�
 const hasFidgetUi = await ev('!!document.querySelector(' + JSON.stringify(probe('[data-pool-slot="mouth"] input[data-fidget-weight]')) + ')')
 check('DSH 设置页有「摸鱼」权重输入', hasFidgetUi === true)
 // 设置页那一节在宠物根节点之外，必须有自己的样式（曾经整节都是裸控件）。
+// 判据选「＋ 关系」下拉：它按设计就该有描边。**别拿 input[type=number] 当判据** ——
+// 权重旋钮按设计是无边框的（P1：视觉重量让给概率条），用它判"有没有样式"必然假红。
 const sectionStyled = await ev('(() => {'
-  + ' const s = document.querySelector(' + JSON.stringify(probe('[data-pool-slot] select, [data-pool-slot] input[type=number]')) + ');'
+  + ' const s = document.querySelector(' + JSON.stringify(probe('[data-relation-add]')) + ');'
   + ' if (!s) return null;'
   + ' const cs = getComputedStyle(s);'
   + ' return JSON.stringify({ border: cs.borderTopWidth, font: cs.fontSize }); })()')
@@ -427,17 +429,41 @@ check('权重输入框是 border-box（不然列宽量的是内容，padding 另
 check('「＋ 关系」下拉也是 border-box（74px 列同样会被撑爆）',
   rowGeo !== null && rowGeo.relation !== null && rowGeo.relation.box === "border-box",
   String(rowGeometry))
-// 摸鱼加槽位按钮：漏了 data-add-option 就会掉出药丸样式，变成裸按钮。
-const slotAddStyle = await ev('(() => {'
-  + ' const el = document.querySelector("[data-dsh-live2d-pet] [data-fidget-slot-add]");'
-  + ' if (!el) return null;'
-  + ' const cs = getComputedStyle(el);'
-  + ' return JSON.stringify({ pill: el.hasAttribute("data-add-option"),'
-  + ' border: cs.borderTopStyle, radius: cs.borderTopLeftRadius }); })()')
+// 「加槽位」和「加候选」是两种动作（新建一张表 vs 往这张表加一条），所以药丸必须
+// 长得不一样 —— 以前两者同为虚线，点错了后果还不同。这里直接断言两者边框不同。
+const chipKinds = await ev('(() => {'
+  + ' const slot = document.querySelector("[data-dsh-live2d-pet] [data-fidget-slot-add]");'
+  + ' const cand = document.querySelector("[data-dsh-live2d-pet] [data-pool-add]");'
+  + ' if (!slot || !cand) return null;'
+  + ' const s = getComputedStyle(slot); const c = getComputedStyle(cand);'
+  + ' return JSON.stringify({ slotPill: slot.hasAttribute("data-add-option"),'
+  + ' slotMark: slot.hasAttribute("data-slot-chip"), slotBorder: s.borderTopStyle,'
+  + ' candBorder: c.borderTopStyle, radius: s.borderTopLeftRadius }); })()')
+const ck = chipKinds === null ? null : JSON.parse(chipKinds)
 check('摸鱼下面的加槽位按钮是药丸样式（不是裸按钮）',
-  slotAddStyle !== null && JSON.parse(slotAddStyle).pill === true
-  && JSON.parse(slotAddStyle).border === "dashed",
-  String(slotAddStyle))
+  ck !== null && ck.slotPill === true && ck.radius === "999px", String(chipKinds))
+check('「加槽位」和「加候选」的药丸长得不一样（实线 vs 虚线）',
+  ck !== null && ck.slotMark === true && ck.slotBorder === "solid" && ck.candBorder === "dashed"
+  && ck.slotBorder !== ck.candBorder, String(chipKinds))
+
+// --- P1：视觉重量要跟着信息重量走 --------------------------------------------
+// 这一行真正有用的是"抽中概率"，所以条是主角、占比数字紧随；权重原始值只是旋钮，
+// 原来却是全行最抢眼的带框数字（正好倒挂）。
+const weightRow = await ev('(() => {'
+  + ' const row = document.querySelector(' + JSON.stringify(probe('[data-phase-pool-row="tool:rhand:写本本"]')) + ');'
+  + ' if (!row) return null;'
+  + ' const share = row.querySelector("[data-share]");'
+  + ' const bar = row.querySelector("[data-weight-bar]>i");'
+  + ' const input = row.querySelector("input[type=number]");'
+  + ' const cs = getComputedStyle(input);'
+  + ' return JSON.stringify({ text: share ? share.textContent : null,'
+  + ' barWidth: bar ? bar.style.width : null,'
+  + ' inputBorder: cs.borderTopWidth, inputBg: cs.backgroundColor }); })()')
+const wr = weightRow === null ? null : JSON.parse(weightRow)
+check('权重行标出了抽中概率（占比数字，不是只有原始权重）',
+  wr !== null && /^\d+%$/.test(wr.text || "") && wr.barWidth === wr.text, String(weightRow))
+check('权重旋钮低调了（去边框去底色，不再是全行最抢眼的东西）',
+  wr !== null && wr.inputBorder === "0px" && wr.inputBg === "rgba(0, 0, 0, 0)", String(weightRow))
 
 // --- 相位池：条目可增删，而且是**随机抽**的 --------------------------------
 const clickProbe = (selector) => ev('(() => { const el = document.querySelector(' + JSON.stringify(probe(selector))
@@ -695,6 +721,21 @@ check('能删掉那一行相位',
 // --- 摸鱼节奏 + 装扮存档开关 -----------------------------------------------
 const hasFidgetGap = await ev('!!document.querySelector("#dsh-settings-probe [data-input=\'fidgetQuietMs\']")')
 check('设置页有「摸鱼节奏」那一组（静置多久开始）', hasFidgetGap === true)
+// 节奏（多久摸一次）和池子（摸鱼做什么）是同一件事的两半，必须在同一张卡里 ——
+// 原来被「会话相位」隔成两张卡，调摸鱼要上下跳。
+const mergedCard = await ev('(() => {'
+  + ' const el = document.querySelector("#dsh-settings-probe [data-input=\'fidgetQuietMs\']");'
+  + ' const pool = document.querySelector("#dsh-settings-probe [data-setting=\'fidget-pools\']");'
+  + ' if (!el || !pool) return "missing";'
+  + ' const rhythmCard = el.closest("[data-card]");'
+  + ' const poolCard = pool.closest("[data-card]");'
+  + ' return JSON.stringify({ same: rhythmCard === poolCard, key: rhythmCard?.getAttribute("data-card")'
+  + ' , order: rhythmCard === poolCard ? [...rhythmCard.querySelectorAll("[data-setting]")].map((n) => n.getAttribute("data-setting")) : []'
+  + ' , rhythmFirst: poolCard === rhythmCard ? [...rhythmCard.querySelectorAll("[data-input],[data-pool-row]")].indexOf(el) < [...rhythmCard.querySelectorAll("[data-input],[data-pool-row]")].indexOf(poolCard.querySelector("[data-pool-row]")) : false }); })()')
+check('「多久摸一次」和「摸鱼做什么」在同一张卡里，且节奏在上',
+  mergedCard !== "missing" && JSON.parse(mergedCard).same === true
+  && JSON.parse(mergedCard).key === "pools" && JSON.parse(mergedCard).rhythmFirst === true,
+  String(mergedCard))
 const setGap = await ev('(() => {'
   + ' const el = document.querySelector("#dsh-settings-probe [data-input=\'fidgetQuietMs\']");'
   + ' if (!el) return false;'

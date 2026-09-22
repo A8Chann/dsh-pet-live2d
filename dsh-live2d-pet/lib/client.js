@@ -1651,6 +1651,11 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     ROOT_SEL + " [data-panel] footer input[type=range]{flex:1;min-width:0}",
     // 面板底部那根"大小"滑杆和设置页那排是同一套外观。
     ...sliderLook(ROOT_SEL + " [data-panel] footer input[type=range]"),
+    // 面板只有 270px 宽，条目行的固定列要收一档，占比数字让位（条本身还在）——
+    // 五列按设置页的宽度会把标签挤没。
+    ROOT_SEL + " [data-settings] [data-pool-row]"
+      + "{grid-template-columns:minmax(0,1fr) 72px 34px 18px 58px;gap:4px}",
+    ROOT_SEL + " [data-settings] [data-share]{display:none}",
     ROOT_SEL + " [data-panel] footer [data-sizelabel]{min-width:42px;text-align:right;font-variant-numeric:tabular-nums}",
     ROOT_SEL + " [data-panel] footer button{border:0;background:transparent;color:#9fb0cf;font:inherit;cursor:pointer}",
     ROOT_SEL + " [data-hint]{position:absolute;inset:0;display:grid;place-items:center;padding:12px;text-align:center;color:#c3cee6;font-size:12px;line-height:1.6}",
@@ -1700,42 +1705,55 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     scope + " [data-card-body]{padding:9px 11px}",
     scope + " [data-card-body]:empty{display:none}",
 
-    // ---- 行：标签 / 权重条 / 数值 / × ----------------------------------
+    // ---- 行：标签 / 权重（条+占比）/ 权重值 / × / ＋关系 ----------------
     // 用通用标记 `[data-pool-row]`（两张表都带），不是各自的唯一键属性 ——
     // 否则这里得把两个属性名都抄一遍，抄漏一个就是"那一层没排版"。
+    //
+    // **列宽只由 grid 说了算**：输入框/下拉一律 width:100% 填满自己的格子。
+    // 之前 input 自己写着 width:44px，实际（padding+border）占 58px，比 grid 的
+    // 列宽，就漫出来压住了 ×。
     scope + " [data-field],"
-      + scope + " [data-pool-row]{display:grid;align-items:center;gap:8px;padding:2px 0}",
+      + scope + " [data-pool-row]{display:grid;align-items:center;gap:6px;padding:2px 0}",
     scope + " [data-field]{grid-template-columns:104px 1fr 46px}",
-    scope + " [data-pool-row]{grid-template-columns:1fr 72px 44px 22px 74px}",
+    // 标签给固定宽、**条那一格吃掉剩下的空间**：条是这一行的主视觉（概率分布），
+    // 拉长才好横向比；标签留 1fr 会把条挤到右边，中间空一大片。
+    scope + " [data-pool-row]{grid-template-columns:120px minmax(60px,1fr) 40px 18px 64px}",
     // 没有关系的条目：关系块是空的，`grid-column:1/-1` 的空元素不占高度（下面那条），
     // 于是整条就是干干净净一行。
     scope + " [data-relations]:empty{display:none}",
     scope + " [data-row-label]{font-size:11px;opacity:.85;overflow:hidden;"
       + "text-overflow:ellipsis;white-space:nowrap}",
 
-    // ---- 权重条：一眼看出这个池子的概率分布 ----------------------------
+    // ---- 权重：一眼看出这个池子的概率分布 ------------------------------
+    // 视觉重量要跟着**信息**重量走：这一行真正有用的是"抽中概率"，所以条是主角
+    // （加粗、填色），占比数字紧随其后；而权重原始值只是个旋钮，收成行尾一行小字
+    // （它以前是全行最抢眼的带框数字，正好倒挂）。
+    scope + " [data-weight-cell]{display:flex;align-items:center;gap:6px;min-width:0}",
     // `display:block` 不能省：span 默认是 inline，高度会被直接忽略 —— 表现是
     // "权重条根本没渲染出来"，而 DOM 里它明明在。
-    scope + " [data-weight-bar]{display:block;position:relative;height:5px;"
+    scope + " [data-weight-bar]{display:block;position:relative;height:6px;flex:1;min-width:0;"
       + "border-radius:999px;background:rgba(127,127,127,.2);overflow:hidden}",
     scope + " [data-weight-bar]>i{display:block;height:100%;border-radius:999px;"
-      + "background:rgba(120,170,255,.8);transition:width .12s ease-out}",
+      + "background:rgba(120,170,255,.85);transition:width .12s ease-out}",
+    scope + " [data-share]{flex:0 0 32px;text-align:right;font-size:10px;opacity:.55;"
+      + "font-variant-numeric:tabular-nums}",
     scope + " [data-pool-row][data-off] [data-weight-bar]>i{background:rgba(127,127,127,.5)}",
     scope + " [data-pool-row][data-off] [data-row-label]{opacity:.45;text-decoration:line-through}",
 
     // ---- 输入控件 ------------------------------------------------------
-    // `box-sizing` 不能省：输入框和下拉默认是 content-box，`width:44px` 只量内容、
-    // padding 和 border 另算 —— 实际占 44+12+2=58px，比 grid 给的 44px 列宽，
-    // 表现就是输入框向右漫出来、压住 × 按钮。同样适用于第 5 列那个 74px 的
-    // 「＋ 关系」下拉。
-    scope + " input[type=number]{box-sizing:border-box;width:44px;text-align:center;font-size:11px;"
-      + "-moz-appearance:textfield}",
-    scope + " input[type=number]::-webkit-outer-spin-button,"
-      + scope + " input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}",
-    scope + " input[type=number]," + scope + " select{box-sizing:border-box;font:inherit;color:inherit;"
+    scope + " select{box-sizing:border-box;font:inherit;color:inherit;width:100%;"
       + "background:rgba(127,127,127,.08);border:1px solid rgba(127,127,127,.28);"
       + "border-radius:7px;padding:1px 6px;max-width:100%}",
-    scope + " input[type=number]:hover," + scope + " select:hover{border-color:rgba(127,127,127,.5)}",
+    scope + " select:hover{border-color:rgba(127,127,127,.5)}",
+    // 权重值是个"读数 + 旋钮"，不是输入框：去边框去底色，右对齐等宽数字，
+    // 平时几乎隐形，hover 才浮出一点底色提示"这里能改"。
+    scope + " input[type=number]{box-sizing:border-box;width:100%;text-align:right;"
+      + "font-size:11px;font-variant-numeric:tabular-nums;color:inherit;background:transparent;"
+      + "border:0;border-radius:5px;padding:1px 3px;opacity:.8;-moz-appearance:textfield}",
+    scope + " input[type=number]:hover{background:rgba(127,127,127,.1)}",
+    scope + " input[type=number]:focus-visible{outline:2px solid rgba(120,170,255,.5);outline-offset:1px}",
+    scope + " input[type=number]::-webkit-outer-spin-button,"
+      + scope + " input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}",
     scope + " input[type=range]{flex:1;min-width:80px}",
     // 滑杆外观（轨道/圆钮/填充）和面板底部那根共用，见 sliderLook。
     ...sliderLook(scope + " input[type=range]"),
@@ -1756,15 +1774,22 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       + "color:inherit;opacity:.72;background:transparent;cursor:pointer;"
       + "-webkit-appearance:none;appearance:none;max-width:240px}",
     // 下拉型的"按钮"：去掉原生外观（没有箭头），看起来才像按钮而不是输入框。
-    // 宽度要**写死**：select 的固有宽度按最长选项算（那是一串槽位名），不写死就会
-    // 变成一条很宽的空框 —— 正是它原来看着最"原始"的原因。弹出列表不受这个宽度影响。
+    // 宽度填满 grid 给的格子（列宽才是唯一来源）；弹出列表不受这个宽度影响。
     scope + " [data-phase-add]," + scope + " [data-phase-slot-add]{text-align:left;padding:0 9px}",
-    scope + " [data-relation-add]{text-align:left;padding:0 9px;width:74px}",
+    scope + " [data-relation-add]{text-align:left;padding:0 6px;width:100%;font-size:10px}",
     scope + " [data-add-option]:hover," + scope + " [data-reset]:hover,"
       + scope + " [data-phase-add]:hover,"
       + scope + " [data-phase-slot-add]:hover," + scope + " [data-relation-add]:hover{"
       + "opacity:1;border-style:solid;border-color:rgba(120,170,255,.75);"
       + "background:rgba(120,170,255,.12)}",
+    // ---- 「加槽位」和「加候选」必须长得不一样 --------------------------
+    // 两者用同一种药丸时，点错的后果不一样：池内那个是"往这张表加一条"，
+    // 底下那个是"新建一张表"。所以加槽位换成实线描边 + 淡蓝底，且前面带一行小字
+    // 说明它加的是什么。
+    scope + " [data-add-title]{flex:0 0 auto;font-size:10px;opacity:.5;margin-right:2px}",
+    scope + " [data-add-row][data-slot-row]{align-items:center}",
+    scope + " [data-slot-chip]{border-style:solid !important;border-color:rgba(120,170,255,.45) !important;"
+      + "background:rgba(120,170,255,.08);opacity:.85}",
 
     // ---- 关系：两种关系刻意长得不一样 ----------------------------------
     scope + " [data-relations]{grid-column:1/-1;display:flex;flex-wrap:wrap;"
@@ -4556,12 +4581,16 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
                 setEntries: (entries) => setPhasePool(phase, slotId, entries),
               });
             }),
-            free.length === 0 ? null : h("div", { key: "addslot", "data-add-row": "" },
+            // 「加槽位」和池内的「加候选」必须长得不一样：点错的后果不同 ——
+            // 池内那个是往这张表加一条，这个是**新建一张表**。所以前面带一行小字。
+            free.length === 0 ? null : h("div", { key: "addslot", "data-add-row": "", "data-slot-row": "" },
+              h("span", { "data-add-title": "" }, "加槽位"),
               free.map((slot) => h("button", {
                 key: slot.id,
                 type: "button",
                 "data-phase-slot-add": phase,
                 "data-add-option": slot.id,
+                "data-slot-chip": "",
                 title: "给这个相位加一张槽位表",
                 onClick: () => {
                   // 新加的槽位先给一张**空表**：空表 = 这个槽位在这个相位下不出手。
@@ -4762,8 +4791,12 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           ...(share === 0 ? { "data-off": "" } : {}),
         },
         h("span", { "data-row-label": "", title: labelOf(entry) }, labelOf(entry)),
-        h("span", { "data-weight-bar": "", title: share + "% 的概率" },
-          h("i", { "data-weight-fill": "", style: { width: share + "%" } })),
+        // 条是主角（抽中概率），占比数字紧随；权重原始值在右边那一列，只是个旋钮。
+        h("span", { "data-weight-cell": "" },
+          h("span", { "data-weight-bar": "", title: share + "% 的概率" },
+            h("i", { "data-weight-fill": "", style: { width: share + "%" } })),
+          h("span", { "data-share": "" }, share + "%"),
+        ),
         numberInput(entry.weight, (value) => {
           const next = entries.slice();
           next[index] = { label: entry.label ?? null, weight: value };
@@ -4814,7 +4847,9 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     const occupied = new Set(used.map((slot) => slot.id));
     const free = (pet.expressionSlots ?? [])
       .filter((slot) => !occupied.has(slot.id) && (slot.options ?? []).length > 0);
-    return h("div", { "data-settings": "", "data-setting": "fidget" },
+    // 这个标记**不能**也叫 "fidget"：摸鱼节奏那节（TuningControls group="fidget"）
+    // 已经占了这个名字，同名会让按 data-setting 选择的测试/探针命中两处。
+    return h("div", { "data-settings": "", "data-setting": "fidget-pools" },
       used.length === 0
         ? h("div", { "data-empty": "fidget" }, "还没有槽位 —— 在下面挑一个加进来")
         : null,
@@ -4835,15 +4870,17 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         removeAttr: "data-fidget-remove",
         setEntries: (entries) => setFidgetEntries(slot.id, entries),
       })),
-      // 和条目候选同一个药丸样式：`data-add-option` 是 SETTINGS_CSS 里
-      // `[data-add-option]` 药丸规则的钩子，漏了它就是裸按钮（下面 docs-and-workflow
-      // 也有一节讲这个：面板里曾经整节都是裸控件）。
-      free.length === 0 ? null : h("div", { "data-add-row": "" },
+      // 「加槽位」和池内的「加候选」必须长得不一样：点错的后果不同 ——
+      // 池内那个是往这张表加一条，这个是**新建一张表**。所以前面带一行小字。
+      // 药丸基色走 `data-add-option`（漏了它就是裸按钮），`data-slot-chip` 再加区分。
+      free.length === 0 ? null : h("div", { "data-add-row": "", "data-slot-row": "" },
+        h("span", { "data-add-title": "" }, "加槽位"),
         free.map((slot) => h("button", {
           key: slot.id,
           type: "button",
           "data-fidget-slot-add": slot.id,
           "data-add-option": slot.id,
+          "data-slot-chip": "",
           title: "把这个槽位加进摸鱼池",
           onClick: () => addFidgetSlot(slot.id),
         }, "＋ " + slot.label))),
@@ -4870,12 +4907,15 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       h("div", { "data-card-body": "" }, body),
     );
     return [
-      // 卡片 key 必须各不相同：TUNING_GROUPS 里那个 "fidget" 是"摸鱼节奏"，
-      // 和下面"摸鱼"那张池子卡不是一回事，同名会让 data-card 变成歧义的。
-      ...TUNING_GROUPS.map((group) => card("tune-" + group.id, group.label, group.hint,
-        h(TuningControls, { group: group.id }))),
+      ...TUNING_GROUPS.filter((group) => group.id !== "fidget").map((group) => card(
+        "tune-" + group.id, group.label, group.hint, h(TuningControls, { group: group.id }))),
       card("phases", "会话相位", "每个相位一组池子", h(PhaseControls, null)),
-      card("pools", "摸鱼", "每个槽位一张条目表", h(FidgetControls, null)),
+      // 「摸鱼节奏」（多久摸一次）和「摸鱼」（摸鱼做什么）是同一件事的两半，原来
+      // 被「会话相位」隔成两张卡，调摸鱼要上下跳。合成一张：节奏在上、池子在下。
+      card("pools", "摸鱼", "多久摸一次 · 摸鱼做什么", [
+        h(TuningControls, { key: "rhythm", group: "fidget" }),
+        h(FidgetControls, { key: "pools" }),
+      ]),
       card("outfit", "装扮", null, h(OutfitControls, null)),
     ];
   }

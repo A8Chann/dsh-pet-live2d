@@ -68,6 +68,13 @@ await sleep(900)
 
 // 滑杆的几种"量法"对照：getComputedStyle 对伪元素到底返回什么。
 // 一次跑清楚，免得在断言里瞎猜（上一版断言读到的是 input 本身的高度/宽度）。
+console.log('layout:', await ev('(() => {'
+  + ' const row = document.querySelector("#dsh-settings-probe [data-pool-row]");'
+  + ' if (!row) return "no-row";'
+  + ' const cs = getComputedStyle(row);'
+  + ' const kids = [...row.children].map((n) => (n.getAttribute("data-pool-weight") ? "input" : n.className || n.tagName.toLowerCase()) + "@" + Math.round(n.getBoundingClientRect().width));'
+  + ' return JSON.stringify({ cols: cs.gridTemplateColumns, gap: cs.gap, rowW: Math.round(row.getBoundingClientRect().width), kids });'
+  + ' })()'))
 console.log('slider:', await ev('(() => {'
   + ' const el = document.querySelector("#dsh-settings-probe [data-input=\'gazeDeadzone\']");'
   + ' if (!el) return "no-el";'
@@ -107,7 +114,7 @@ await shot('_settings-tuning.png')
 // 折叠掉前半部分，让这两张表在截图里占主要位置。
 const hide = (sel, on) => ev('(() => { document.querySelectorAll(' + JSON.stringify(sel) + ').forEach((el) => { el.style.display = '
   + JSON.stringify(on ? "none" : "") + ' }); return true })()')
-await hide('#dsh-settings-probe [data-card="tune-feel"], #dsh-settings-probe [data-card="tune-fidget"], #dsh-settings-probe [data-setting="fidget"]', true)
+await hide('#dsh-settings-probe [data-card="tune-feel"], #dsh-settings-probe [data-card="pools"]', true)
 await sleep(400)
 await shot('_settings-pools.png')
 // 第二张：整个设置区（这一节才是"默认就该看到"的样子）。
@@ -123,7 +130,7 @@ await click('#dsh-settings-probe [data-fidget-slot-add="symbol"]')
 await sleep(400)
 await click('#dsh-settings-probe [data-fidget-add="symbol"][data-add-option="感叹号"]')
 await sleep(400)
-await hide('#dsh-settings-probe [data-card="phases"], #dsh-settings-probe [data-card="tune-feel"], #dsh-settings-probe [data-card="tune-fidget"]', true)
+await hide('#dsh-settings-probe [data-card="phases"], #dsh-settings-probe [data-card="tune-feel"]', true)
 await sleep(400)
 await shot('_settings-fidget.png')
 await ev('(() => { document.querySelectorAll("#dsh-settings-probe [data-card], #dsh-settings-probe [data-setting]")'
