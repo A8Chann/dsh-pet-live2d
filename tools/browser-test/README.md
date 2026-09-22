@@ -55,6 +55,30 @@ cdp-handoff2 这 6 个都会推它。所以现在**每个 driver 配一个自己
 | `shots/` | 运行时产物（截图），已 gitignore |
 | `.profiles/` | 每次运行的 Edge 用户目录，约 50 MB，已 gitignore |
 
+## 已知偶发：并发跑到最后一个 driver 时 CDP 阻塞
+
+症状是那个 driver **CPU 停在 0.0x 秒、十几分钟不退出**（不是断言失败，也不是超时）。
+已遇到两次（`cdp-idle-return`、`cdp-bubble`），两次都**单独重跑即过**（34s）。
+
+```powershell
+# 判断：看那个 driver 进程的 CPU，几秒钟不涨就是卡住了
+Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
+  Where-Object { $_.CommandLine -like '*cdp-*.mjs' } | Select-Object ProcessId, CommandLine
+```
+
+处理：杀掉这次 run（**别用 `dev.mjs` 不带 `--once`** —— 它是常驻监听模式，被 kill
+之后会留下测试服和一批 Edge），清掉残留的测试浏览器再单独跑：
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name='msedge.exe'" |
+  Where-Object { $_.CommandLine -like '*browser-test*' } |
+  ForEach-Object { taskkill /F /PID $_.ProcessId }
+node run-suite.mjs --jobs 1 <关键字>
+```
+
+**只杀 `--user-data-dir` 落在 `browser-test` 里的那些** —— 用户自己的浏览器
+（`...\Microsoft\Edge\User Data`）不能碰。
+
 ## 为什么是裸 CDP
 
 ```js

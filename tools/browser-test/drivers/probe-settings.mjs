@@ -7,6 +7,7 @@
 import { spawn } from 'node:child_process'
 import { rmSync, writeFileSync } from 'node:fs'
 import { browserPath, PROFILES, HERE, SHOTS, BASE } from '../paths.mjs'
+import { waitReady } from '../ready.mjs'
 import { join } from 'node:path'
 
 const EDGE = browserPath()
@@ -31,13 +32,26 @@ const ws = new WebSocket(page.webSocketDebuggerUrl)
 await new Promise((res, rej) => { ws.onopen = res; ws.onerror = rej })
 let nextId = 0
 const pending = new Map()
-ws.onmessage = (e) => { const m = JSON.parse(e.data); if (m.id !== undefined) { const s = pending.get(m.id); if (s) { pending.delete(m.id); s(m) } } }
+const logs = []
+ws.onmessage = (e) => {
+  const m = JSON.parse(e.data)
+  if (m.id !== undefined) { const s = pending.get(m.id); if (s) { pending.delete(m.id); s(m) } return }
+  if (m.method === 'Runtime.consoleAPICalled') {
+    logs.push(m.params.type + ': ' + m.params.args.map((a) => a.value ?? a.description ?? '').join(' ').slice(0, 400))
+  }
+  if (m.method === 'Runtime.exceptionThrown') {
+    logs.push('EXC: ' + (m.params.exceptionDetails?.exception?.description ?? m.params.exceptionDetails?.text ?? '').slice(0, 500))
+  }
+}
 const send = (a, p = {}) => new Promise((r) => { const id = ++nextId; pending.set(id, r); ws.send(JSON.stringify({ id, method: a, params: p })) })
 const ev = async (e) => (await send('Runtime.evaluate', { expression: e, awaitPromise: true, returnByValue: true })).result?.result?.value
 await send('Runtime.enable'); await send('Page.enable')
 await send('Page.navigate', { url: BASE_URL + '/' })
 for (let i = 0; i < 240; i++) { await sleep(500); if (await ev('document.title') === 'done') break }
-await sleep(4000)
+// 必须等挡脸的剪影**就绪**：轮廓没好之前 [data-hit] 是没有 onContextMenu 的
+// （那一层还不接受点击），对着它派发事件什么都不会发生 —— 面板看起来"打不开"。
+await waitReady(ev)
+await sleep(1500)
 
 // 把那一节挂进页面（和 cdp-gaze 里那段探针一样）。
 await ev(`(() => {
@@ -52,26 +66,65 @@ await ev(`(() => {
 })()`)
 await sleep(900)
 
-const pick = (selector, value) => ev('(() => {'
+const click = (selector) => ev('(() => {'
   + ' const el = document.querySelector(' + JSON.stringify(selector) + '); if (!el) return false;'
-  + ' const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value").set;'
-  + ' setter.call(el, ' + JSON.stringify(value) + '); el.dispatchEvent(new Event("change", { bubbles: true })); return true })()')
+  + ' el.click(); return true })()')
 
-// 加两个相位，并往其中一个池子里塞两条不同的东西，把关系行也带出来。
-await pick('#dsh-settings-probe [data-phase-add]', 'tool')
+// 加两个相位，并往其中一个池子里塞几条不同的东西，把关系药丸也带出来。
+await click('#dsh-settings-probe [data-phase-add="tool"]')
 await sleep(400)
-await pick('#dsh-settings-probe [data-phase-add]', 'waiting')
+await click('#dsh-settings-probe [data-phase-add="waiting"]')
 await sleep(400)
-await pick('#dsh-settings-probe [data-phase-pool-add="tool:rhand"]', '掏出手机')
+await click('#dsh-settings-probe [data-phase-pool-add="tool:rhand"][data-add-option="掏出手机"]')
 await sleep(400)
-await pick('#dsh-settings-probe [data-phase-pool-add="tool:rhand"]', '挤番茄酱')
+await click('#dsh-settings-probe [data-phase-pool-add="tool:rhand"][data-add-option="挤番茄酱"]')
+await sleep(400)
+await click('#dsh-settings-probe [data-phase-pool-add="tool:rhand"][data-add-option="喵喵手"]')
 await sleep(600)
 // 折叠掉前半部分，让这两张表在截图里占主要位置。
-await ev('document.querySelectorAll("#dsh-settings-probe [data-setting]")[0].style.display="none"')
-await ev('document.querySelectorAll("#dsh-settings-probe [data-setting]")[1].style.display="none"')
+const hide = (sel, on) => ev('(() => { document.querySelectorAll(' + JSON.stringify(sel) + ').forEach((el) => { el.style.display = '
+  + JSON.stringify(on ? "none" : "") + ' }); return true })()')
+await hide('#dsh-settings-probe [data-card="tune-feel"], #dsh-settings-probe [data-card="tune-fidget"], #dsh-settings-probe [data-setting="fidget"]', true)
 await sleep(400)
-const s = await send('Page.captureScreenshot', { format: 'png' })
-writeFileSync(join(SHOTS, '_settings-pools.png'), Buffer.from(s.result.data, 'base64'))
+const shot = async (name, clip) => {
+  const s = await send('Page.captureScreenshot', clip === undefined ? { format: 'png' } : { format: 'png', clip })
+  writeFileSync(join(SHOTS, name), Buffer.from(s.result.data, 'base64'))
+}
+await shot('_settings-pools.png')
+// 第二张：整个设置区（这一节才是"默认就该看到"的样子）。
+// 先把刚才 hide 掉的**内层**元素也恢复回来 —— 只恢复卡片是不够的，
+// 那张池子卡会显示成一张空壳。
+await ev('(() => { document.querySelectorAll("#dsh-settings-probe [data-card], #dsh-settings-probe [data-setting]")'
+  + '.forEach((el) => { el.style.display = "" }); return true })()')
+await sleep(500)
+await shot('_settings-full.png')
+// 第三张：右键面板里那一份（深色、更窄）—— 同一个正文，不能只在设置页好看。
+console.log('pet root:', await ev('!!document.querySelector("[data-dsh-live2d-pet]")'))
+console.log('stage:', await ev('JSON.stringify((() => { const s = document.querySelector("[data-dsh-live2d-pet] [data-stage]");'
+  + ' if (!s) return null; const hit = document.querySelector("[data-dsh-live2d-pet] [data-hit]");'
+  + ' return { stage: true, nomask: s.hasAttribute("data-nomask"), hit: hit !== null, hitOff: hit !== null && hit.hasAttribute("data-off"),'
+  + ' mask: window.__dshLive2dPet.maskInfo ? window.__dshLive2dPet.maskInfo().present : "no-api" } })())'))
+console.log('errors:', await ev('JSON.stringify((window.__errors ?? []).slice(0, 4))'))
+const openPanel = () => ev('(() => { const h = document.querySelector("[data-dsh-live2d-pet] [data-hit]") || document.querySelector("[data-dsh-live2d-pet] [data-stage]");'
+  + ' if (!h) return "no-hit"; h.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })); return "sent" })()')
+for (let i = 0; i < 5; i += 1) {
+  const sent = await openPanel()
+  await sleep(600)
+  const open = await ev('!!document.querySelector("[data-dsh-live2d-pet] [data-panel]")')
+  console.log('open attempt', i, sent, open, 'errors:', await ev('JSON.stringify((window.__errors ?? []).slice(-2))'))
+  if (open === true) break
+}
+await ev('(() => { const bs = Array.from(document.querySelectorAll("[data-dsh-live2d-pet] [data-tabs] button"));'
+  + ' const b = bs.find((x) => x.textContent.trim() === "设置"); if (b) b.click(); return !!b })()')
+await sleep(900)
+console.log('panel:', await ev('!!document.querySelector("[data-dsh-live2d-pet] [data-panel]")'))
+console.log('pet still mounted:', await ev('document.querySelector("[data-dsh-live2d-pet]").children.length'))
+console.log('logs:', JSON.stringify(logs.slice(-4)))
+const box = JSON.parse(await ev('JSON.stringify((() => { const el = document.querySelector("[data-dsh-live2d-pet] [data-panel]");'
+  + ' if (!el) return null; const r = el.getBoundingClientRect();'
+  + ' return { x: Math.max(0, r.x - 6), y: Math.max(0, r.y - 6), width: r.width + 12, height: Math.min(r.height + 12, 1000), scale: 1 } })())') ?? 'null')
+if (box !== null) await shot('_panel-settings.png', box)
+console.log('panel box:', JSON.stringify(box))
 console.log('rows:', await ev('JSON.stringify(Array.from(document.querySelectorAll("#dsh-settings-probe [data-phase-pool-row]")).map((el) => el.getAttribute("data-phase-pool-row")))'))
 console.log('relations:', await ev('JSON.stringify(Array.from(document.querySelectorAll("#dsh-settings-probe [data-relation]")).map((el) => el.textContent))'))
 ws.close(); edge.kill(); server.kill(); await sleep(300); process.exit(0)

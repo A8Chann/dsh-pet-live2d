@@ -1633,49 +1633,138 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
    * 规则只写一遍、作用域各来一份，两个地方就不会再走岔。
    */
   const SETTINGS_SCOPES = [SETTINGS_SEL, ROOT_SEL + " [data-settings]"];
+  /**
+   * 视觉语言：**卡片**。每一组设置是一张卡片（标题条 + 内容区），池子、相位都住在
+   * 卡片里，层级靠"卡片 > 行 > 药丸"三层表达，而不是一堆同权重的裸控件。
+   *
+   * 颜色**一律不写死**：正文用 currentColor，底色/描边用中性灰的透明度，
+   * 强调色只出现在浅色药丸和权重条上（都带透明度和自带描边），所以浅色与深色
+   * 两套主题下都成立 —— 宿主主题不由我们决定，写死就必然一边好看一边瞎。
+   *
+   * 布局**全部在样式表里**：行内样式优先级更高，之前把 flex/grid 写在行上，
+   * 结果怎么调样式表都不生效（"你确定这个样式生效了？"那次）。
+   */
   const SETTINGS_CSS = [].concat(...SETTINGS_SCOPES.map((scope) => [
-    scope + "{font:400 12px/1.7 inherit;color:inherit;max-width:600px}",
-    scope + " h3{margin:12px 0 4px;font-size:13px;font-weight:600;opacity:.9}",
-    scope + " [data-setting]{margin:0 0 16px}",
-    // 布局**必须在样式表里**：行内样式优先级更高，之前把 flex 写在行上，
-    // 结果这一节在 DSH 设置页里怎么调都还是"没对齐的小控件"。
-    scope + " [data-setting]>[data-chips]{display:block}",
-    // 池子/条目表的两种行：表头（槽位名 + ＋）和条目（名字 + 权重 + ×）。
+    scope + "{font:400 12px/1.7 inherit;color:inherit;max-width:560px}",
+    scope + " [data-setting]{margin:0 0 10px}",
+
+    // ---- 卡片 ----------------------------------------------------------
+    scope + " [data-card]{border:1px solid rgba(127,127,127,.24);border-radius:10px;"
+      + "margin:0 0 10px;overflow:hidden}",
+    scope + " [data-card-head]{display:flex;align-items:center;gap:8px;padding:7px 11px;"
+      + "background:rgba(127,127,127,.07);border-bottom:1px solid rgba(127,127,127,.16)}",
+    scope + " [data-card-title]{font-size:12px;font-weight:600;letter-spacing:.02em;opacity:.92}",
+    scope + " [data-card-hint]{margin-left:auto;font-size:10px;opacity:.5;font-weight:400}",
+    scope + " [data-card-body]{padding:9px 11px}",
+    scope + " [data-card-body]:empty{display:none}",
+
+    // ---- 行：标签 / 权重条 / 数值 / × ----------------------------------
+    // 用通用标记 `[data-pool-row]`（两张表都带），不是各自的唯一键属性 ——
+    // 否则这里得把两个属性名都抄一遍，抄漏一个就是"那一层没排版"。
     scope + " [data-field],"
-      + scope + " [data-pool-head],"
-      + scope + " [data-pool-row]{display:grid;grid-template-columns:132px 60px 30px;"
-      + "align-items:center;gap:8px;padding:2px 0}",
-    scope + " [data-field]{grid-template-columns:132px 1fr 52px}",
-    // 相位是一整块（相位名 + 它下面每槽位一张表），不是一行。
-    scope + " [data-phase-head]{display:grid;grid-template-columns:132px 1fr 30px;"
-      + "align-items:center;gap:8px;padding:2px 0}",
-    scope + " [data-pool]{padding-left:14px}",
-    // 「＋ 添加」贴着文字，不要把 1fr 那一列撑满（截图里它宽得像个输入框）。
-    scope + " [data-phase-head] select," + scope + " [data-pool-head] select{justify-self:start;max-width:190px}",
-    // 关系块是条目行里的**整行**：它是 grid 的第四个子元素，不跨列的话会被塞进
-    // 第一列，和下一个条目的标签挤在一格里。
-    scope + " [data-relations]{grid-column:1/-1}",
-    scope + " [data-relation]{display:flex;align-items:center;gap:4px}",
-    scope + " [data-relations] select{font-size:10px;max-width:190px}",
-    scope + " button{width:auto;justify-self:start}",
-    scope + " [data-fidget-remove]," + scope + " [data-phase-pool-remove],"
-      + scope + " [data-phase-remove]"
-      + "{justify-self:center;border:0;opacity:.45;font-size:14px;padding:0 4px}",
-    scope + " [data-relation-remove]{border:0;opacity:.45;font-size:12px;padding:0 3px;line-height:1}",
-    scope + " [data-fidget-remove]:hover," + scope + " [data-phase-pool-remove]:hover,"
-      + scope + " [data-phase-remove]:hover,"
-      + scope + " [data-relation-remove]:hover{opacity:1;border:0}",
-    scope + " input[type=number]{width:60px;text-align:center}",
+      + scope + " [data-pool-row]{display:grid;align-items:center;gap:8px;padding:2px 0}",
+    scope + " [data-field]{grid-template-columns:104px 1fr 46px}",
+    scope + " [data-pool-row]{grid-template-columns:1fr 72px 44px 22px 74px}",
+    // 没有关系的条目：关系块是空的，`grid-column:1/-1` 的空元素不占高度（下面那条），
+    // 于是整条就是干干净净一行。
+    scope + " [data-relations]:empty{display:none}",
+    scope + " [data-row-label]{font-size:11px;opacity:.85;overflow:hidden;"
+      + "text-overflow:ellipsis;white-space:nowrap}",
+
+    // ---- 权重条：一眼看出这个池子的概率分布 ----------------------------
+    // `display:block` 不能省：span 默认是 inline，高度会被直接忽略 —— 表现是
+    // "权重条根本没渲染出来"，而 DOM 里它明明在。
+    scope + " [data-weight-bar]{display:block;position:relative;height:5px;"
+      + "border-radius:999px;background:rgba(127,127,127,.2);overflow:hidden}",
+    scope + " [data-weight-bar]>i{display:block;height:100%;border-radius:999px;"
+      + "background:rgba(120,170,255,.8);transition:width .12s ease-out}",
+    scope + " [data-pool-row][data-off] [data-weight-bar]>i{background:rgba(127,127,127,.5)}",
+    scope + " [data-pool-row][data-off] [data-row-label]{opacity:.45;text-decoration:line-through}",
+
+    // ---- 输入控件 ------------------------------------------------------
+    scope + " input[type=number]{width:44px;text-align:center;font-size:11px;"
+      + "-moz-appearance:textfield}",
+    scope + " input[type=number]::-webkit-outer-spin-button,"
+      + scope + " input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}",
     scope + " input[type=number]," + scope + " select{font:inherit;color:inherit;"
-      + "background:transparent;border:1px solid rgba(127,127,127,.35);border-radius:5px;padding:1px 5px;max-width:100%}",
-    scope + " input[type=range]{flex:1;min-width:80px;accent-color:currentColor}",
-    scope + " input[type=checkbox]{accent-color:currentColor}",
-    scope + " button{font:inherit;color:inherit;background:transparent;"
-      + "border:1px solid rgba(127,127,127,.35);border-radius:5px;padding:1px 7px;cursor:pointer}",
-    scope + " button:hover{border-color:currentColor}",
-    scope + " label{display:flex;align-items:center;gap:6px}",
-    scope + " code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;opacity:.85}",
-    scope + " [data-pool]," + scope + " [data-phase]{border-top:1px solid rgba(127,127,127,.16);padding-top:4px}",
+      + "background:rgba(127,127,127,.08);border:1px solid rgba(127,127,127,.28);"
+      + "border-radius:7px;padding:1px 6px;max-width:100%}",
+    scope + " input[type=number]:hover," + scope + " select:hover{border-color:rgba(127,127,127,.5)}",
+    scope + " input[type=range]{flex:1;min-width:80px;accent-color:rgba(120,170,255,.9)}",
+    scope + " input[type=checkbox]{accent-color:rgba(120,170,255,.9)}",
+    scope + " code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;"
+      + "opacity:.7;font-variant-numeric:tabular-nums}",
+
+    // ---- 药丸按钮：＋ 添加 / ＋ 关系 / 相位名 --------------------------
+    scope + " button{font:inherit;color:inherit;background:transparent;border:0;"
+      + "cursor:pointer;padding:0}",
+    scope + " [data-add-row]{display:flex;flex-wrap:wrap;gap:5px;padding-top:7px}",
+    scope + " [data-add-option],"
+      + scope + " [data-reset],"
+      + scope + " [data-phase-add],"
+      + scope + " [data-phase-slot-add],"
+      + scope + " [data-relation-add]{width:auto;font-size:10.5px;line-height:1.7;"
+      + "border:1px dashed rgba(127,127,127,.45);border-radius:999px;padding:0 9px;"
+      + "color:inherit;opacity:.72;background:transparent;cursor:pointer;"
+      + "-webkit-appearance:none;appearance:none;max-width:240px}",
+    // 下拉型的"按钮"：去掉原生外观（没有箭头），看起来才像按钮而不是输入框。
+    // 宽度要**写死**：select 的固有宽度按最长选项算（那是一串槽位名），不写死就会
+    // 变成一条很宽的空框 —— 正是它原来看着最"原始"的原因。弹出列表不受这个宽度影响。
+    scope + " [data-phase-add]," + scope + " [data-phase-slot-add]{text-align:left;padding:0 9px}",
+    scope + " [data-relation-add]{text-align:left;padding:0 9px;width:74px}",
+    scope + " [data-add-option]:hover," + scope + " [data-reset]:hover,"
+      + scope + " [data-phase-add]:hover,"
+      + scope + " [data-phase-slot-add]:hover," + scope + " [data-relation-add]:hover{"
+      + "opacity:1;border-style:solid;border-color:rgba(120,170,255,.75);"
+      + "background:rgba(120,170,255,.12)}",
+
+    // ---- 关系：两种关系刻意长得不一样 ----------------------------------
+    scope + " [data-relations]{grid-column:1/-1;display:flex;flex-wrap:wrap;"
+      + "align-items:center;gap:5px;padding:0 0 2px 2px}",
+    scope + " [data-relation]{display:inline-flex;align-items:center;gap:5px;"
+      + "font-size:10px;line-height:1.8;border-radius:999px;padding:0 3px 0 8px;"
+      + "border:1px solid transparent;white-space:nowrap}",
+    scope + " [data-relation]>b{font-weight:600;opacity:.8}",
+    scope + " [data-relation='pair']{background:rgba(120,170,255,.16);"
+      + "border-color:rgba(120,170,255,.42)}",
+    scope + " [data-relation='require']{background:rgba(240,180,90,.18);"
+      + "border-color:rgba(230,170,80,.5)}",
+    scope + " [data-relation-remove]{font-size:11px;line-height:1;opacity:.45;"
+      + "padding:1px 3px;border-radius:999px;color:inherit}",
+    scope + " [data-relation-remove]:hover{opacity:1;background:rgba(127,127,127,.22)}",
+
+    // ---- × 删除 --------------------------------------------------------
+    scope + " [data-pool-remove]," + scope + " [data-phase-remove]{justify-self:center;"
+      + "width:20px;height:20px;line-height:1;font-size:13px;border-radius:6px;"
+      + "opacity:.4;color:inherit}",
+    scope + " [data-pool-remove]:hover," + scope + " [data-phase-remove]:hover{opacity:1;"
+      + "background:rgba(232,120,120,.2);color:#e87878}",
+
+    // ---- 相位：一张卡片套若干张槽位小卡 --------------------------------
+    scope + " [data-phase]{border:1px solid rgba(127,127,127,.24);border-radius:10px;"
+      + "margin:0 0 8px;overflow:hidden}",
+    scope + " [data-phase-head]{display:flex;align-items:center;gap:8px;padding:6px 10px;"
+      + "background:rgba(127,127,127,.07);border-bottom:1px solid rgba(127,127,127,.16)}",
+    scope + " [data-phase-head][data-collapsed]{border-bottom:0}",
+    scope + " [data-phase-toggle]{display:flex;align-items:center;gap:7px;flex:1;min-width:0;"
+      + "font-size:12px;font-weight:600;text-align:left;color:inherit}",
+    scope + " [data-caret]{font-size:9px;opacity:.55;width:9px}",
+    scope + " [data-phase-meta]{font-size:10px;opacity:.5;font-weight:400;"
+      + "font-variant-numeric:tabular-nums;white-space:nowrap}",
+    scope + " [data-pool]{padding:7px 10px 8px 12px;"
+      + "border-top:1px solid rgba(127,127,127,.13)}",
+    // 相位头下面紧挨着的那张表不要再来一条分隔线（`[data-pool]:first-of-type`
+    // 不可靠：空态那个 div 也是 div，会把它顶掉）。
+    scope + " [data-phase-head]+[data-pool]{border-top:0}",
+    scope + " [data-pool-head]{display:flex;align-items:center;gap:8px;padding:0 0 3px}",
+    scope + " [data-pool-title]{font-size:11px;font-weight:600;opacity:.88}",
+    scope + " [data-pool-meta]{font-size:10px;opacity:.42;font-variant-numeric:tabular-nums}",
+    scope + " [data-pool-empty]{" + "font-size:10.5px;opacity:.45;padding:2px 0}",
+
+    // ---- 空态 / 说明 ---------------------------------------------------
+    scope + " [data-empty]{font-size:11px;opacity:.5;padding:6px 0}",
+    scope + " [data-note]{font-size:10.5px;opacity:.55;padding-top:4px}",
+    scope + " label{display:flex;align-items:center;gap:7px}",
   ]));
   // CSS 是一整个字符串（上面已经 join 过），不是数组 —— 别对它 concat 数组。
   const STYLE_TEXT = CSS + "\n" + SETTINGS_CSS.join("\n");
@@ -1756,10 +1845,10 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     { key: "fidgetQuietMs", label: "静置多久开始", min: 2000, max: 120000, step: 1000, group: "fidget" },
     { key: "fidgetGapMs", label: "之后最长间隔", min: 4000, max: 300000, step: 1000, group: "fidget" },
   ];
-  /** 可调项的分组（没写 group 的都归「手感」）。 */
+  /** 可调项的分组（没写 group 的都归「手感」）。hint 显示在卡片右上角。 */
   const TUNING_GROUPS = [
-    { id: "feel", label: "手感（指针 / 嘴 / 眨眼）" },
-    { id: "fidget", label: "摸鱼节奏" },
+    { id: "feel", label: "手感", hint: "指针 / 嘴 / 眨眼" },
+    { id: "fidget", label: "摸鱼节奏", hint: "多久开始、间隔多长" },
   ];
   const tuningGroupOf = (field) => field.group ?? "feel";
   const TUNING_KEY = "dsh-pet-live2d.settings.v1";
@@ -2188,32 +2277,31 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     const only = props?.group;
     const fields = TUNING_FIELDS.filter((field) => only === undefined || tuningGroupOf(field) === only);
     return h("div", { "data-settings": "", "data-setting": only ?? "all" },
-      h("div", { "data-chips": "" },
-        fields.map((field) => h("label", {
-          key: field.key,
-          "data-field": field.key,
-        },
-        h("span", { style: { flex: "0 0 96px", opacity: .85 } }, field.label),
-        h("input", {
-          type: "range",
-          min: field.min,
-          max: field.max,
-          step: field.step,
-          value: TUNING[field.key],
-          "data-input": field.key,
-          style: { flex: 1 },
-          onChange: (event) => applyTuning({ [field.key]: Number(event.target.value) }),
-        }),
-        h("code", { "data-value": field.key, style: { flex: "0 0 52px", textAlign: "right" } }, String(TUNING[field.key])),
-        )),
-        only === undefined || only === "feel"
-          ? h("button", {
+      fields.map((field) => h("label", {
+        key: field.key,
+        "data-field": field.key,
+      },
+      h("span", { "data-row-label": "" }, field.label),
+      h("input", {
+        type: "range",
+        min: field.min,
+        max: field.max,
+        step: field.step,
+        value: TUNING[field.key],
+        "data-input": field.key,
+        onChange: (event) => applyTuning({ [field.key]: Number(event.target.value) }),
+      }),
+      h("code", { "data-value": field.key }, String(TUNING[field.key])),
+      )),
+      // 恢复默认单独一行：它是"这一组"的动作，混在滑杆行里会看着像又一个控件。
+      only === undefined || only === "feel"
+        ? h("div", { "data-add-row": "" },
+          h("button", {
             type: "button",
             "data-reset": "tuning",
             onClick: () => applyTuning(Object.assign({}, TUNING_DEFAULTS)),
-          }, "恢复默认")
-          : null,
-      ),
+          }, "恢复默认"))
+        : null,
     );
   }
 
@@ -2236,16 +2324,17 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   function OutfitControls() {
     useSettings();
     return h("div", { "data-settings": "", "data-setting": "outfit" },
-      h("label", { style: { display: "flex", alignItems: "center", gap: 6, fontSize: 11 } },
+      h("label", { "data-flag-row": "outfitArchive" },
         h("input", {
           type: "checkbox",
           checked: FLAGS.outfitArchive === true,
           "data-flag": "outfitArchive",
           onChange: (event) => applyFlag("outfitArchive", event.target.checked),
         }),
-        h("span", null, "跨启动记住装扮（眼镜 / 发饰 / 魔爪 / 巴菲 / 桌布 / 手机换色）"),
+        h("span", { "data-row-label": "" }, "跨启动记住装扮"),
       ),
-      h("div", { style: { opacity: .7, fontSize: 10, paddingTop: 2 } },
+      h("div", { "data-note": "" },
+        "眼镜 / 发饰 / 魔爪 / 巴菲 / 桌布 / 手机换色 —— ",
         FLAGS.outfitArchive ? "关掉会同时清掉已存的那套。" : "已关闭，也不再记录。"),
     );
   }
@@ -4184,15 +4273,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
                 );
               })
             : tab === "settings"
-            // 和 DSH 设置页共用同一个组件（值也共用一份，见模块里的 store）。
-            ? h("div", { "data-settings": "" },
-                ...TUNING_GROUPS.map((group) => h("div", { key: group.id, "data-group": "", "data-setting": group.id },
-                  h(TuningControls, { group: group.id }),
-                )),
-                h("div", { "data-group": "", "data-setting": "phases" }, h(PhaseControls, null)),
-                h("div", { "data-group": "", "data-setting": "fidget" }, h(FidgetControls, null)),
-                h("div", { "data-group": "", "data-setting": "outfit" }, h(OutfitControls, null)),
-              )
+            // 和 DSH 设置页共用同一个正文（值也共用一份，见模块里的 store）。
+            ? h("div", { "data-settings": "" }, h(PetSettingsBody, null))
             : tab === "motions"
             ? pet.motions.filter((entry) => !(pet.hiddenMotions ?? []).includes(entry.group))
               .map((entry) => h("div", { "data-group": "", key: entry.group },
@@ -4288,13 +4370,9 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
    *
    * 右键面板里那份设置只是过渡（用户明说的），正牌入口在这里。
    */
-  const labelStyle = { flex: "0 0 88px", opacity: .85 };
-  /** 行尾的 ×（删掉这一条）。 */
-  const removeStyle = { flex: "0 0 auto", border: 0, background: "transparent", color: "#9fb0cf", cursor: "pointer", fontSize: 13, lineHeight: 1, padding: "0 4px" };
-  /** 分组里的 ＋（加一条）。 */
-  const addStyle = { fontSize: 11, opacity: .85 };
-  /** 关系行：缩进一级、小一号、淡一点，和它所属的条目区分开。 */
-  const relationStyle = { paddingLeft: 26, fontSize: 10, opacity: .6, lineHeight: "1.5" };
+  // 设置区的样式**全部**在 SETTINGS_CSS 里（按 data-* 属性选）。这里原来留了几个
+  // 行内样式常量（labelStyle / removeStyle / …），行内优先级高于样式表，一旦想统一
+  // 调外观就会被它们压住 —— 那些常量已经全部删掉，改外观请改样式表。
 
   /**
    * 会话相位：**每个相位一组池子**（每个槽位一张条目表）。
@@ -4308,6 +4386,9 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
    */
   function PhaseControls() {
     useSettings();
+    // 折叠状态是**每个界面自己的**（设置页和右键面板互不影响），默认全展开：
+    // 折叠是给"配好之后收起来"用的，不是默认藏起来。
+    const [folded, setFolded] = useState({});
     const pet = MANIFEST.current;
     if (pet === null) return h("div", { "data-empty": "phases" }, "宠物还没加载好");
     const slots = pet.expressionSlots ?? [];
@@ -4320,77 +4401,85 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     const missing = known.filter((phase) => PHASE_OVERRIDES.phases[phase] === undefined);
     return h("div", { "data-settings": "", "data-setting": "phases" },
       rows.length === 0
-        ? h("div", { "data-empty": "phases" }, "还没有定制过的相位 —— 在下面加一个")
+        ? h("div", { "data-empty": "phases" }, "还没有定制过的相位 —— 在下面挑一个开始")
         : null,
       rows.map((phase) => {
         const pools = phasePoolsFor(phase);
         const used = Object.keys(pools);
         const free = slots.filter((slot) => used.indexOf(slot.id) === -1);
+        const open = folded[phase] !== true;
+        const candidates = used.reduce((sum, slotId) => sum + (pools[slotId] ?? []).length, 0);
         return h("div", { key: phase, "data-phase": phase },
-          h("div", { "data-phase-head": "" },
-            h("span", { style: labelStyle }, phase),
-            free.length === 0 ? null : h("select", {
-              "data-phase-slot-add": phase,
-              value: "",
-              style: addStyle,
-              onChange: (event) => {
-                const slotId = event.target.value;
-                if (slotId === "") return;
-                // 新加的槽位先给一张**空表**：空表 = 这个槽位在这个相位下不出手。
-                // 想让它清空，就加一条「空着」。
-                setPhasePool(phase, slotId, []);
-              },
+          h("div", { "data-phase-head": "", ...(open ? {} : { "data-collapsed": "" }) },
+            h("button", {
+              type: "button",
+              "data-phase-toggle": phase,
+              title: open ? "收起来" : "展开",
+              onClick: () => setFolded((prev) => Object.assign({}, prev, { [phase]: !(prev[phase] === true) })),
             },
-            h("option", { value: "" }, "＋ 添加槽位"),
-            free.map((slot) => h("option", { key: slot.id, value: slot.id }, slot.label)),
+            h("span", { "data-caret": "" }, open ? "▾" : "▸"),
+            h("span", null, phase),
+            h("span", { "data-phase-meta": "" }, used.length + " 槽位 · " + candidates + " 条候选"),
             ),
             h("button", {
               type: "button",
               "data-phase-remove": phase,
               title: "删掉整个相位（回到 pet.json 的默认）",
-              style: removeStyle,
               onClick: () => removePhaseRow(phase),
             }, "×"),
           ),
-          used.length === 0
-            ? h("div", { "data-phase-empty": phase, style: relationStyle }, "空相位：什么都不改（用「＋ 添加槽位」加一张表）")
-            : null,
-          used.map((slotId) => {
-            // 槽位 id 来自池子的键：清单里没有它（换了宠物）就退化成一个空槽位，
-            // 至少让用户看得到、删得掉。
-            const slot = slots.find((item) => item.id === slotId)
-              ?? { id: slotId, label: slotId, none: "无", options: [] };
-            return h(PoolTable, {
-              key: slotId,
-              slot,
-              entries: pools[slotId],
-              noneLabel: "空着",
-              allowAll: true,
-              owner: "phase:" + phase,
-              idPrefix: phase + ":",
-              rowAttr: "data-phase-pool-row",
-              addAttr: "data-phase-pool-add",
-              weightAttr: "data-phase-pool-weight",
-              removeAttr: "data-phase-pool-remove",
-              setEntries: (entries) => setPhasePool(phase, slotId, entries),
-            });
-          }),
+          open ? [
+            used.length === 0
+              ? h("div", { "data-pool-empty": "", key: "empty" }, "空相位：什么都不改 —— 在下面加一个槽位")
+              : null,
+            ...used.map((slotId) => {
+              // 槽位 id 来自池子的键：清单里没有它（换了宠物）就退化成一个空槽位，
+              // 至少让用户看得到、删得掉。
+              const slot = slots.find((item) => item.id === slotId)
+                ?? { id: slotId, label: slotId, none: "无", options: [] };
+              return h(PoolTable, {
+                key: slotId,
+                slot,
+                entries: pools[slotId],
+                noneLabel: "空着",
+                allowAll: true,
+                owner: "phase:" + phase,
+                idPrefix: phase + ":",
+                rowAttr: "data-phase-pool-row",
+                addAttr: "data-phase-pool-add",
+                weightAttr: "data-phase-pool-weight",
+                removeAttr: "data-phase-pool-remove",
+                setEntries: (entries) => setPhasePool(phase, slotId, entries),
+              });
+            }),
+            free.length === 0 ? null : h("div", { key: "addslot", "data-add-row": "" },
+              free.map((slot) => h("button", {
+                key: slot.id,
+                type: "button",
+                "data-phase-slot-add": phase,
+                "data-add-option": slot.id,
+                title: "给这个相位加一张槽位表",
+                onClick: () => {
+                  // 新加的槽位先给一张**空表**：空表 = 这个槽位在这个相位下不出手。
+                  // 想让它清空，就加一条「空着」。
+                  setPhasePool(phase, slot.id, []);
+                },
+              }, "＋ " + slot.label))),
+          ] : null,
         );
       }),
-      missing.length === 0 ? null : h("select", {
-        "data-phase-add": "",
-        value: "",
-        style: addStyle,
-        onChange: (event) => {
-          if (event.target.value === "") return;
-          // 只登记一行，池子先不落盘 —— 这样"加一行再删掉"不会留下任何覆盖，
-          // 而打开它时看到的就是 pet.json 原本的默认样子。
-          applyOverride({ phases: { [event.target.value]: {} } });
-        },
-      },
-      h("option", { value: "" }, "＋ 添加相位"),
-      missing.map((phase) => h("option", { key: phase, value: phase }, phase)),
-      ),
+      missing.length === 0 ? null : h("div", { "data-add-row": "" },
+        missing.map((phase) => h("button", {
+          key: phase,
+          type: "button",
+          "data-phase-add": phase,
+          title: "加一个要定制的相位",
+          onClick: () => {
+            // 只登记一行，池子先不落盘 —— 这样"加一行再删掉"不会留下任何覆盖，
+            // 而打开它时看到的就是 pet.json 原本的默认样子。
+            applyOverride({ phases: { [phase]: {} } });
+          },
+        }, "＋ " + phase))),
     );
   }
 
@@ -4414,7 +4503,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     if (entry.label === null || entry.label === undefined) return [];
     const key = slot.id + ":" + entry.label;
     const { pairs, requires } = relationsOf(slot.id, entry.label);
-    const row = (kind, targetSlot, label) => h("div", {
+    const row = (kind, targetSlot, label) => h("span", {
       key: kind + ":" + (targetSlot ?? "") + ":" + label,
       "data-relation": kind,
       "data-relation-of": key,
@@ -4422,17 +4511,18 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       // 同一个选项会同时出现在摸鱼表和相位池里（关系是选项的属性），所以行上
       // 再标一下"这是在哪张表里显示的"，测试才能分别寻址。
       "data-relation-in": owner,
-      style: relationStyle,
+      title: kind === "pair" ? "选了它就一起点亮" : "必须先处于这个状态才播得出来",
     },
-    (kind === "pair" ? "同时：" : "前提：")
-      + (targetSlot === null || targetSlot === undefined
-        ? label
-        : slotLabelOf(targetSlot) + " = " + label),
+    h("b", null, kind === "pair" ? "同时" : "前提"),
+    // 两种关系都写全「槽位 = 选项」：只写选项名的话（"同时：猫猫"）看不出猫猫是
+    // 贴在哪个槽位上的，而关系恰恰是跨槽位的东西。
+    targetSlot === null || targetSlot === undefined
+      ? "：" + label
+      : "：" + slotLabelOf(targetSlot) + " = " + label,
     h("button", {
       type: "button",
       "data-relation-remove": "",
       title: "删掉这条关系",
-      style: removeStyle,
       onClick: () => removeRelation(key, kind === "pair" ? "pairs" : "requires", { slot: targetSlot ?? null, label }),
     }, "×"),
     );
@@ -4477,7 +4567,6 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       "data-relation-add": key,
       "data-relation-in": owner,
       value: "",
-      style: addStyle,
       onChange: (event) => {
         const value = event.target.value;
         if (value === "") return;
@@ -4525,7 +4614,6 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     const addKey = idPrefix + slot.id;
     const numberInput = (value, onChange, extra) => h("input", Object.assign({
       type: "number", min: 0, max: 99, step: 1, value: String(value),
-      style: { width: 46, fontSize: 11 },
       onChange: (event) => onChange(Number(event.target.value)),
     }, extra));
     const present = new Set(entries.map((entry) => entryKeyOf(entry)));
@@ -4537,52 +4625,72 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     const addable = [{ value: "__none", label: noneLabel }]
       .concat(candidates.map((option) => ({ value: option.label, label: option.label })))
       .filter((item) => !present.has(item.value));
-    return h("div", { "data-pool": owner, "data-pool-slot": slot.id, style: { padding: "3px 0" } },
+    // 权重条按**占池子总权重的比例**画：它就是这个条目被抽中的概率。
+    // 分母为 0（全是 0 或空表）时退化成一条空槽，不会出现 NaN 宽度。
+    const total = entries.reduce((sum, entry) => sum + (entry.weight > 0 ? entry.weight : 0), 0);
+    const add = (value) => setEntries(entries.concat([{ label: value === "__none" ? null : value, weight: 1 }]));
+    return h("div", { "data-pool": owner, "data-pool-slot": slot.id },
       h("div", { "data-pool-head": "" },
-        h("span", { style: labelStyle }, slot.label),
-        addable.length === 0 ? null : h("select", {
-          [addAttr]: addKey,
-          value: "",
-          style: addStyle,
-          onChange: (event) => {
-            const value = event.target.value;
-            if (value === "") return;
-            setEntries(entries.concat([{ label: value === "__none" ? null : value, weight: 1 }]));
-          },
+        h("span", { "data-pool-title": "" }, slot.label),
+        h("span", { "data-pool-meta": "" },
+          entries.length === 0 ? "空表" : entries.length + " 条候选"),
+      ),
+      entries.map((entry, index) => {
+        const share = entry.weight > 0 && total > 0 ? Math.round((entry.weight / total) * 100) : 0;
+        return h("div", {
+          key: entryKeyOf(entry) + ":" + index,
+          // 两个属性：`data-pool-row` 是**通用标记**（样式表按它排版，两张表共用一套
+          // 规则），`[rowAttr]` 才是这张表的唯一键（测试按它寻址）。
+          // 只有唯一键的话，样式表就得把 data-fidget-row / data-phase-pool-row
+          // 两个名字都抄一遍 —— 抄漏一个的后果就是"某一层根本没排版"。
+          "data-pool-row": "",
+          [rowAttr]: keyOf(entry),
+          // 权重 0 ＝ 这一条留在表里但不参与抽签。整行淡掉、划掉，一眼能看出来，
+          // 不用去读那个数字。
+          ...(share === 0 ? { "data-off": "" } : {}),
         },
-        h("option", { value: "" }, "＋ 添加"),
-        addable.map((item) => h("option", { key: item.value, value: item.value }, item.label)),
-        ),
-      ),
-      entries.length === 0
-        ? h("div", { "data-pool-empty": keyOf({ label: null }), style: relationStyle }, "空表：这个槽位在这个池子里不出手")
-        : null,
-      entries.map((entry, index) => h("div", {
-        key: entryKeyOf(entry) + ":" + index,
-        [rowAttr]: keyOf(entry),
-      },
-      h("span", null, labelOf(entry)),
-      numberInput(entry.weight, (value) => {
-        const next = entries.slice();
-        next[index] = { label: entry.label ?? null, weight: value };
-        setEntries(next);
-      }, { [weightAttr]: keyOf(entry) }),
-      h("button", {
-        type: "button",
-        [removeAttr]: keyOf(entry),
-        title: "删掉这一条",
-        style: removeStyle,
-        onClick: () => setEntries(entries.filter((_, at) => at !== index)),
-      }, "×"),
-      // 两种关系**必须分开显示**，它们不是一回事：
-      //   pairs    = 同时触发（选了它就一起点亮，比如 喵喵手 会带出「贴纸=猫猫」）
-      //   requires = 播放前提（必须先处于那个状态才播得出来，比如 挤番茄酱 要先有蛋包饭）
-      // 关系块整体占满这一行（`[data-relations]` 跨列），否则会被塞进标签那一格。
-      h("div", { key: "relations", "data-relations": "" },
-        ...relationRows(slot, entry, owner),
+        h("span", { "data-row-label": "", title: labelOf(entry) }, labelOf(entry)),
+        h("span", { "data-weight-bar": "", title: share + "% 的概率" },
+          h("i", { "data-weight-fill": "", style: { width: share + "%" } })),
+        numberInput(entry.weight, (value) => {
+          const next = entries.slice();
+          next[index] = { label: entry.label ?? null, weight: value };
+          setEntries(next);
+        }, { "data-pool-weight": "", [weightAttr]: keyOf(entry) }),
+        h("button", {
+          type: "button",
+          "data-pool-remove": "",
+          [removeAttr]: keyOf(entry),
+          title: "删掉这一条",
+          onClick: () => setEntries(entries.filter((_, at) => at !== index)),
+        }, "×"),
+        // 「＋ 关系」是这一行的第 5 列（不是另起一行）：多数条目没有任何关系，
+        // 让它独占一行的话每一条都要占两行高度。
         relationAdd(slot, entry, owner),
+        // 两种关系**必须分开显示**，它们不是一回事：
+        //   pairs    = 同时触发（选了它就一起点亮，比如 喵喵手 会带出「贴纸=猫猫」）
+        //   requires = 播放前提（必须先处于那个状态才播得出来，比如 挤番茄酱 要先有蛋包饭）
+        // 关系块整体占满这一行（`[data-relations]` 跨列），否则会被塞进第一格。
+        h("div", { key: "relations", "data-relations": "" },
+          ...relationRows(slot, entry, owner),
+        ),
+        );
+      }),
+      entries.length === 0
+        ? h("div", { "data-pool-empty": "" }, "空表：这个槽位在这个池子里不出手")
+        : null,
+      // 候选直接摆出来（虚线的「＋ 名字」），点一下就加 —— 比一个写着"添加"的下拉框
+      // 更像"往池子里放东西"，也省掉了"打开下拉才发现有什么"的一步。
+      addable.length === 0 ? null : h("div", { "data-add-row": "" },
+        addable.map((item) => h("button", {
+          key: item.value,
+          type: "button",
+          "data-pool-add": "",
+          [addAttr]: addKey,
+          "data-add-option": item.value,
+          onClick: () => add(item.value),
+        }, "＋ " + item.label)),
       ),
-      )),
     );
   }
 
@@ -4607,22 +4715,40 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       })),
     );
   }
-  /** DSH 设置页里的「桌宠」一节：手感 / 会话相位 / 摸鱼。 */
-  function PetSettingsSection() {
+  /**
+   * 设置区的**正文**：一组一张卡片。
+   *
+   * DSH 设置页和右键面板渲染的是**同一个**正文，所以两处的排版不可能走岔 ——
+   * 之前是各写一遍，结果面板里那两张表一直是没样式的裸控件。
+   *
+   * 它必须是**组件**（`h(PetSettingsBody)`），不能写成 `...PetSettingsBody()`
+   * 那样直接调用：直接调用会把里面的 hooks 算到调用方（`Pet`）头上，而右键面板是
+   * 按标签页条件渲染的 —— 一切到"设置"，Pet 的 hook 数量就变了，React 会抛
+   * "Rendered more hooks than during the previous render" 并把**整只宠物**卸载。
+   */
+  function PetSettingsBody() {
     useSettings();
-    const heading = (text) => h("h3", { style: { margin: "10px 0 4px", fontSize: 13 } }, text);
-    return h("div", { "data-pet-settings": "" },
-      ...TUNING_GROUPS.map((group) => h("div", { key: group.id },
-        heading(group.label),
-        h(TuningControls, { group: group.id }),
-      )),
-      heading("会话相位：每个相位一组池子"),
-      h(PhaseControls, null),
-      heading("摸鱼：每个槽位一张条目表"),
-      h(FidgetControls, null),
-      heading("装扮"),
-      h(OutfitControls, null),
+    const card = (key, title, hint, body) => h("div", { key, "data-card": key },
+      h("div", { "data-card-head": "" },
+        h("span", { "data-card-title": "" }, title),
+        hint === null || hint === undefined ? null : h("span", { "data-card-hint": "" }, hint),
+      ),
+      h("div", { "data-card-body": "" }, body),
     );
+    return [
+      // 卡片 key 必须各不相同：TUNING_GROUPS 里那个 "fidget" 是"摸鱼节奏"，
+      // 和下面"摸鱼"那张池子卡不是一回事，同名会让 data-card 变成歧义的。
+      ...TUNING_GROUPS.map((group) => card("tune-" + group.id, group.label, group.hint,
+        h(TuningControls, { group: group.id }))),
+      card("phases", "会话相位", "每个相位一组池子", h(PhaseControls, null)),
+      card("pools", "摸鱼", "每个槽位一张条目表", h(FidgetControls, null)),
+      card("outfit", "装扮", null, h(OutfitControls, null)),
+    ];
+  }
+
+  /** DSH 设置页里的「桌宠」一节。 */
+  function PetSettingsSection() {
+    return h("div", { "data-pet-settings": "" }, h(PetSettingsBody, null));
   }
 
   function applySettings(ctx) {
