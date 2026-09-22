@@ -25,9 +25,16 @@
   常驻 UI，鼠标划过也不显示。面板跟随 DSH 的**浅色 / 深色主题**
 - **待机摸鱼**：静置一会儿会随机自己演一段（不会演「点击」和「出错」的专属动作）
 - **都会自己收尾**：动作、定格、表情到点全部自动回到初始待机，不会卡住
-- **全都可配**：17+ 个互斥槽位（装扮 + 表情）、每个槽位一张条目表（可增删、带权重、
+- **全都可配**：20 个互斥槽位（装扮 + 表情）、每个槽位一张条目表（可增删、带权重、
   条目之间还能配「同时 / 前提」关系），会话相位也是同一套池子机制
 - **设置界面**：挂在 **DSH 设置页 → 桌宠** 那一节（卡片 / 药丸 / 权重条，浅色深色都能用）
+
+## 怎么用
+
+- **右键点宠物** 呼出面板：「动作」「装扮」两个页签，底部是大小滑杆和「归位」。平时画面上没有常驻 UI。
+- **改配置**（摸鱼池 / 相位池 / 关系 / 手感）去 **DSH 设置页 → 桌宠**。
+- 完整说明（设置怎么配、这只宠物有哪些槽位、宠物契约、HTTP 接口）见
+  [`dsh-live2d-pet/README.md`](dsh-live2d-pet/README.md)。
 
 ## 更新日志
 
@@ -91,19 +98,12 @@ local-assets/         本地草稿（不发布）
 
 ## 加一只宠物
 
-宠物放在 `%DSH_HOME%\pets\<id>\`，最小的样子：
-
-```
-%DSH_HOME%\pets\my-pet\
-  pet.json            # 必需：renderer 必须是 "live2d"
-  my.model3.json      # 入口模型
-  model\  textures\  motions\  expressions\
-  catalog.json        # 可选：中文显示名与分类
-```
+宠物放在 `%DSH_HOME%\pets\<id>\`，最小结构是 `pet.json` + 一个 `*.model3.json` +
+`model\ textures\ motions\ expressions\`（`catalog.json` 可选，只影响显示名）。
 
 `pet.json` 里 `live2d.model` 指向 model3.json，插件启动时从模型里读出全部动作与表情，
-所以**换模型不用改插件代码**。完整契约、动作语义（定格 / 前置动作 / 参数还原）见
-[`dsh-live2d-pet/README.md`](dsh-live2d-pet/README.md)。
+所以**换模型不用改插件代码**。槽位 / 池子 / 相位 / 动作语义的完整契约见
+[`dsh-live2d-pet/README.md`](dsh-live2d-pet/README.md#做一只自己的宠物)。
 
 > ⚠️ 路径片段只允许 `[A-Za-z0-9._-]`，中文文件名会导致整个宠物加载失败。
 > 需要的话用 `tools/build-pet.mjs` 转换。
@@ -112,6 +112,12 @@ local-assets/         本地草稿（不发布）
 
 插件是**双半区包**，没有前端构建步骤：`lib/client.js` 是手写的 `__ModuleLoader__` 工厂，
 改完直接生效（**重启 `dsh web`** 即可，bundle 不做热重载）。
+
+> **工程记录不写在 README 里**：踩坑、帧序、测量陷阱、验证写法按主题放在
+> [`.dsh/skills/`](.dsh/skills/)（`cubism-engine` / `pet-domain-model` / `client-state` /
+> `verification-signals` / `browser-cdp` / `docs-and-workflow`），
+> 硬规则与索引见 [`AGENTS.md`](AGENTS.md)。README 只写"用户读完能用上"的东西，
+> 用户可见的变化写 [`CHANGELOG`](dsh-live2d-pet/CHANGELOG.md)。
 
 只有 vendor 分包需要构建（改动 `src/vendor-entry.ts` 或升级依赖时）：
 

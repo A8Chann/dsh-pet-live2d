@@ -35,3 +35,31 @@ await sleep(700)          // 让 React 渲染完
 槽位/选项增删（例如把"掏出手机"独立成一个槽）会让多个 driver 里的
 `slots === 16` 之类的硬编码断言同时变红。改 `pet.json` 的槽位结构后，
 先全局搜一遍这类计数。
+
+> 这条写过一次**还是漏了一个 driver**（cdp-merge），靠套件才发现 —— 别只搜你记得的那几个。
+
+## 设置界面：挂进一个探针容器再操作
+
+设置正文现在只活在 **DSH 设置页那一节**里（右键面板的「设置」页签 2.0.0 去掉了）。
+driver 不用去翻设置页，直接把那一节渲染进自己的容器：
+
+```js
+const openSettings = async () => ev(`(() => {
+  if (document.querySelector("#dsh-settings-probe")) return true;      // **幂等**
+  const slot = (window.__pluginSections ?? {})["pet-settings"];
+  if (!slot) return false;
+  const host = document.createElement("div"); host.id = "dsh-settings-probe";
+  document.body.appendChild(host);
+  window.ReactDOM.createRoot(host).render(slot.render());
+  return true })()`)
+const probe = (selector) => "#dsh-settings-probe " + selector
+```
+
+两个坑：
+
+- **挂载必须幂等**。同一份正文挂两次（两个同 id 容器）不报错，只会让所有
+  `querySelectorAll` 的结果**翻倍** —— 相位槽位表、关系行都这么假红过。
+- 两套作用域别写混：面板自己的钩子（`data-panel` / `data-tabs` / `data-slot` /
+  `data-slot-option`）在 `[data-dsh-live2d-pet]` 下面；设置正文的钩子
+  （`data-fidget-*` / `data-phase-*` / `data-relation*` / `data-pool*` / `data-input` …）
+  在 `#dsh-settings-probe` 下面。

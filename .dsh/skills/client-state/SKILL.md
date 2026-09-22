@@ -57,3 +57,35 @@ whenToUse: >
 
 计数器/标志位如果不是 ref，同样的坑会让人误判产品。
 **加诊断时先用一个小探针确认诊断自己是对的**，再去改产品。
+
+> 真踩过一次：`ambientDebug()` 写在**组件作用域的 effect** 里，读的却是控制器闭包里的
+> `ambientTrace`/`currentGroup` → ReferenceError → 对外表现是**静默 undefined**，
+> 探针里 `JSON.parse(undefined)` 当场崩掉。控制器作用域的读口就写在控制器里
+> （跟 `mouthDebug`、`ambientDebug` 一样），组件作用域的才挂在组件的 effect 上。
+
+## 跟随宿主主题：读侧边栏的底色，别读 class
+
+面板/气泡是插件自己的表面，宿主有浅色深色两套主题，写死一套必然有一边瞎。做法：
+
+- 基准取 **`[data-pane="sidebar"]`** 的 computed `backgroundColor`（项目规则：主题色一律
+  以它为准）；取不到就往外套 `[data-pane]` → `body` → `html`，**全透明也算取不到**。
+- 用亮度判深浅（`0.299R + 0.587G + 0.114B`，中值 0.5）。全取不到时按**浅色**处理
+  （DSH 默认浅色，猜深色会先闪一下黑面板）。
+- 结果写成根节点上的 `data-theme`，配色走 `--pp-*` 一组 CSS 变量。
+- **宿主换主题的方式不止一种**（换 class / 换 data 属性 / 直接改 style），所以
+  `class`/`style`/`data-theme`/`data-mode` 四种属性都用 MutationObserver 盯着，
+  另加一个低频兜底轮询 —— 漏一次就会一直显示错的那套。
+
+## 设置正文只有一个去处
+
+设置正文（`PetSettingsBody`）挂在 **DSH 设置页那一节**（host 注册的 `settings.section`
+slot，ID `pet-settings`）。右键面板里那份在 2.0.0 去掉了 —— 两处共用同一份模块作用域
+store，同时开两个界面也不会打架，但没必要留两份入口。
+
+两条硬约束：
+
+- 必须 `h(PetSettingsBody)` **渲染**，不能 `...PetSettingsBody()` 直接调用：直接调用会把
+  它的 hooks 算到 `Pet` 头上，hook 数量一变就抛 "Rendered more hooks than during the
+  previous render"，React 会把**整只宠物**卸载。
+- 样式作用域是 `[data-pet-settings]`（那一节渲染在宠物根节点**之外**，
+  `[data-dsh-live2d-pet] ...` 那套选择器碰不到它）。

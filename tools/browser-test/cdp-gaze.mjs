@@ -362,12 +362,15 @@ const probe = (selector) => "#dsh-settings-probe " + selector
  */
 const clickChip = (selector) => ev('(() => { const el = document.querySelector(' + JSON.stringify(selector)
   + '); if (!el) return false; el.click(); return true })()')
-const addedTool = await clickChip(probe('[data-phase-add="tool"]'))
-await sleep(400)
-// 相位 = 「每个相位一组池子」，不再是"动作 / 表情两个下拉"：加一行之后应该直接
-// 看到 pet.json `looksByPhase.tool` 那一套槽位表（每槽位一条、权重 1）。
+// 相位 = 「每个相位一组池子」，不再是"动作 / 表情两个下拉"。而且**全部相位一开始就
+// 列在表里**（不再是"空列表 + 点添加才看到默认值"）：用户问过"会话相位里是空的，
+// 但点了添加有默认值，应该初始就带上吧" —— 列表空着看不出宠物默认会演什么。
+const toolRow = await ev('!!document.querySelector(' + JSON.stringify(probe('[data-phase="tool"]')) + ')')
+const toolIsDefault = await ev('!document.querySelector(' + JSON.stringify(probe('[data-phase="tool"]')) + ').hasAttribute("data-phase-custom")')
 const hasPhaseUi = await ev('!!document.querySelector(' + JSON.stringify(probe('[data-phase-pool-row="tool:rhand:写本本"]')) + ')')
-check('能加一行「会话相位」，并按 pet.json 的默认铺开池子', addedTool === true && hasPhaseUi === true)
+check('「会话相位」一开始就列出全部相位，并按 pet.json 的默认铺开池子',
+  toolRow === true && toolIsDefault === true && hasPhaseUi === true,
+  'row=' + toolRow + ' 默认=' + toolIsDefault + ' 池子=' + hasPhaseUi)
 const poolSlots = JSON.parse(await ev('JSON.stringify(Array.from(document.querySelectorAll('
   + JSON.stringify(probe('[data-phase="tool"] [data-pool-slot]'))
   + ')).map((el) => el.getAttribute("data-pool-slot")))'))
@@ -614,8 +617,10 @@ await sleep(400)
 await slotPick("lhand", "无")
 await openSettings()
 await sleep(600)
-check('再加一行 waiting 相位', (await clickProbe('[data-phase-add="waiting"]')) === true)
-await sleep(400)
+check('waiting 相位一开始就在列表里（标注为「默认」）',
+  (await ev('(() => { const row = document.querySelector(' + JSON.stringify(probe('[data-phase="waiting"]'))
+  + '); return row !== null && !row.hasAttribute("data-phase-custom") })()')) === true)
+await sleep(300)
 check('把 waiting 左手的默认条目删掉', (await clickProbe('[data-phase-pool-remove="waiting:lhand:橡皮"]')) === true)
 await sleep(350)
 check('左手池子里放「蛋包饭」',
@@ -1025,13 +1030,28 @@ check('前提关系也能删掉',
   !requireRowsAfter.includes("rhand:双手比耶"), JSON.stringify(requireRowsAfter))
 await ev('window.__dshLive2dPet.setExpressions([])')
 
-check('能加一行会话相位',
-  (await clickChip('#dsh-settings-probe [data-phase-add="thinking"]')) === true
-  && (await sleep(350), await ev('!!document.querySelector("#dsh-settings-probe [data-phase=\'thinking\']")')) === true)
+// 相位行现在**永远在列表里**（不再是"点添加才出现"），所以这里验证的是新的契约：
+// 默认行没有 ×（没什么可恢复的）；**真的改一下**才落盘覆盖、才出现 ×；点 × 恢复默认。
+check('thinking 相位一开始就在列表里，且标着「默认」、没有 ×',
+  (await ev('(() => { const row = document.querySelector("#dsh-settings-probe [data-phase=\'thinking\']");'
+    + ' return row !== null && !row.hasAttribute("data-phase-custom")'
+    + ' && !document.querySelector("#dsh-settings-probe [data-phase-remove=\'thinking\']") })()')) === true)
+check('改一下它（把某个默认条目删掉：thinking 的左手「画笔」）',
+  (await clickChip('#dsh-settings-probe [data-phase-pool-remove="thinking:lhand:画笔"]')) === true)
+await sleep(400)
+check('改过之后标成「已改过」并出现 ×',
+  (await ev('(() => { const row = document.querySelector("#dsh-settings-probe [data-phase=\'thinking\']");'
+    + ' return row !== null && row.hasAttribute("data-phase-custom")'
+    + ' && !!document.querySelector("#dsh-settings-probe [data-phase-remove=\'thinking\']") })()')) === true)
+const thinkingStored = JSON.parse(await ev('window.localStorage.getItem("dsh-pet-live2d.settings.v2") ?? "null"'))
+check('改动写进了存档（覆盖里有 thinking）', thinkingStored?.phases?.thinking !== undefined,
+  JSON.stringify(Object.keys(thinkingStored?.phases ?? {})))
 await ev('document.querySelector("#dsh-settings-probe [data-phase-remove=\'thinking\']").click()')
-await sleep(350)
-check('能删掉那一行相位',
-  (await ev('!!document.querySelector("#dsh-settings-probe [data-phase=\'thinking\']")')) === false)
+await sleep(400)
+check('点 × 恢复默认：行还在、但退回「默认」且存档里没有它了',
+  (await ev('(() => { const row = document.querySelector("#dsh-settings-probe [data-phase=\'thinking\']");'
+    + ' return row !== null && !row.hasAttribute("data-phase-custom") })()')) === true
+  && JSON.parse(await ev('window.localStorage.getItem("dsh-pet-live2d.settings.v2") ?? "null"'))?.phases?.thinking === undefined)
 
 // --- 摸鱼节奏 + 装扮存档开关 -----------------------------------------------
 const hasFidgetGap = await ev('!!document.querySelector("#dsh-settings-probe [data-input=\'fidgetQuietMs\']")')

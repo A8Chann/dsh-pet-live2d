@@ -5079,19 +5079,29 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       ...Object.keys(pet.looksByPhase ?? {}),
       ...Object.keys(PHASE_OVERRIDES.phases),
     ])).sort();
-    const rows = known.filter((phase) => PHASE_OVERRIDES.phases[phase] !== undefined);
-    const missing = known.filter((phase) => PHASE_OVERRIDES.phases[phase] === undefined);
+    // **全部相位都列出来**，不再是"只列定制过的"。
+    //
+    // 用户问过："会话相位里是空的，但点了添加有默认值，这正常吗？应该初始就带上默认值吧。"
+    // 老设计是故意的（列表 = 你定制过的部分；加一行才看到默认样子），好处是"没有覆盖就
+    // 不会被覆盖钉住"—— pet.json 以后改进了默认值你照样吃得到。但代价是：空列表让人
+    // **看不出宠物默认会演什么**，而且和「摸鱼」那张卡不一致（摸鱼永远列着它的池子）。
+    //
+    // 现在每行显示的是**有效池子**（有覆盖用覆盖，没有就用 pet.json 的默认），行头标出
+    // 「默认 / 已改过」，只有改过的那行才有 ×（= 恢复默认）。覆盖依然**只在真的编辑时**
+    // 才落盘（`setPhasePool` 会把有效池子整份物化），所以"看一眼"不留痕迹、
+    // 以后默认值改进了也照样能吃到。
     return h("div", { "data-settings": "", "data-setting": "phases" },
-      rows.length === 0
-        ? h("div", { "data-empty": "phases" }, "还没有定制过的相位 —— 在下面挑一个开始")
+      known.length === 0
+        ? h("div", { "data-empty": "phases" }, "这只宠物没有配置任何会话相位")
         : null,
-      rows.map((phase) => {
+      known.map((phase) => {
+        const custom = PHASE_OVERRIDES.phases[phase] !== undefined;
         const pools = phasePoolsFor(phase);
         const used = Object.keys(pools);
         const free = slots.filter((slot) => used.indexOf(slot.id) === -1);
         const open = folded[phase] !== true;
         const candidates = used.reduce((sum, slotId) => sum + (pools[slotId] ?? []).length, 0);
-        return h("div", { key: phase, "data-phase": phase },
+        return h("div", { key: phase, "data-phase": phase, ...(custom ? { "data-phase-custom": "" } : {}) },
           h("div", { "data-phase-head": "", ...(open ? {} : { "data-collapsed": "" }) },
             h("button", {
               type: "button",
@@ -5101,14 +5111,16 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
             },
             h("span", { "data-caret": "" }, open ? "▾" : "▸"),
             h("span", null, phase),
-            h("span", { "data-phase-meta": "" }, used.length + " 槽位 · " + candidates + " 条候选"),
+            h("span", { "data-phase-meta": "" },
+              used.length + " 槽位 · " + candidates + " 条候选 · " + (custom ? "已改过" : "默认")),
             ),
-            h("button", {
+            // × 只在**改过**的行上出现：它就是"恢复默认"（删掉整个覆盖）。
+            custom ? h("button", {
               type: "button",
               "data-phase-remove": phase,
-              title: "删掉整个相位（回到 pet.json 的默认）",
+              title: "恢复默认（删掉这个相位的全部改动）",
               onClick: () => removePhaseRow(phase),
-            }, "×"),
+            }, "×") : null,
           ),
           open ? [
             used.length === 0
@@ -5156,18 +5168,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           ] : null,
         );
       }),
-      missing.length === 0 ? null : h("div", { "data-add-row": "" },
-        missing.map((phase) => h("button", {
-          key: phase,
-          type: "button",
-          "data-phase-add": phase,
-          title: "加一个要定制的相位",
-          onClick: () => {
-            // 只登记一行，池子先不落盘 —— 这样"加一行再删掉"不会留下任何覆盖，
-            // 而打开它时看到的就是 pet.json 原本的默认样子。
-            applyOverride({ phases: { [phase]: {} } });
-          },
-        }, "＋ " + phase))),
+      // 这里原来还有一排「＋ 相位」按钮（给没定制过的相位开一行）。现在全部相位都直接
+      // 列出来了，那个入口没有存在意义 —— 而且它正是"点一下才看到默认值"的来源。
     );
   }
 

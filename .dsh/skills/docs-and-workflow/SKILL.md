@@ -8,12 +8,27 @@ whenToUse: >
 
 # 文档与工作流
 
-## 文档同步
+## 文档分工（2026-09 用户明确要求）
 
-改动插件行为后，同步更新：
+**别把插件 README 写成开发日志。** 曾经写到 700 行：版本演进、踩坑记录、测量陷阱全堆在
+里面，用户直接说"你在这 README 写开发日志呢？？？"。分工是：
 
-- `dsh-live2d-pet/README.md`
-- `dsh-live2d-pet/pets/ds-whale-girl/README.md`
+| 写什么 | 写哪儿 |
+|---|---|
+| 用户要用的（安装 / 怎么用 / 设置说明 / 槽位表 / 宠物契约 / HTTP 接口 / 许可） | `dsh-live2d-pet/README.md`，**精简** |
+| 用户可见的**变化**（新功能、语义变更、升级注意） | `dsh-live2d-pet/CHANGELOG.md`（随包发布，插件市场/Release 都读它） |
+| 工程记录（踩坑、帧序、测量陷阱、验证写法、为什么这么改） | `.dsh/skills/<主题>/SKILL.md` —— **按主题归位，别按时间堆** |
+| 项目的硬规则 + skill 索引 | 仓库根的 `AGENTS.md` |
+
+判断标准很简单：**"用户读完能不能用上"**。不能，就是工程记录，进 skill。
+
+改动插件行为后要同步的：内层 README（如果用户用法变了）、CHANGELOG（用户可见变化）、
+对应的 skill（工程结论）、`pets/ds-whale-girl/README.md`（宠物自己的说明）。
+外层 `README.md` 是**门面**：功能表、安装、更新日志指针 —— 它和内层对齐，不重复内层细节。
+
+> skill 是按主题检索的，所以新踩的坑要**并进已有主题**（cubism-engine / client-state /
+> verification-signals / browser-cdp / pet-domain-model / docs-and-workflow），
+> 不要为一次调试新开一个 skill。
 
 ## 常用命令
 
