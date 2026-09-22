@@ -101,20 +101,26 @@ check('the spray shows the whale', sprayDuring.jingyu_drawn === 1, 'jingyu=' + s
 check('and it PARKS with the whale out', sprayAfter.jingyu_drawn === 1, JSON.stringify(sprayAfter))
 
 // (3) 掏出手机 must HOLD the phone
+// 别用"睡固定时间再读"：机器一忙，1800ms 读到的还是举到一半的phone（实测 0.437，
+// 一度被当成回归）。轮询**期望值**（verification-signals 那条）。
 await ev('window.__dshLive2dPet.playOnce("OpenCase",0,{kind:"panel"})')
-await sleep(1800); const openDuring = await read()
-await sleep(3000); const openHeld = await read()
+let openDuring = null
+for (let i = 0; i < 30; i += 1) {
+  await sleep(150)
+  openDuring = await read()
+  if (openDuring.phone_drawn > 0.5) break
+}
+await sleep(1200); const openHeld = await read()
 check('掏出手机 raises the phone', openDuring.phone_drawn > 0.5, 'phone=' + openDuring.phone_drawn)
 check('and HOLDS it rather than relaxing', openHeld.phone_drawn > 0.5, 'phone=' + openHeld.phone_drawn)
 
-// (4) a selfie is gated on the phone already being out
-// KNOWN GAP, asserted as it behaves rather than as it should: the guard reads
-// the SLOT SELECTION, and this driver raised the phone with the raw motion, so
-// the phone is visibly out (phone=1) while the guard still says no. Recorded
-// here so the gap is visible instead of silently passing.
+// (4) 自拍不再有前提
+// 原来这里是作为一个"已知 GAP"记录下来的：守卫读的是**槽位选择**，而这个 driver 是
+// 用裸动作把手机举起来的，于是手机明明在手里（phone=1）守卫却说不行。
+// 现在自拍是独立槽位、动作自己抬手，守卫整个去掉了 —— GAP 随之消失。
 const selfieWithRawPhone = await ev('window.__dshLive2dPet.canPlay("Selfie")')
-check('GAP: a motion-raised phone does not satisfy the selfie guard',
-  selfieWithRawPhone === false && openHeld.phone_drawn > 0.5,
+check('自拍不再被守卫拦住（手机是裸动作举起来的也照样能播）',
+  selfieWithRawPhone === true && openHeld.phone_drawn > 0.5,
   'phone=' + openHeld.phone_drawn + ' canPlay(Selfie)=' + selfieWithRawPhone)
 
 // (5) motion switches must CROSS-FADE

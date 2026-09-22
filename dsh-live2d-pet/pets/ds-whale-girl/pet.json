@@ -197,16 +197,6 @@
             "fidgetWeight": 1
           },
           {
-            "label": "自拍",
-            "motion": "Selfie",
-            "fidget": false
-          },
-          {
-            "label": "快速自拍",
-            "motion": "SelfieQuick",
-            "fidget": false
-          },
-          {
             "label": "喵喵手",
             "expressions": [
               "喵喵手"
@@ -269,6 +259,22 @@
         "fidgetNone": 0
       },
       {
+        "id": "selfie",
+        "label": "自拍",
+        "none": "无",
+        "options": [
+          {
+            "label": "自拍",
+            "motion": "Selfie"
+          },
+          {
+            "label": "快速自拍",
+            "motion": "SelfieQuick"
+          }
+        ],
+        "fidgetNone": 8
+      },
+      {
         "id": "lhand",
         "label": "左手",
         "none": "无",
@@ -321,7 +327,7 @@
               "爱心眼"
             ],
             "pairs": {
-              "ambient": "冒爱心"
+              "heart": "冒爱心"
             },
             "fidgetWeight": 1
           },
@@ -455,8 +461,8 @@
         ]
       },
       {
-        "id": "ambient",
-        "label": "氛围",
+        "id": "flower",
+        "label": "氛围：花花",
         "none": "无",
         "options": [
           {
@@ -464,13 +470,29 @@
             "expressions": [
               "情绪花花"
             ]
-          },
+          }
+        ],
+        "fidgetNone": 20
+      },
+      {
+        "id": "heartbeat",
+        "label": "氛围：心跳",
+        "none": "无",
+        "options": [
           {
             "label": "心跳",
             "expressions": [
               "心跳"
             ]
-          },
+          }
+        ],
+        "fidgetNone": 20
+      },
+      {
+        "id": "heart",
+        "label": "氛围：冒爱心",
+        "none": "无",
+        "options": [
           {
             "label": "冒爱心",
             "expressions": [
@@ -542,7 +564,7 @@
         "whale": "头顶鲸",
         "lhand": "橡皮",
         "mood": "开心兴奋",
-        "ambient": "情绪花花"
+        "flower": "情绪花花"
       },
       "failed": {
         "whale": "放桌上",
@@ -552,20 +574,6 @@
       }
     },
     "motionGuards": {
-      "Selfie": {
-        "rhand": [
-          "掏出手机",
-          "自拍",
-          "快速自拍"
-        ]
-      },
-      "SelfieQuick": {
-        "rhand": [
-          "掏出手机",
-          "自拍",
-          "快速自拍"
-        ]
-      },
       "SprayWater": {
         "whale": [
           "头顶鲸",

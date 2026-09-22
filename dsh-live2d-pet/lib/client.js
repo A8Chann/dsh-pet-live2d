@@ -4102,7 +4102,15 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           schedule();
           return;
         }
-        const slots = fidgetSlotsFor(pet);
+        // 被别人的「同时」钉住的槽位，这一轮不抽：`爱心眼 → 冒爱心` 是"选了它就一起
+        // 点亮"，摸鱼不该从侧面把它拆掉 —— 那是配对，不是另一个可以随便改的槽位。
+        const pairedInto = new Set();
+        for (const [slotId, label] of Object.entries(slotSelectionsRef.current)) {
+          const option = slotByIdRef.current.get(slotId)?.options.find((o) => o.label === label);
+          if (option === undefined) continue;
+          for (const target of Object.keys(relationsOf(slotId, label).pairs)) pairedInto.add(target);
+        }
+        const slots = fidgetSlotsFor(pet).filter((slot) => !pairedInto.has(slot.id));
         if (slots.length === 0) {
           schedule();
           return;
@@ -4190,6 +4198,16 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           fidgetTallyRef.current.picked[slot.id] = (fidgetTallyRef.current.picked[slot.id] ?? 0) + 1;
           const key = slot.id + ":" + (option === null ? "无" : option.label);
           fidgetTallyRef.current.drawn[key] = (fidgetTallyRef.current.drawn[key] ?? 0) + 1;
+          // 抽到「默认」= **这次不动**，不是"清空这个槽位"。
+          //
+          // 以前这里照样调 chooseSlotOption(slot, null)，于是摸鱼每隔一二十秒就把每个
+          // 槽位擦一遍：用户手选的爱心眼被清掉，配对点亮的冒爱心跟着消失（用户报的
+          // "掏出手机后冒爱心为什么没了"）。不动就是不动 —— 想让它清空，把这条从池子
+          // 里删掉、或者手动点「无」。
+          //
+          // 但**计数照记**（记成 `<槽位>:无`）：诊断要能回答"这个槽位多久动一次"，
+          // 跳过的抽签也是抽签。
+          if (option === null) continue;
           chooseSlotOptionRef.current(slot, option);
         }
         schedule();

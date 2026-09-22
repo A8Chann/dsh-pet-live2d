@@ -92,7 +92,8 @@ await ev('(()=>{const bs=Array.from(document.querySelectorAll("[data-dsh-live2d-
   + ' const b=bs.find((x)=>x.textContent.indexOf("装扮")===0); if(b) b.click(); return !!b})()')
 await sleep(600)
 const slots = await ev('document.querySelectorAll("[data-dsh-live2d-pet] [data-panel] [data-slot]").length')
-check('the 装扮 tab lists every slot', slots === 17, 'slots=' + slots)
+// 同 cdp-exp：槽位数跟着 pet.json 走，现在是 20。
+check('the 装扮 tab lists every slot', slots === 20, 'slots=' + slots)
 await ev('(()=>{const g=document.querySelector(\'[data-dsh-live2d-pet] [data-panel] [data-slot="glasses"]\');'
   + ' const b=Array.from(g.querySelectorAll("[data-chips] button")).find((x)=>x.textContent==="圆眼镜");'
   + ' if(!b) return false; b.click(); return true})()')

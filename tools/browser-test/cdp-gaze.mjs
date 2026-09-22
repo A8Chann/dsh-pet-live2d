@@ -672,6 +672,30 @@ check('用 ＋ 能把它加回来',
   (await clickChip('[data-dsh-live2d-pet] [data-fidget-add="mouth"][data-add-option="吹泡泡糖"]')) === true
   && (await sleep(350), await ev('!!document.querySelector("[data-dsh-live2d-pet] [data-fidget-row=\'mouth:吹泡泡糖\']")')) === true)
 
+// --- 「默认」＝这次不动：手选的东西不该被摸鱼擦掉 -----------------------------
+// 用户报的"掏出手机后冒爱心的氛围为什么没有了"。复现出来是这样的：摸鱼每隔一二十秒
+// 把每个槽位重掷一次，掷到「默认」就走 chooseSlotOption(slot, null) 把槽位**清空**
+// —— 爱心眼被清掉，配对点亮的冒爱心跟着消失（"掏出手机"只是巧合：那两个动作根本
+// 不驱动 love 参数，查过 motion3 了）。现在「默认」= 不动。
+await pickTab("装扮")
+await sleep(500)
+await slotPick("eyes", "爱心眼")
+await sleep(300)
+check('先点亮爱心眼（它会配对点亮冒爱心）',
+  (await pins()).includes("冒爱心"), JSON.stringify(await pins()))
+for (let i = 0; i < 3; i += 1) {
+  await ev('window.__dshLive2dPet.fidgetNow()')
+  await sleep(700)
+}
+const heartAfter = await pins()
+const eyesAfter = JSON.parse(await ev('JSON.stringify(window.__dshLive2dPet.slotSelections())'))
+check('连做 3 次摸鱼之后，手选的爱心眼还在（「默认」不再清空槽位）',
+  eyesAfter.eyes === "爱心眼" && heartAfter.includes("爱心眼"), JSON.stringify(eyesAfter))
+check('配对的冒爱心也还在（"一起点亮"不该被摸鱼从侧面拆掉）',
+  heartAfter.includes("冒爱心"), JSON.stringify(heartAfter))
+await pickTab("设置")
+await sleep(500)
+
 // --- 摸鱼也能加槽位和候选（这两件事原来都被写死在代码里）--------------------
 // 用户问"为什么摸鱼里面不能加槽位和候选"。答案是：界面上只列 FIDGET_SLOTS 那六个、
 // 运行时也只认那六个，候选还被 `fidget:false` 挡掉一批。默认集合应该只是宠物给的

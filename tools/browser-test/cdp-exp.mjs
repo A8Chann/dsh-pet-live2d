@@ -77,7 +77,9 @@ await sleep(700)
 // 表情 and 装扮 are one menu now: 14 slots, each with its options plus a
 // "none" button.
 const slots = await ev('document.querySelectorAll("[data-dsh-live2d-pet] [data-panel] [data-slot]").length')
-check('the merged menu renders every slot', slots === 17, 'slots=' + slots)
+// 槽位数会随 pet.json 变（氛围拆成三个独立槽、自拍独立成槽之后是 20）——
+// 改槽位结构时记得一起改这里（browser-cdp skill 里那条"先全局搜一遍这类计数"）。
+check('the merged menu renders every slot', slots === 20, 'slots=' + slots)
 
 // Each chip must move the parameter its own .exp3.json declares.
 for (const [label, param] of [["墨镜","ParamCheek71"],["星星眼","ParamCheek16"],["头顶鲸","jingyu"]]) {

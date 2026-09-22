@@ -99,19 +99,22 @@ check('a non-empty fidget pool remains', pool.length > 0, 'pool=' + JSON.stringi
 check('the fidget pool excludes both verbs', !pool.includes('Hammer') && !pool.includes('SprayWater'), 'pool=' + JSON.stringify(pool))
 
 // --- motion premises, and a fidget that actually does something ------------
-// A selfie needs the phone already out, the whale spray needs a whale, the
-// ketchup squeeze needs the omurice under it. playOnce refuses a motion whose
-// premise is missing, so NO path (panel, fidget, phase) can play one.
+// The whale spray needs a whale, the ketchup squeeze needs the omurice under it.
+// playOnce refuses a motion whose premise is missing, so NO path (panel, fidget,
+// phase) can play one.
+//
+// 自拍**不再**带前提：它现在是独立槽位（自拍 / 快速自拍），动作自己就把手机抬起来
+// （`phone` 曲线 0→1，查过 motion3）。以前那条"需要右手 = 掏出手机"的守卫会把
+// 选中自拍的操作**静默挡掉**（playOnce 直接返回 false），所以去掉了。
 const can = async (g) => ev('window.__dshLive2dPet.canPlay(' + JSON.stringify(g) + ')')
-check('a selfie is refused with no phone out', (await can('Selfie')) === false)
-check('a quick selfie is refused with no phone out', (await can('SelfieQuick')) === false)
+check('自拍没有前提了（动作自己会抬手）', (await can('Selfie')) === true)
+check('快速自拍也没有前提', (await can('SelfieQuick')) === true)
 check('the whale spray is refused with no whale', (await can('SprayWater')) === false)
 check('the ketchup squeeze is refused with no omurice', (await can('Ketchup')) === false)
 check('an unguarded motion is always allowed', (await can('BubbleGum')) === true)
-// Checked HERE, while the premise is still missing: further down the panel puts
-// the phone out on purpose, and then a selfie SHOULD start.
+// "被守卫拦住"用喷水举例（自拍已经不带前提了）。
 check('a blocked motion refuses to start',
-  (await ev('window.__dshLive2dPet.playOnce("Selfie", 0, { kind: "probe" })')) === false)
+  (await ev('window.__dshLive2dPet.playOnce("SprayWater", 0, { kind: "probe" })')) === false)
 
 // The fidget used to do NOTHING: it reaches the slot chooser through a ref, and
 // that ref was never assigned, so every draw silently hit a no-op default.

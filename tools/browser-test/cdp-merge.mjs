@@ -117,7 +117,8 @@ await ev('(()=>{const bs=Array.from(document.querySelectorAll("[data-dsh-live2d-
   + ' const b=bs.find((x)=>x.textContent.indexOf("装扮")===0); if(!b) return false; b.click(); return true})()')
 await sleep(700)
 const slotCount = await ev('document.querySelectorAll("[data-dsh-live2d-pet] [data-panel] [data-slot]").length')
-check('the 装扮 tab lists every slot', slotCount === 17, 'slots=' + slotCount)
+// 槽位数跟 pet.json 走：氛围拆成三个独立槽、自拍独立成槽之后是 20。
+check('the 装扮 tab lists every slot', slotCount === 20, 'slots=' + slotCount)
 
 /** Click a chip in the panel by its slot id and visible label. */
 const pick = async (slotId, label, expect) => {
