@@ -1,8 +1,8 @@
 # DS鲸鱼娘 · Live2D 桌宠
 
-DSh 桌宠（`@linxin666/dsh-pet`）的 Live2D 宠物包。
+给 [dsh-pet-live2d](https://github.com/A8Chann/dsh-pet-live2d) 插件用的 Live2D 宠物包。
 
-- 渲染器：`live2d`（Cubism 3/4）
+- 渲染器：`live2d`（Cubism 5 模型）
 - 动作组：Idle / Hammer / BubbleGum / SprayWater / OpenCase / Selfie / SelfieQuick / Ketchup
 - 表情：44 个（情绪 20 / 配件 9 / 道具 15）
 - 许可：**CC BY-NC-SA 4.0**（署名 · **非商业** · 相同方式共享）—— 见本目录 `LICENSE`
@@ -10,11 +10,11 @@ DSh 桌宠（`@linxin666/dsh-pet`）的 Live2D 宠物包。
 
 ## 装扮槽位（状态切换分类）
 
-44 个表情现在**全部**归入 **17 个**槽位。其中六个是**装扮**（眼镜 / 发饰 / 魔爪 / 桌面摆设=巴菲 / 桌布 / 其他=手机换色）：
+44 个表情**全部**归入 **20 个**槽位。其中六个是**装扮**（眼镜 / 发饰 / 魔爪 / 桌面摆设=巴菲 / 桌布 / 其他=手机换色）：
 它们跨启动记着，「归位」和会话相位都不动它们。其余槽位（手、眼、情绪、嘴、符号、氛围、脸红）是随时可换的表情。
 它们全部由模型的「通用按键 / C款动作开关」参数驱动，一个参数开一块美术；
 同时点亮两个不会「叠加」，只会打架。所以按**槽位**归类，每个槽位单选，
-选新的自动摘掉旧的：
+选新的自动摘掉旧的 —— 但**槽位之间可以同时生效**：
 
 | 槽位 | 不选 | 可选项 |
 |---|---|---|
@@ -47,17 +47,9 @@ DSh 桌宠（`@linxin666/dsh-pet`）的 Live2D 宠物包。
 剩下的是**可以叠加的情绪表情**（脸红 + 汗 + 问号 是合理的漫画组合），
 它们分别落在眼部 / 情绪 / 嘴部 / 符号 / 氛围 / 脸红这些槽位里，各槽位之间可以同时生效。
 
-引擎的表情管理器一次只持有**一个**表情（`currentExpression`），所以跨槽位叠加不能
-交给它。插件改成**自己按帧写参数**：在每个表达式 .exp3.json 声明的通道上做 Add 叠加，
-写入点是 `coreModel.saveParameters()` 之后——正是引擎自己那套表情流程所在的位置。
-
-关键在挂钩点：写在 `loadParameters()` 之后会被下一帧的 `saveParameters()` 一起快照进
-基线，于是「关不掉」（实测开关永远停在 1）；写在 `saveParameters()` 之后才是干净的一层，
-取消选择时下一帧自然就摘掉了。
-
-所以**六个槽位可以同时生效**，跟参考面板一致。
-
 槽位定义写在 `pet.json` 的 `live2d.expressionSlots`，换个宠物改这里就行。
+**跨槽位叠加在引擎层面怎么做**（为什么要绕开引擎自己的表情管理器、参数写在帧内哪个缝隙、
+写在别处会"关不掉"）见 skill `cubism-engine`。
 
 ## 会话相位与关系（宠物怎么声明默认值）
 
@@ -70,6 +62,7 @@ DSh 桌宠（`@linxin666/dsh-pet`）的 Live2D 宠物包。
 | `expressionSlots[].options[].pairs` | 该选项的「同时」关系（选了它就一起点亮哪个槽位） |
 | `expressionSlots[].options[].requires` | 该选项的「前提」关系（必须先处于哪个状态才播得出来） |
 | `expressionSlots[].fidgetNone` / `options[].fidgetWeight` | 摸鱼池的默认条目与权重 |
+| `live2d.fidgetSlots` | 摸鱼默认盯哪几个槽位（这只宠物是七个：右手 / 左手 / 情绪 / 脸红 / 嘴部 / 眼部 / 自拍） |
 
 ```json
 {
@@ -84,13 +77,17 @@ DSh 桌宠（`@linxin666/dsh-pet`）的 Live2D 宠物包。
 
 `pairs` / `requires` 在设置页里**可增删**（覆盖存在浏览器里，不改这个文件）；
 `requires` 在运行时是**抽签的闸门**：前提不成立的条目根本不会被抽中。
+手动点选时则由插件**把前提补上**（点「自拍」会先把手机掏出来），不会"点了没反应"。
 
 ## 前置：Cubism Core
 
-Live2D 专有许可不允许再分发 Core 运行时，需要自行放置：
+Core 运行时是 Live2D 的专有软件，不随包分发 —— 但**不用自己去找**：插件第一次用到它时，
+宿主半区会去 Live2D 官方 CDN 取一份（校验后缓存），之后离线也能用：
 
 ```
 %DSH_HOME%\pets\.runtime\live2dcubismcore.min.js
 ```
 
-从 Live2D 官方 Cubism SDK for Web 获取（`https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js`）。
+只有访问不了外网的机器，才需要手动下载
+[Cubism SDK for Web](https://www.live2d.com/sdk/cubism/) 里的
+`Core/live2dcubismcore.min.js` 放到上面那个路径。
