@@ -798,6 +798,92 @@ for (let i = 0; i < 8; i += 1) {
 }
 check('手机掏出来了，但没选自拍 → 摸鱼不会自己拍（残留路径已删）',
   sawSelfie === false, 'sawSelfie=' + sawSelfie)
+
+// --- 「前提」真的管用（用户给自拍加了「前提：右手=掏出手机」）------------------
+// 用户："我设置了拍照的前提是右手手机，为什么还会出现右手比耶，然后拍照？"
+// 两个 bug 撞在一起：
+//   ① 选项上的「前提」对**动作**从来没生效 —— 动作只查 pet.json 的 motionGuards，
+//      UI 里加的 requires 只对表情生效；
+//   ② 摸鱼是按"这一轮开始前"的状态把**所有**池子掷完、再逐个应用的，所以自拍看到的
+//      前提是旧状态（右手还拿着手机），应用时右手已经变成比耶了。
+// 用权重把这一轮变成必然，做一组只差"这轮有没有掏出手机"的对照实验。
+const setSlotWeights = async (slotId, keepKey) => {
+  const keys = JSON.parse(await ev('JSON.stringify(Array.from(document.querySelectorAll('
+    + JSON.stringify('[data-dsh-live2d-pet] [data-fidget-weight^="' + slotId + ':"]')
+    + ')).map((el) => el.getAttribute("data-fidget-weight")))'))
+  for (const key of keys) await setWeight(key, key === keepKey ? 1 : 0)
+  return keys
+}
+await pickTab("设置")
+await sleep(600)
+check('把 selfie 加进摸鱼池',
+  (await clickChip('[data-dsh-live2d-pet] [data-fidget-slot-add="selfie"]')) === true)
+await sleep(500)
+check('把「自拍」加进它的池子',
+  (await clickChip('[data-dsh-live2d-pet] [data-fidget-add="selfie"][data-add-option="自拍"]')) === true)
+await sleep(500)
+check('给「自拍」加一条「前提：右手 = 掏出手机」',
+  (await pickInSelect('[data-dsh-live2d-pet] [data-relation-add="selfie:自拍"]', "require|rhand|掏出手机")) === true)
+await sleep(400)
+// 新加的槽位表是**空的**，所以只有「自拍」这一条（没有「默认」那条）。
+check('右手池只剩「双手比耶」', (await setSlotWeights("rhand", "rhand:双手比耶")).length >= 2)
+check('自拍池只剩「自拍」', (await setSlotWeights("selfie", "selfie:自拍")).length >= 1)
+await pickTab("装扮")
+await sleep(500)
+// A) 用户遇到的那一幕：**手机本来就在手里**（所以抽签时自拍的前提是成立的、它被抽中了），
+//    可同一轮里右手又被掷成比耶 —— 应用顺序是右手在前，等轮到自拍时前提已经断了。
+//    没有"应用前重查"的话，就是用户看到的"先比耶、再拍照"。
+await slotPick("selfie", "无")
+await slotPick("rhand", "掏出手机")
+await sleep(800)
+await ev('window.__dshLive2dPet.fidgetNow()')
+await sleep(1000)
+const premiseA = JSON.parse(await ev('JSON.stringify(window.__dshLive2dPet.slotSelections())'))
+const motionA = await ev('document.querySelector("[data-dsh-live2d-pet]").getAttribute("data-motion")')
+check('手机在手但同一轮右手被掷成比耶 → 自拍被跳过（不再"先比耶再拍照"）',
+  premiseA.rhand === "双手比耶" && premiseA.selfie === undefined
+  && motionA !== "Selfie" && motionA !== "SelfieQuick",
+  JSON.stringify(premiseA) + ' motion=' + motionA)
+// B) 对照：这一轮**掏出手机** → 前提成立 → 该拍
+await pickTab("设置")
+await sleep(500)
+check('右手池改成只剩「掏出手机」', (await setSlotWeights("rhand", "rhand:掏出手机")).length >= 2)
+await pickTab("装扮")
+await sleep(500)
+await slotPick("selfie", "无")
+// 手机先放回手里：A 组结束时机子被掷成了比耶，不先摆回"手机在手"，这一轮的抽签阶段
+// 就会把自拍过滤掉（那是另一条规则在起作用，测不到"应用时前提仍成立"这一半）。
+await slotPick("rhand", "掏出手机")
+await sleep(500)
+await ev('window.__dshLive2dPet.fidgetNow()')
+await sleep(1200)
+const premiseB = JSON.parse(await ev('JSON.stringify(window.__dshLive2dPet.slotSelections())'))
+const motionB = await ev('document.querySelector("[data-dsh-live2d-pet]").getAttribute("data-motion")')
+check('对照：这一轮掏出了手机 → 自拍真的拍了',
+  premiseB.rhand === "掏出手机" && premiseB.selfie === "自拍"
+  && (motionB === "Selfie" || motionB === "SelfieQuick"),
+  JSON.stringify(premiseB) + ' motion=' + motionB)
+// C) 手动点选：前提由插件补齐（点自拍 → 先把手机掏出来），而不是静默无效
+await slotPick("selfie", "无")
+await slotPick("rhand", "无")
+await sleep(600)
+await slotPick("selfie", "自拍")
+await sleep(1400)
+const premiseC = JSON.parse(await ev('JSON.stringify(window.__dshLive2dPet.slotSelections())'))
+const motionC = await ev('document.querySelector("[data-dsh-live2d-pet]").getAttribute("data-motion")')
+check('手动点自拍：插件替你把手机掏出来，然后拍照（不静默失效）',
+  premiseC.rhand === "掏出手机" && premiseC.selfie === "自拍"
+  && (motionC === "Selfie" || motionC === "SelfieQuick"),
+  JSON.stringify(premiseC) + ' motion=' + motionC)
+// 收尾：把 selfie 从摸鱼池里"清空"（权重全 0 = 不参与），免得后面的段落每次摸鱼都在自拍。
+await pickTab("设置")
+await sleep(500)
+await setSlotWeights("selfie", "")
+await pickTab("装扮")
+await sleep(400)
+await slotPick("selfie", "无")
+await slotPick("rhand", "无")
+await sleep(500)
 await pickTab("设置")
 await sleep(500)
 

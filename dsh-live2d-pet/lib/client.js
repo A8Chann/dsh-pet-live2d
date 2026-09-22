@@ -2275,6 +2275,30 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   };
 
   /**
+   * 某个动作组（group）的「前提」清单：所有把 motion 指向它的选项，各自 `requires`
+   * 的并集。
+   *
+   * 动作的前提原来**只认 `pet.json` 的 `motionGuards`**，UI 里给选项加的「前提」只对
+   * 表情生效 —— 所以用户给「自拍」加了「前提：右手=掏出手机」，动作那边根本没人看
+   * （用户报的"我设置了拍照的前提是右手手机，为什么还会右手比耶然后拍照"）。
+   *
+   * `pet.json` 的 motionGuards 是"槽位 = 标签白名单"，自动满足不了，只能拦；这里的
+   * requires 是"槽位 = 某一个标签"，所以既能拦、也能在手动点选时替用户补上。
+   */
+  const motionRequiresFor = (group) => {
+    const out = [];
+    for (const slot of MANIFEST.current?.expressionSlots ?? []) {
+      for (const option of slot.options ?? []) {
+        if (option.motion !== group) continue;
+        for (const need of relationsOf(slot.id, option.label).requires) {
+          if (need !== null && typeof need.slot === "string" && typeof need.label === "string") out.push(need);
+        }
+      }
+    }
+    return out;
+  };
+
+  /**
    * 把选项合成成运行时认的那一个对象：关系走上面那层覆盖。
    *
    * 运行时（面板点选、摸鱼抽中、相位抽中）只认这一个函数的结果，所以三处的行为
@@ -3949,10 +3973,30 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     const petRef = useRef(undefined);
     petRef.current = pet;
     const chooseSlotOptionRef = useRef(() => {});
-    const chooseSlotOption = useCallback((slot, option) => {
+    /**
+     * @param {boolean} satisfy 手动点选时传 true：前提由插件补齐（点自拍会先把手机
+     *   掏出来）。摸鱼/相位这些自动路径**不能**传 —— 那会绕过用户配的权重，
+     *   变成"她自己去掏手机再拍照"。
+     */
+    const chooseSlotOption = useCallback((slot, option, satisfy) => {
       // 关系（同时 / 前提）是按**选项**生效的：用户在这里改过的内容必须对面板点选、
       // 摸鱼抽中、相位抽中同时成立，所以统一在这一个入口合成。
       option = effectiveOption(slot.id, option);
+      // 手动选中一个**带动作**的选项时，前提由插件替用户补上 —— 跟表达式那套 requires
+      // 一致（点「挤番茄酱」会把蛋包饭端上来）。否则点「自拍」而手机没在手，动作会被
+      // 守卫拦掉，面板显示已选中、画面纹丝不动（静默无效，正是之前那串 bug 的同一类）。
+      //
+      // 补的时候直接走这个入口（于是它会先把「掏出手机」选上、播出来），再回到下面的
+      // 正文 —— 正文里的动作归属会把"最后点的这个"记为当前动作，所以自拍照样会播，
+      // 而手机靠"保住别的槽位的姿势"留在手里。
+      if (satisfy === true && option !== null && typeof option.motion === "string") {
+        for (const need of motionRequiresFor(option.motion)) {
+          if (slotSelectionsRef.current[need.slot] === need.label) continue;
+          const target = (petRef.current?.expressionSlots ?? []).find((candidate) => candidate.id === need.slot);
+          const picked = target?.options.find((candidate) => candidate.label === need.label);
+          if (target !== undefined && picked !== undefined) chooseSlotOptionRef.current(target, picked, true);
+        }
+      }
       const next = Object.assign({}, pinnedRef.current);
       for (const candidate of slot.options) {
         for (const name of candidate.expressions) delete next[name];
@@ -4346,14 +4390,26 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       // selections, so it stays true while the look keeps the phone out and goes
       // false the moment the slot changes.
       motion.current.setGuardResolver((group) => {
-        const guard = guardsRef.current[group];
-        if (guard === undefined) return true;
-        return Object.entries(guard).every(([slotId, labels]) => {
-          // 相位"抽空了"这个槽位时不能退回用户的选择：owns 为真且值是 null 就是空。
+        // 相位"抽空了"这个槽位时不能退回用户的选择：owns 为真且值是 null 就是空。
+        const chosenOf = (slotId) => {
           const owns = Object.prototype.hasOwnProperty.call(phaseChoicesRef.current, slotId);
-          const chosen = owns ? phaseChoicesRef.current[slotId] : slotSelectionsRef.current[slotId];
+          return owns ? phaseChoicesRef.current[slotId] : slotSelectionsRef.current[slotId];
+        };
+        const holds = (slotId, labels) => {
+          const chosen = chosenOf(slotId);
           return chosen !== undefined && chosen !== null && labels.includes(chosen);
-        });
+        };
+        const guard = guardsRef.current[group];
+        if (guard !== undefined && !Object.entries(guard).every(([slotId, labels]) => holds(slotId, labels))) {
+          return false;
+        }
+        // 选项上的「前提」也算数。以前只有 pet.json 的 motionGuards 进得来，UI 里加的
+        // 前提对动作**根本没生效** —— 用户给「自拍」加了「前提：右手=掏出手机」，
+        // 摸鱼照样先比耶再拍照。
+        for (const need of motionRequiresFor(group)) {
+          if (!holds(need.slot, [need.label])) return false;
+        }
+        return true;
       });
       // The motion subscription (declared above) flushes a deferred phase here.
       flushPhaseRef.current = applyPhase;
@@ -4522,6 +4578,13 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           //
           // 现在语义回到"清空"，配对那边由 applyExpressions 的不变量兜着：爱心眼还在
           // 选中，冒爱心就不会丢；眼睛被掷回默认，冒爱心跟着走（那本来就是配对的意思）。
+          if (option !== null && typeof option.motion === "string"
+            && !motion.current.canPlay(option.motion)) {
+            // **应用前再查一遍前提**：所有池子都是按"这一轮开始前"的状态掷的，右手掷成
+            // 比耶之后，自拍的前提其实已经不成立了 —— 不再查就会"先比耶、再拍照"
+            // （用户报的"我设置了拍照的前提是右手手机，为什么还会出现右手比耶然后拍照"）。
+            continue;
+          }
           chooseSlotOptionRef.current(slot, option);
         }
         schedule();
@@ -4882,7 +4945,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
                       key: option.label,
                       ...(option.label === chosenLabel ? { "data-on": "" } : {}),
                       "data-slot-option": option.label,
-                      onClick: () => chooseSlotOption(slot, option),
+                      // `true` = 手动点选：带动作的选项，前提由插件补齐（点自拍会先掏手机）。
+                      onClick: () => chooseSlotOption(slot, option, true),
                     }, option.label)),
                   ),
                 );
