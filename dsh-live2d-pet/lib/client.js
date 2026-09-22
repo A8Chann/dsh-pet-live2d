@@ -103,6 +103,20 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     let startedAt = 0;
     let onChange = null;
     /**
+     * 「只有待机在动」的参数，以及待机最后一次写下的那一份值。
+     *
+     * 这个模型里是爱心左/爱心右的 58 个 `j*`：**爱心的位置全靠待机循环**
+     * （`idle.motion3.json` 89 条曲线里 56 条是 `j*`），而 `love`（爱心开关）只是
+     * 一个 0/1 的表达式参数。`hold: true` 的动作（掏出手机 / 吹泡泡糖 / 自拍）
+     * 定格之后待机不再跑，引擎就把这些参数放回基线 0 —— 于是**开关是开的、
+     * 爱心却全缩成一点看不见**。用户报的"有动作冒爱心就失效"就是这个。
+     *
+     * 判据是算出来的（见 computeAmbientOnly）：待机驱动、别的动作都不碰的参数，
+     * 就是这个宠物的"氛围装饰"。待机在跑时每帧记一份，换成别的动作时写回去。
+     */
+    let ambientOnly = [];
+    let ambientSaved = null;
+    /**
      * Parameters this controller has deliberately written and must undo.
      * See restoreHeld() — a motion's own curves are not reset by the engine,
      * so anything we pinned on purpose has to be un-pinned on purpose.
@@ -503,6 +517,33 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       }
     };
 
+    /**
+     * 待机在跑时记一份氛围参数，换成别的动作时写回去 —— 否则它们塌回基线 0，
+     * 爱心就"开关开着却看不见"（见 ambientOnly 的注释）。
+     *
+     * 必须在帧内、且在**早退之前**调用：定格时这一层是唯一还在写它们的人。
+     */
+    const preserveAmbient = (core, values) => {
+      if (ambientOnly.length === 0 || values === null) return;
+      // 待机（或没有动作）在跑：每帧刷新那一份快照。
+      if (currentGroup === null || currentGroup === idleName) {
+        const next = ambientSaved ?? {};
+        for (const id of ambientOnly) {
+          const at = parameterIndex(core, id);
+          if (at >= 0) next[id] = values[at];
+        }
+        ambientSaved = next;
+        return;
+      }
+      // 别的动作接管了身体：把待机最后那一份写回去（至少不会消失）。
+      if (ambientSaved === null) return;
+      for (const id of ambientOnly) {
+        const at = parameterIndex(core, id);
+        const value = ambientSaved[id];
+        if (at >= 0 && value !== undefined) values[at] = value;
+      }
+    };
+
     const applyExpressionLayers = (core) => {
       // The mouth follows the pointer even with nothing pinned and no sweep, so
       // it has to be part of this condition — otherwise the whole pass bails out
@@ -573,11 +614,15 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         // The release still has to be applied — it is not tied to any of the
         // things this guard is about.
         applyRelease(core._model.parameters.values, core);
+        // 氛围参数也一样：**必须在早退之前**。动作定格时这一层是唯一还在写它们的人，
+        // 漏在这里就是"开关开着、爱心全没了"。
+        preserveAmbient(core, core._model.parameters.values);
         return;
       }
       try {
         const values = core._model.parameters.values;
         applyRelease(values, core);
+        preserveAmbient(core, values);
         // The mouth follows the pointer too. It has to be written per frame —
         // setting it once from the pointermove handler would be overwritten by
         // the very next frame the motion system runs.
@@ -1128,6 +1173,26 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       return keys.length > 0 ? keys[0] : null;
     };
 
+    /**
+     * 「氛围装饰」参数 = 待机驱动、而其它动作都不碰的那些。
+     *
+     * 不写死 `j*`：这是从动作自己的参数表里算出来的，换宠物、换模型都成立。
+     * 这个模型的结果正好是爱心左/爱心右的 56 个位置参数。
+     */
+    const computeAmbientOnly = (built, idle) => {
+      if (idle === null || !Array.isArray(built[idle])) return [];
+      const touched = new Set();
+      for (const [group, list] of Object.entries(built)) {
+        if (group === idle) continue;
+        for (const entry of list) for (const id of entry.params ?? []) touched.add(id);
+      }
+      const only = new Set();
+      for (const entry of built[idle]) {
+        for (const id of entry.params ?? []) if (!touched.has(id)) only.add(id);
+      }
+      return Array.from(only);
+    };
+
     return {
       /** Bind a freshly loaded model and start its idle loop. */
       attach(nextVendor, nextModel, catalogMotions, nextOptions) {
@@ -1136,6 +1201,9 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         groups = indexGroups(nextModel, catalogMotions);
         motionOptions = nextOptions ?? null;
         idleName = resolveIdleName(groups);
+        // 氛围装饰参数（只有待机在动的那些）：换模型就重算，快照作废。
+        ambientOnly = computeAmbientOnly(groups, idleName);
+        ambientSaved = null;
         // Locate the head once, from the model's own geometry; it is stored in
         // model space so it survives every later resize and drag.
         headBox = measureHead(nextModel);

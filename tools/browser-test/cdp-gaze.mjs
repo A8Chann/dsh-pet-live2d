@@ -699,6 +699,28 @@ await slotPick("heart", "无")
 await sleep(700)
 check('手动清掉被配对钉住的槽位，配对会把它补回来（不变量）',
   (await pins()).includes("冒爱心"), JSON.stringify(await pins()))
+// --- 「有动作冒爱心就失效」的回归 ---------------------------------------------
+// `love` 只是**开关**，爱心的**位置**是爱心左/右那 58 个 `j*`，而只有待机循环在驱动
+// 它们。`hold: true` 的动作（掏出手机/吹泡泡糖/自拍）定格之后待机不再跑，引擎就把
+// 这些位置参数放回基线 0 —— 于是 love=1 却**一颗爱心都看不见**。
+// 现在定格期间会把待机最后那一份保住（computeAmbientOnly + preserveAmbient）。
+const animHearts = ['j8', 'j16', 'j24', 'j45', 'j57']
+await slotPick("rhand", "掏出手机")
+let heartAlive = false
+for (let i = 0; i < 5; i += 1) {
+  await sleep(300)
+  const vals = JSON.parse(await ev('JSON.stringify(' + JSON.stringify(animHearts)
+    + '.map((n) => window.__dshLive2dPet.drawn(n)))'))
+  if (vals.some((v) => Math.abs(v ?? 0) > 0.02)) heartAlive = true
+}
+check('动作定格时爱心的位置参数没塌成 0（塌了就是"开着开关却看不见"）',
+  heartAlive === true, 'j*=' + await ev('JSON.stringify(' + JSON.stringify(animHearts)
+    + '.map((n) => window.__dshLive2dPet.drawn(n)))'))
+check('定格时开关仍是开的（love=1）',
+  (await ev('window.__dshLive2dPet.drawn("love")')) === 1,
+  'love=' + await ev('window.__dshLive2dPet.drawn("love")'))
+await slotPick("rhand", "无")
+await sleep(600)
 // 残留路径：以前摸鱼有一条隐藏的"手机在手就 40% 顺手自拍"，现在自拍只能由槽位触发。
 const selfieSlotEmpty = JSON.parse(await ev('JSON.stringify(window.__dshLive2dPet.slotSelections())'))
 check('自拍槽位空着（没选自拍）', selfieSlotEmpty.selfie === undefined, JSON.stringify(selfieSlotEmpty))

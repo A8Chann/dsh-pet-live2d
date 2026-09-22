@@ -46,16 +46,16 @@ const snap = async (tag) => {
   const s = JSON.parse(await ev('JSON.stringify({'
     + ' pins: window.__dshLive2dPet.expressions(),'
     + ' love: window.__dshLive2dPet.drawn("love"),'
-    + ' loveRaw: window.__dshLive2dPet.readParameter ? window.__dshLive2dPet.readParameter("love") : null,'
+    + ' hearts: ["j1","j8","j16","j24","j33","j45","j57"].map((n) => window.__dshLive2dPet.drawn(n)),'
     + ' layers: window.__dshLive2dPet.expressionLayerCount(),'
-    + ' fade: window.__dshLive2dPet.expressionFade().filter((p) => p[0] === "love"),'
     + ' motion: document.querySelector("[data-dsh-live2d-pet]").getAttribute("data-motion")'
     + ' })'))
-  console.log(tag.padEnd(22),
+  const h = (s.hearts ?? []).map((v) => (v === null || v === undefined ? 'null' : Number(v).toFixed(1)))
+  console.log(tag.padEnd(20),
     '| 冒爱心pin=' + (s.pins.includes('冒爱心') ? '有' : '无'),
-    '| love drawn=' + (s.love === null || s.love === undefined ? 'null' : Number(s.love).toFixed(3)),
-    '| raw=' + (s.loveRaw === null || s.loveRaw === undefined ? 'null' : Number(s.loveRaw).toFixed(3)),
-    '| layers=' + s.layers, '| fade=' + JSON.stringify(s.fade), '| motion=' + s.motion)
+    '| love=' + (s.love === null || s.love === undefined ? 'null' : Number(s.love).toFixed(2)),
+    '| j*=' + JSON.stringify(h),
+    '| motion=' + s.motion)
   return s
 }
 
