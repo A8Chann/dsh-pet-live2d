@@ -98,7 +98,19 @@ await ev('(() => { document.querySelectorAll("#dsh-settings-probe [data-card], #
   + '.forEach((el) => { el.style.display = "" }); return true })()')
 await sleep(500)
 await shot('_settings-full.png')
-// 第三张：右键面板里那一份（深色、更窄）—— 同一个正文，不能只在设置页好看。
+// 第三张：摸鱼那一节（含"可加的槽位"那一排）—— 单独加一个槽位再看，
+// 这样才能同时看到「加进来的槽位」和它右上角那个"整个拿掉"的 ×。
+await click('#dsh-settings-probe [data-fidget-slot-add="symbol"]')
+await sleep(400)
+await click('#dsh-settings-probe [data-fidget-add="symbol"][data-add-option="感叹号"]')
+await sleep(400)
+await hide('#dsh-settings-probe [data-card="phases"], #dsh-settings-probe [data-card="tune-feel"], #dsh-settings-probe [data-card="tune-fidget"]', true)
+await sleep(400)
+await shot('_settings-fidget.png')
+await ev('(() => { document.querySelectorAll("#dsh-settings-probe [data-card], #dsh-settings-probe [data-setting]")'
+  + '.forEach((el) => { el.style.display = "" }); return true })()')
+await sleep(300)
+// 第四张：右键面板里那一份（深色、更窄）—— 同一个正文，不能只在设置页好看。
 console.log('pet root:', await ev('!!document.querySelector("[data-dsh-live2d-pet]")'))
 console.log('stage:', await ev('JSON.stringify((() => { const s = document.querySelector("[data-dsh-live2d-pet] [data-stage]");'
   + ' if (!s) return null; const hit = document.querySelector("[data-dsh-live2d-pet] [data-hit]");'

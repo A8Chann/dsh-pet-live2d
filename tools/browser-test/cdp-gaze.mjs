@@ -490,6 +490,56 @@ const pickInSelect = (selector, value) => ev('(() => {'
 check('用 ＋ 能把它加回来',
   (await clickChip('[data-dsh-live2d-pet] [data-fidget-add="mouth"][data-add-option="吹泡泡糖"]')) === true
   && (await sleep(350), await ev('!!document.querySelector("[data-dsh-live2d-pet] [data-fidget-row=\'mouth:吹泡泡糖\']")')) === true)
+
+// --- 摸鱼也能加槽位和候选（这两件事原来都被写死在代码里）--------------------
+// 用户问"为什么摸鱼里面不能加槽位和候选"。答案是：界面上只列 FIDGET_SLOTS 那六个、
+// 运行时也只认那六个，候选还被 `fidget:false` 挡掉一批。默认集合应该只是宠物给的
+// **建议**，用户加进来的必须真的进池子、真的抽得到 —— 所以下面断言的是运行时行为。
+const fidgetAdd = (slotId, label) => clickChip('[data-dsh-live2d-pet] [data-fidget-add="' + slotId
+  + '"][data-add-option="' + label + '"]')
+// 池子的槽位表在**两个地方**都有（摸鱼那一节 / 每个相位），所以查询必须带上
+// `[data-pool="fidget"]` 这个归属标记 —— 否则 `[data-pool-remove-slot="symbol"]`
+// 会先命中相位里那张同名表。这个坑当场踩了一次（删错了池子）。
+const fidgetPool = (sel) => '[data-dsh-live2d-pet] [data-pool="fidget"]' + sel
+check('摸鱼那一节列出了可加的槽位（「符号」不在默认六个里）',
+  (await ev('!!document.querySelector("[data-dsh-live2d-pet] [data-fidget-slot-add=\'symbol\']")')) === true)
+check('默认那六个槽位没有「整个拿掉」的 ×',
+  (await ev('!!document.querySelector(' + JSON.stringify(fidgetPool(' [data-pool-remove-slot="mouth"]')) + ')')) === false)
+await clickChip('[data-dsh-live2d-pet] [data-fidget-slot-add="symbol"]')
+await sleep(400)
+const symbolTable = await ev('!!document.querySelector(' + JSON.stringify(fidgetPool('[data-pool-slot="symbol"]')) + ')')
+const symbolEmpty = await ev('!!document.querySelector(' + JSON.stringify(fidgetPool('[data-pool-slot="symbol"] [data-pool-empty]')) + ')')
+check('点一下就把「符号」加进来了（新表是空的，等用户挑）', symbolTable === true && symbolEmpty === true)
+check('加进来的槽位可以整个拿掉',
+  (await ev('!!document.querySelector(' + JSON.stringify(fidgetPool(' [data-pool-remove-slot="symbol"]')) + ')')) === true)
+// 只放一条候选 → 抽签变成确定的，可以直接断言"这个槽位真的被抽到了"。
+check('往新槽位里放「感叹号」', (await fidgetAdd('symbol', '感叹号')) === true)
+await sleep(300)
+await ev('window.__dshLive2dPet.setExpressions([])')
+await ev('window.__dshLive2dPet.fidgetNow()')
+await sleep(700)
+check('加进来的槽位真的参与抽签了（抽中「感叹号」）',
+  (await pins()).includes('感叹号'), JSON.stringify(await pins()))
+// pet.json 里标了 fidget:false 的候选（星星眼）原来在界面上根本点不到。
+await ev('document.querySelector("[data-dsh-live2d-pet] [data-fidget-remove=\'eyes:__none\']").click()')
+await sleep(350)
+await ev('document.querySelector("[data-dsh-live2d-pet] [data-fidget-remove=\'eyes:爱心眼\']").click()')
+await sleep(350)
+check('标了 fidget:false 的候选（星星眼）现在也能加进池子',
+  (await fidgetAdd('eyes', '星星眼')) === true)
+await sleep(300)
+await ev('window.__dshLive2dPet.setExpressions([])')
+await ev('window.__dshLive2dPet.fidgetNow()')
+await sleep(700)
+check('加进去的 fidget:false 候选真的抽得到（不再是"加得进去、永远抽不到"）',
+  (await pins()).includes('星星眼'), JSON.stringify(await pins()))
+await clickChip(fidgetPool(' [data-pool-remove-slot="symbol"]'))
+await sleep(400)
+check('拿掉之后那张表没了、可加的槽位又回来了',
+  (await ev('!!document.querySelector(' + JSON.stringify(fidgetPool('[data-pool-slot="symbol"]')) + ')')) === false
+  && (await ev('!!document.querySelector("[data-dsh-live2d-pet] [data-fidget-slot-add=\'symbol\']")')) === true)
+await ev('window.__dshLive2dPet.setExpressions([])')
+await sleep(300)
 // 两种关系必须分开显示：同时（pairs） vs 前提（requires）。
 const relations = JSON.parse(await ev('JSON.stringify(Array.from(document.querySelectorAll("[data-dsh-live2d-pet] [data-relation]")).map((el) => el.getAttribute("data-relation") + "|" + el.textContent))'))
 check('「同时」那一层显示的是中文槽位标签（不是 id）',

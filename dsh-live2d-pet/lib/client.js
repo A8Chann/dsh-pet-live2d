@@ -1734,11 +1734,15 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     scope + " [data-relation-remove]:hover{opacity:1;background:rgba(127,127,127,.22)}",
 
     // ---- × 删除 --------------------------------------------------------
-    scope + " [data-pool-remove]," + scope + " [data-phase-remove]{justify-self:center;"
+    scope + " [data-pool-remove]," + scope + " [data-phase-remove],"
+      + scope + " [data-pool-remove-slot]{justify-self:center;"
       + "width:20px;height:20px;line-height:1;font-size:13px;border-radius:6px;"
       + "opacity:.4;color:inherit}",
-    scope + " [data-pool-remove]:hover," + scope + " [data-phase-remove]:hover{opacity:1;"
+    scope + " [data-pool-remove]:hover," + scope + " [data-phase-remove]:hover,"
+      + " [data-pool-remove-slot]:hover{opacity:1;"
       + "background:rgba(232,120,120,.2);color:#e87878}",
+    // 槽位那一行的 × 贴在右边（它是"整张表"的动作，不是"这一条"的）。
+    scope + " [data-pool-remove-slot]{margin-left:auto}",
 
     // ---- 相位：一张卡片套若干张槽位小卡 --------------------------------
     scope + " [data-phase]{border:1px solid rgba(127,127,127,.24);border-radius:10px;"
@@ -2181,6 +2185,42 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     PHASE_OVERRIDES.fidget[slotId] = { entries };
     saveOverrides();
     notifySettings();
+  };
+
+  /**
+   * 摸鱼要遍历的槽位：**默认六个 + 用户自己加过的**。
+   *
+   * 默认集合（`FIDGET_SLOTS`）只是宠物给的一份建议 —— 手、情绪、脸红、嘴、眼睛。
+   * 用户问过"为什么摸鱼里面不能加槽位和候选"，答案是这两件事当时都被我写死在代码里
+   * 了：界面上只列那六个，运行时也只认那六个。没有任何理由，删掉这个限制。
+   */
+  const fidgetSlotsFor = (pet) => {
+    const ids = FIDGET_SLOTS.slice();
+    for (const id of Object.keys(PHASE_OVERRIDES.fidget)) {
+      if (ids.indexOf(id) === -1) ids.push(id);
+    }
+    return ids
+      .map((id) => (pet?.expressionSlots ?? []).find((slot) => slot.id === id))
+      .filter((slot) => slot !== undefined && (slot.options ?? []).length > 0);
+  };
+
+  /** 把一个槽位加进摸鱼池：先给一张空表（放什么由用户挑）。 */
+  const addFidgetSlot = (slotId) => setFidgetEntries(slotId, []);
+
+  /** 把加进来的槽位整个拿掉（默认那六个不给删：它们是宠物自己的身子）。 */
+  const removeFidgetSlot = (slotId) => {
+    delete PHASE_OVERRIDES.fidget[slotId];
+    saveOverrides();
+    notifySettings();
+  };
+
+  /** 把一个槽位从某个相位的池子里拿掉。 */
+  const removePhasePool = (phase, slotId) => {
+    const pools = {};
+    for (const [id, list] of Object.entries(phasePoolsFor(phase))) {
+      if (id !== slotId) pools[id] = list.map((item) => Object.assign({}, item));
+    }
+    applyOverride({ phases: { [phase]: { pools } } });
   };
 
   /** 删掉某个相位的覆盖（＝那一行从列表里消失，回到内置行为）。 */
@@ -3853,20 +3893,21 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           schedule();
           return;
         }
-        const slots = (pet?.expressionSlots ?? [])
-          .filter((slot) => FIDGET_SLOTS.includes(slot.id) && slot.options.length > 0);
+        const slots = fidgetSlotsFor(pet);
         if (slots.length === 0) {
           schedule();
           return;
         }
         lastInteraction.current = Date.now();
         // Options that may come up at all: a motion whose premise is missing is
-        // out (a selfie with no phone would set the pins and play nothing), and
-        // so is anything the pet marked fidget:false — 吐舌 does not belong in
-        // an idle 摸鱼.
+        // out (a selfie with no phone would set the pins and play nothing).
         // 条目表 -> 可用的 (选项|null, 权重) 对。
         // 权重 0 或条目被删掉 = 不参与；动作前提不满足（比如没有蛋包饭就挤不了番茄酱）
         // 也在这一刻过滤掉。
+        //
+        // 这里**不再**过滤 `option.fidget === false`：那个标记现在只用来决定"默认池子
+        // 里有没有它"（见 fidgetEntriesFor）。用户手动把它加进池子，就该按他说的算 ——
+        // 否则界面上加得进去、运行时永远抽不到，那才是真的莫名其妙。
         const entriesOf = (slot) => {
           const out = [];
           for (const entry of fidgetEntriesFor(slot)) {
@@ -3876,7 +3917,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
               continue;
             }
             const option = (slot.options ?? []).find((o) => o.label === entry.label);
-            if (option === undefined || option.fidget === false) continue;
+            if (option === undefined) continue;
             if (typeof option.motion === "string" && !motion.current.canPlay(option.motion)) continue;
             out.push([option, entry.weight]);
           }
@@ -4445,6 +4486,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
                 allowAll: true,
                 owner: "phase:" + phase,
                 idPrefix: phase + ":",
+                // 相位下面的槽位都是"配上去的"，所以每张表都能整个拿掉。
+                removeSlot: () => removePhasePool(phase, slotId),
                 rowAttr: "data-phase-pool-row",
                 addAttr: "data-phase-pool-add",
                 weightAttr: "data-phase-pool-weight",
@@ -4634,6 +4677,14 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         h("span", { "data-pool-title": "" }, slot.label),
         h("span", { "data-pool-meta": "" },
           entries.length === 0 ? "空表" : entries.length + " 条候选"),
+        // 用户自己加进来的槽位可以整个拿掉（默认集合不给删：它们是宠物自己的身子，
+        // 删了这张表就再也回不来了）。
+        typeof props.removeSlot === "function" ? h("button", {
+          type: "button",
+          "data-pool-remove-slot": slot.id,
+          title: "把这个槽位从池子里拿掉",
+          onClick: props.removeSlot,
+        }, "×") : null,
       ),
       entries.map((entry, index) => {
         const share = entry.weight > 0 && total > 0 ? Math.round((entry.weight / total) * 100) : 0;
@@ -4698,21 +4749,39 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     useSettings();
     const pet = MANIFEST.current;
     if (pet === null) return h("div", { "data-empty": "fidget" }, "宠物还没加载好");
-    const slots = (pet.expressionSlots ?? []).filter((slot) => FIDGET_SLOTS.includes(slot.id));
+    const used = fidgetSlotsFor(pet);
+    const occupied = new Set(used.map((slot) => slot.id));
+    const free = (pet.expressionSlots ?? [])
+      .filter((slot) => !occupied.has(slot.id) && (slot.options ?? []).length > 0);
     return h("div", { "data-settings": "", "data-setting": "fidget" },
-      slots.map((slot) => h(PoolTable, {
+      used.length === 0
+        ? h("div", { "data-empty": "fidget" }, "还没有槽位 —— 在下面挑一个加进来")
+        : null,
+      used.map((slot) => h(PoolTable, {
         key: slot.id,
         slot,
         entries: fidgetEntriesFor(slot),
         noneLabel: "保持不变",
-        allowAll: false,
+        // 候选**全都**能加：`fidget:false` 只决定"默认池子里有没有它"，不决定
+        // "能不能配"。原先这里传 false，于是 吐舌 / 星星眼 这些在界面上根本点不到。
+        allowAll: true,
         owner: "fidget",
+        // 默认那六个不给删（它们是宠物自己的身子，删了列表就空了）；加进来的可以。
+        removeSlot: FIDGET_SLOTS.includes(slot.id) ? null : () => removeFidgetSlot(slot.id),
         rowAttr: "data-fidget-row",
         addAttr: "data-fidget-add",
         weightAttr: "data-fidget-weight",
         removeAttr: "data-fidget-remove",
         setEntries: (entries) => setFidgetEntries(slot.id, entries),
       })),
+      free.length === 0 ? null : h("div", { "data-add-row": "" },
+        free.map((slot) => h("button", {
+          key: slot.id,
+          type: "button",
+          "data-fidget-slot-add": slot.id,
+          title: "把这个槽位加进摸鱼池",
+          onClick: () => addFidgetSlot(slot.id),
+        }, "＋ " + slot.label))),
     );
   }
   /**
