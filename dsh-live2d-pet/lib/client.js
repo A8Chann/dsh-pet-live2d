@@ -1564,6 +1564,46 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   // ('data-dsh-live2d-pet'), not the bare React container that carries
   // ROOT_ATTR — the container is only a mount point and a takeover marker.
   const ROOT_SEL = "[" + PET_ATTR + "]";
+  /**
+   * 滑杆的样子（**只管外观，不管布局**）。两个地方共用：DSH 设置页那排滑杆、
+   * 右键面板底部那个"大小"滑杆。
+   *
+   * 原生 range 在 Chromium 上就是"一根粗蓝棍 + 一个大圆钮"，和旁边那套细线药丸
+   * 完全不是一个语言。压成 3px 轨道 + 12px 圆钮：轨道只是一条线，圆钮略带投影浮在
+   * 上面，已拖过的一段用强调色填满 —— 一眼能看出"这根已经推到哪了"。
+   *
+   * 填充比例由每个 input 自己带的 `--fill` 提供。那是**一个值**（不是布局），
+   * 所以写在行内不违反"布局全在样式表里"那条约定；样式表只负责读它。
+   * 顺带把 `accent-color` 去掉了：圆钮现在是自己画的，留着它只会让 focus 之类的
+   * 原生着色跟手工圆钮打架。
+   *
+   * 尺寸做成 `--slider-track` / `--slider-thumb` 两个 token，**挂在元素上**而不是
+   * 只写在伪元素里：Chromium 的 CSSOM 不认识 webkit 伪元素 ——
+   * `getComputedStyle(el, "::-webkit-slider-thumb")` 会**静默退化成返回元素自身**的
+   * 计算样式（实测读回 366px×18px，正是 input 自己的盒子），所以轨道/圆钮的尺寸
+   * 在伪元素上根本量不到。token 挂在元素上就能精确断言，伪元素只负责引用它们。
+   */
+  const sliderLook = (sel) => [
+    sel + "{-webkit-appearance:none;appearance:none;background:transparent;border:0;"
+      + "padding:0;height:18px;cursor:pointer;--slider-track:3px;--slider-thumb:12px}",
+    sel + "::-webkit-slider-runnable-track{height:var(--slider-track);border-radius:999px;"
+      + "background:linear-gradient(to right,rgba(120,170,255,.9) 0 var(--fill,0%),"
+      + "rgba(127,127,127,.22) var(--fill,0%) 100%)}",
+    // margin-top 用 calc 由 token 推：圆钮要垂直居中到轨道上，就是 (轨道-圆钮)/2。
+    sel + "::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;"
+      + "width:var(--slider-thumb);height:var(--slider-thumb);"
+      + "margin-top:calc((var(--slider-track) - var(--slider-thumb)) / 2);border:0;border-radius:50%;"
+      + "background:rgba(120,170,255,1);box-shadow:0 1px 3px rgba(0,0,0,.28);"
+      + "transition:transform .12s ease-out}",
+    sel + ":hover::-webkit-slider-thumb{transform:scale(1.15)}",
+    sel + ":active::-webkit-slider-thumb{transform:scale(1.28)}",
+    sel + ":focus-visible{outline:2px solid rgba(120,170,255,.55);outline-offset:3px;border-radius:4px}",
+    // Firefox 一并给：它没有 webkit 那套伪元素，但有原生的 ::-moz-range-progress。
+    sel + "::-moz-range-track{height:var(--slider-track);border-radius:999px;background:rgba(127,127,127,.22)}",
+    sel + "::-moz-range-progress{height:var(--slider-track);border-radius:999px;background:rgba(120,170,255,.9)}",
+    sel + "::-moz-range-thumb{width:var(--slider-thumb);height:var(--slider-thumb);border:0;border-radius:50%;"
+      + "background:rgba(120,170,255,1);box-shadow:0 1px 3px rgba(0,0,0,.28)}",
+  ];
   const CSS = [
     // The root never takes the pointer itself (requirement #5): a transparent
     // div still swallows clicks across its whole box, which is what made the
@@ -1609,6 +1649,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     ROOT_SEL + " [data-panel] [data-chips] button[data-on]{background:rgba(120,170,255,.34);border-color:rgba(160,200,255,.55)}",
     ROOT_SEL + " [data-panel] footer{display:flex;align-items:center;gap:8px;padding:7px 10px;border-top:1px solid rgba(120,170,255,.14);color:#9fb0cf;font-size:11px}",
     ROOT_SEL + " [data-panel] footer input[type=range]{flex:1;min-width:0}",
+    // 面板底部那根"大小"滑杆和设置页那排是同一套外观。
+    ...sliderLook(ROOT_SEL + " [data-panel] footer input[type=range]"),
     ROOT_SEL + " [data-panel] footer [data-sizelabel]{min-width:42px;text-align:right;font-variant-numeric:tabular-nums}",
     ROOT_SEL + " [data-panel] footer button{border:0;background:transparent;color:#9fb0cf;font:inherit;cursor:pointer}",
     ROOT_SEL + " [data-hint]{position:absolute;inset:0;display:grid;place-items:center;padding:12px;text-align:center;color:#c3cee6;font-size:12px;line-height:1.6}",
@@ -1694,7 +1736,9 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       + "background:rgba(127,127,127,.08);border:1px solid rgba(127,127,127,.28);"
       + "border-radius:7px;padding:1px 6px;max-width:100%}",
     scope + " input[type=number]:hover," + scope + " select:hover{border-color:rgba(127,127,127,.5)}",
-    scope + " input[type=range]{flex:1;min-width:80px;accent-color:rgba(120,170,255,.9)}",
+    scope + " input[type=range]{flex:1;min-width:80px}",
+    // 滑杆外观（轨道/圆钮/填充）和面板底部那根共用，见 sliderLook。
+    ...sliderLook(scope + " input[type=range]"),
     scope + " input[type=checkbox]{accent-color:rgba(120,170,255,.9)}",
     scope + " code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;"
       + "opacity:.7;font-variant-numeric:tabular-nums}",
@@ -2316,6 +2360,16 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
    *
    * 抽成独立组件是因为它要在**两个地方**渲染：DSH 设置页和宠物右键面板。
    */
+  /** 滑杆「已经拖过去」的那一段有多长（0–100），喂给样式表里的 `--fill`。
+   *  取整到一位小数：不然 DOM 里留着 `83.33333333333334%` 这种尾巴，
+   *  断言和肉眼看到的数字都对不上。 */
+  const fillOf = (value, min, max) => {
+    const span = max - min;
+    if (!(span > 0)) return 0;
+    const pct = ((value - min) / span) * 100;
+    return Math.round(Math.min(100, Math.max(0, pct)) * 10) / 10;
+  };
+
   function TuningControls(props) {
     useSettings();
     const only = props?.group;
@@ -2333,6 +2387,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         step: field.step,
         value: TUNING[field.key],
         "data-input": field.key,
+        // 只带一个**值**（填充比例），外观全在样式表里 —— 这不违反"布局别写行内"。
+        style: { "--fill": fillOf(TUNING[field.key], field.min, field.max) + "%" },
         onChange: (event) => applyTuning({ [field.key]: Number(event.target.value) }),
       }),
       h("code", { "data-value": field.key }, String(TUNING[field.key])),
@@ -4342,6 +4398,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
             h("input", {
               type: "range", min: MIN_SIZE, max: MAX_SIZE, step: 20, value: size,
               title: size + "px",
+              style: { "--fill": fillOf(size, MIN_SIZE, MAX_SIZE) + "%" },
               onChange: (event) => setSize(Number(event.target.value)),
             }),
             h("button", { type: "button", title: "放大", onClick: () => setSize((current) => Math.min(MAX_SIZE, current + 40)) }, "＋"),

@@ -66,6 +66,23 @@ await ev(`(() => {
 })()`)
 await sleep(900)
 
+// 滑杆的几种"量法"对照：getComputedStyle 对伪元素到底返回什么。
+// 一次跑清楚，免得在断言里瞎猜（上一版断言读到的是 input 本身的高度/宽度）。
+console.log('slider:', await ev('(() => {'
+  + ' const el = document.querySelector("#dsh-settings-probe [data-input=\'gazeDeadzone\']");'
+  + ' if (!el) return "no-el";'
+  + ' const own = getComputedStyle(el);'
+  + ' const t1 = getComputedStyle(el, "::-webkit-slider-runnable-track");'
+  + ' const h1 = getComputedStyle(el, "::-webkit-slider-thumb");'
+  + ' const t2 = getComputedStyle(el, "-webkit-slider-runnable-track");'
+  + ' return JSON.stringify({'
+  + ' own: { w: own.width, h: own.height, app: own.webkitAppearance ?? own.appearance },'
+  + ' pseudoDoubleDash: { track: t1.height, trackBg: t1.backgroundColor, thumb: h1.width + "x" + h1.height },'
+  + ' pseudoSingleDash: { track: t2.height },'
+  + ' fill: el.style.getPropertyValue("--fill"),'
+  + ' matched: el.matches("#dsh-settings-probe input[type=range]")'
+  + ' }); })()'))
+
 const click = (selector) => ev('(() => {'
   + ' const el = document.querySelector(' + JSON.stringify(selector) + '); if (!el) return false;'
   + ' el.click(); return true })()')
@@ -81,15 +98,17 @@ await click('#dsh-settings-probe [data-phase-pool-add="tool:rhand"][data-add-opt
 await sleep(400)
 await click('#dsh-settings-probe [data-phase-pool-add="tool:rhand"][data-add-option="喵喵手"]')
 await sleep(600)
+const shot = async (name, clip) => {
+  const s = await send('Page.captureScreenshot', clip === undefined ? { format: 'png' } : { format: 'png', clip })
+  writeFileSync(join(SHOTS, name), Buffer.from(s.result.data, 'base64'))
+}
+// 第零张：先看「手感」那排滑杆（细轨道 + 小圆钮 + 填充）。
+await shot('_settings-tuning.png')
 // 折叠掉前半部分，让这两张表在截图里占主要位置。
 const hide = (sel, on) => ev('(() => { document.querySelectorAll(' + JSON.stringify(sel) + ').forEach((el) => { el.style.display = '
   + JSON.stringify(on ? "none" : "") + ' }); return true })()')
 await hide('#dsh-settings-probe [data-card="tune-feel"], #dsh-settings-probe [data-card="tune-fidget"], #dsh-settings-probe [data-setting="fidget"]', true)
 await sleep(400)
-const shot = async (name, clip) => {
-  const s = await send('Page.captureScreenshot', clip === undefined ? { format: 'png' } : { format: 'png', clip })
-  writeFileSync(join(SHOTS, name), Buffer.from(s.result.data, 'base64'))
-}
 await shot('_settings-pools.png')
 // 第二张：整个设置区（这一节才是"默认就该看到"的样子）。
 // 先把刚才 hide 掉的**内层**元素也恢复回来 —— 只恢复卡片是不够的，

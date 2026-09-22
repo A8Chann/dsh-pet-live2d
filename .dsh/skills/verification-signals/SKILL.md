@@ -32,6 +32,36 @@ core.update = () => {
 
 确定性、不受动画相位影响。所有"某效果是否真的生效"的断言都应该落到这里。
 
+## CSS 伪元素的计算样式**量不到**（Chromium CSSOM 的坑）
+
+想断言"滑杆圆钮是不是 12px"这类**伪元素**外观时，别用 `getComputedStyle`：
+
+```js
+getComputedStyle(el, "::-webkit-slider-thumb").width   // → "366px"（！）
+```
+
+Chromium 的 CSSOM **不认识 webkit 伪元素**，传了不认识的伪元素会**静默退化成返回
+元素自身的计算样式** —— 读回的 366px×18px 正是 input 自己的盒子，而且**一点报错都没有**。
+拿它断言必然假红（我第一版就红在 `thumb: "366pxx18px"`，红得毫无道理）。
+
+可行的量法（都在元素上，都精确）：
+
+1. **元素级声明**真的命中：`getComputedStyle(el).webkitAppearance === "none"` ——
+   证明那一整块规则匹配上了这个元素。
+2. **设计 token 挂在元素上**，伪元素只负责引用它们：
+
+   ```js
+   sel + "{...;--slider-track:3px;--slider-thumb:12px}"
+   sel + "::-webkit-slider-thumb{width:var(--slider-thumb);height:var(--slider-thumb);...}"
+   ```
+
+   于是 `getComputedStyle(el).getPropertyValue("--slider-thumb") === "12px"` 精确可断言，
+   而且尺寸只有一个来源（顺带解决"margin-top 该是多少"这种派生值，用 calc）。
+3. **伪元素规则确实引用了 token**：读浏览器解析后的 `cssRules[].cssText`。
+   声明若有语法错会被浏览器丢掉，所以"读得到"就等于"浏览器接受了这条声明"。
+
+**写伪元素断言前先花 30 秒确认它能量到**，不然量的是空气。
+
 ## 不要写打印型 driver
 
 断言必须以退出码收尾。曾经有个 driver 结尾无条件 `process.exit(0)`，只打印不断言，加上它唯一的信号恒为真 —— 等于从来没有测过任何东西。

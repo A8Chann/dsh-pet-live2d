@@ -363,6 +363,49 @@ const sectionStyled = await ev('(() => {'
   + ' return JSON.stringify({ border: cs.borderTopWidth, font: cs.fontSize }); })()')
 check('DSH 设置页那一节的控件有样式（不是裸控件）',
   sectionStyled !== null && !String(sectionStyled).includes('"border":"0px"'), String(sectionStyled))
+
+// --- 滑杆：细轨道 + 小圆钮 + 填充跟着值走 ------------------------------------
+// 一个 Chromium CSSOM 的坑：**它不认识 webkit 伪元素** ——
+// `getComputedStyle(el, "::-webkit-slider-thumb")` 会**静默退化成返回元素自身**的
+// 计算样式（实测读回 366px×18px，正是 input 自己的盒子，一点报错都没有）。
+// 所以轨道/圆钮的尺寸挂在伪元素上时是**量不到**的。
+//
+// 因此量三样能确定的东西：
+//   1. 元素级声明真的匹配上了（appearance:none / height:18px）—— 证明 sliderLook
+//      那整块规则命中了这个元素；
+//   2. 设计 token `--slider-track` / `--slider-thumb` 的**精确值**（伪元素引用它们）；
+//   3. 伪元素规则确实引用了这些 token（读浏览器解析后的 cssText —— 声明若有语法错，
+//      浏览器会把它丢掉，这里就读不到）。
+// 外加 `--fill` 与值的一一对应（纯数据，可以精确断言）。
+const sliderStyle = await ev('(() => {'
+  + ' const el = document.querySelector(' + JSON.stringify(probe('[data-input="gazeDeadzone"]')) + ');'
+  + ' if (!el) return null;'
+  + ' const own = getComputedStyle(el);'
+  + ' const want = Math.round((el.value - el.min) / (el.max - el.min) * 1000) / 10 + "%";'
+  + ' const sheet = [...document.styleSheets].map((s) => { try {'
+  + '   return [...s.cssRules].map((r) => r.cssText).join(" ") } catch { return "" } })'
+  + '   .join(" ").replace(/\\s+/g, "");'
+  + ' const foot = document.querySelector("[data-dsh-live2d-pet] [data-panel] footer input[type=range]");'
+  + ' return JSON.stringify({'
+  + '   appearance: own.webkitAppearance ?? own.appearance, height: own.height,'
+  + '   track: own.getPropertyValue("--slider-track").trim(), thumb: own.getPropertyValue("--slider-thumb").trim(),'
+  + '   fill: el.style.getPropertyValue("--fill"), want,'
+  + '   pseudoUsesTokens: sheet.includes("::-webkit-slider-runnable-track{height:var(--slider-track)")'
+  + '     && sheet.includes("::-webkit-slider-thumb{")'
+  + '     && sheet.includes("width:var(--slider-thumb)")'
+  + '     && sheet.includes("var(--fill"),'
+  + '   footThumb: foot ? getComputedStyle(foot).getPropertyValue("--slider-thumb").trim() : null }); })()')
+const ss = sliderStyle === null ? null : JSON.parse(sliderStyle)
+check('滑杆换掉了原生外观（appearance:none，同一块规则命中了元素）',
+  ss !== null && ss.appearance === "none" && ss.height === "18px", String(sliderStyle))
+check('滑杆的设计 token 是 3px 轨道 + 12px 圆钮（伪元素量不到，量它引用的 token）',
+  ss !== null && ss.track === "3px" && ss.thumb === "12px", String(sliderStyle))
+check('伪元素真的引用了这些 token（浏览器解析后还在）',
+  ss !== null && ss.pseudoUsesTokens === true, String(sliderStyle))
+check('滑杆的填充比例跟值对得上（--fill 由值算出，不是写死的）',
+  ss !== null && ss.fill === ss.want, String(sliderStyle))
+check('面板底部那根「大小」滑杆同一套外观',
+  ss !== null && ss.footThumb === "12px", String(sliderStyle))
 // --- 设置行几何：权重输入框不能和 × 删除按钮重叠 ------------------------------
 // 起因：input[type=number] 默认是 content-box，`width:44px` 只量内容、
 // padding+border 另算 —— 实际占 58px，比 grid 给它的 44px 列宽，
