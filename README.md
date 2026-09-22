@@ -54,15 +54,19 @@ git clone https://github.com/A8Chann/dsh-pet-live2d
 dsh plugin --profile web add "link:./dsh-pet-live2d/dsh-live2d-pet"
 ```
 
-### 必须自备 Cubism Core
+### Cubism Core：不用手动装
 
-`live2dcubismcore.min.js` 是 Live2D 株式会社的**专有运行时**，不能随插件分发。
-去 [Live2D 官网](https://www.live2d.com/sdk/cubism/) 下载 Cubism SDK for Web，
-把 `Core/live2dcubismcore.min.js` 放到：
+`live2dcubismcore.min.js` 是 Live2D 株式会社的**专有运行时**，不能随插件分发 —— 但**你也不
+用自己去找**：插件第一次用到它时，宿主半区会去 [Live2D 官方 CDN](https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js)
+取一份（校验过再发出去），并**缓存到本地**：
 
 ```
 %DSH_HOME%\pets\.runtime\live2dcubismcore.min.js
 ```
+
+之后离线也能用。只有当这台机器**访问不了外网**时，才需要手动下载
+[Cubism SDK for Web](https://www.live2d.com/sdk/cubism/)、把
+`Core/live2dcubismcore.min.js` 放到上面那个路径。
 
 ### 宠物：随包自带，不用手动装
 
@@ -171,4 +175,4 @@ node cdp-motion.mjs
 
 ⚠️ **可以**分享、改编；**必须**署名、**不得商用**、改编后须以同一协议分发。
 商业使用需**分别**取得上述所有人的授权 —— 氵六青同意转载**不等于**可以商用。
-- Live2D Cubism Core：专有软件，需自行获取，不在本仓库内。
+- Live2D Cubism Core：专有软件，不在本仓库内；插件会在缺失时从 Live2D 官方 CDN 取一份并缓存到本地。

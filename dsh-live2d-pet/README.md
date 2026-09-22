@@ -34,11 +34,16 @@ git clone https://github.com/A8Chann/dsh-pet-live2d
 dsh plugin --profile web add "link:./dsh-pet-live2d/dsh-live2d-pet"
 ```
 
-### 必须自备 Cubism Core
+### Cubism Core：不用手动装
 
-`live2dcubismcore.min.js` 是 Live2D 株式会社的**专有运行时**，不能随插件分发。
-去 [Live2D 官网](https://www.live2d.com/sdk/cubism/) 下载 Cubism SDK for Web，把
-`Core/live2dcubismcore.min.js` 放到 `%DSH_HOME%\pets\.runtime\live2dcubismcore.min.js`。
+`live2dcubismcore.min.js` 是 Live2D 株式会社的**专有运行时**，不能随插件分发 —— 但**你也不
+用自己去找**：插件第一次用到它时，宿主半区会去
+[Live2D 官方 CDN](https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js) 取一份
+（校验过再发出去），并缓存到 `%DSH_HOME%\pets\.runtime\live2dcubismcore.min.js`，之后离线也能用。
+
+只有当这台机器**访问不了外网**时，才需要手动下载
+[Cubism SDK for Web](https://www.live2d.com/sdk/cubism/)、把 `Core/live2dcubismcore.min.js`
+放到上面那个路径。
 
 ### 宠物：随包自带
 
@@ -203,7 +208,7 @@ dsh plugin --profile web add "link:./dsh-pet-live2d/dsh-live2d-pet"
 |---|---|---|
 | GET | `/api/live2d-pet/catalog` | 已安装宠物 + 各自的动作/表情清单 + 运行时 URL |
 | GET | `/api/live2d-pet/asset/<id>/<path>` | 只服务 `model3.json` **引用闭包**内的文件（白名单 Set 比对 + realpath 包含，`..` 永远匹配不上） |
-| GET | `/api/live2d-pet/runtime/live2dcubismcore.min.js` | 用户自备的 Cubism Core |
+| GET | `/api/live2d-pet/runtime/live2dcubismcore.min.js` | Cubism Core：本地有就发本地的，没有就去 Live2D 官方 CDN 取一份并缓存（`x-live2d-core-source: cdn`）；两边都拿不到才 502 |
 | GET | `/api/live2d-pet/runtime/live2d-vendor.js` | 插件内置的 MIT vendor 分包（pixi.js + 引擎），按需懒加载 |
 
 API 与资产路由默认只答本机回环请求。
@@ -251,7 +256,7 @@ cd ../../tools/browser-test && npm install && npm run suite
 
 - 插件代码：MIT
 - vendor 分包：pixi.js（MIT）+ untitled-pixi-live2d-engine（MIT），可随包分发
-- Cubism Core：Live2D 专有，**用户自备，本插件不内置**
+- Cubism Core：Live2D 专有，**不随包分发**；缺失时由宿主半区从 Live2D 官方 CDN 取一份并缓存到本地
 - DS鲸鱼娘模型：**CC BY-NC-SA 4.0**（署名 · **非商业** · 相同方式共享），见
   [`pets/ds-whale-girl/LICENSE`](pets/ds-whale-girl/LICENSE)。
 
