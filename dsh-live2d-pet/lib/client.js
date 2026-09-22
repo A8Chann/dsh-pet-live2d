@@ -1745,9 +1745,9 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       + "background:rgba(127,127,127,.08);border:1px solid rgba(127,127,127,.28);"
       + "border-radius:7px;padding:1px 6px;max-width:100%}",
     scope + " select:hover{border-color:rgba(127,127,127,.5)}",
-    // 权重值是个"读数 + 旋钮"，不是输入框：去边框去底色，右对齐等宽数字，
+    // 权重值是个"读数 + 旋钮"，不是输入框：去边框去底色，居中等宽数字，
     // 平时几乎隐形，hover 才浮出一点底色提示"这里能改"。
-    scope + " input[type=number]{box-sizing:border-box;width:100%;text-align:right;"
+    scope + " input[type=number]{box-sizing:border-box;width:100%;text-align:center;"
       + "font-size:11px;font-variant-numeric:tabular-nums;color:inherit;background:transparent;"
       + "border:0;border-radius:5px;padding:1px 3px;opacity:.8;-moz-appearance:textfield}",
     scope + " input[type=number]:hover{background:rgba(127,127,127,.1)}",
@@ -2084,7 +2084,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   };
 
   /**
-   * 条目表校验：一条 = `{ label, weight }`，label 为 null 表示「保持不变 / 空着」。
+   * 条目表校验：一条 = `{ label, weight }`，label 为 null 表示「默认 / 空着」。
    *
    * 返回 null 表示"这里根本不是一张表"（老版本的存档形状），空数组则是**合法的**——
    * 整张表被删空，就是一个不出手的池子。
@@ -2234,7 +2234,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   };
 
   /**
-   * 摸鱼池的**条目表**：一条 = 一个候选（label=null 表示「保持不变」）。
+   * 摸鱼池的**条目表**：一条 = 一个候选（label=null 表示「默认」，即这次不动）。
    *
    * 这是用户可增删的那份数据 —— 界面上每条一行、带 × 可删、底下有 ＋ 可加。
    * 没被覆盖过的槽位用 pet.json 的默认（none + 各选项的 fidgetWeight）。
@@ -4032,7 +4032,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         // 而不是"这次只摇一两个槽位"。用户要的是每次摸鱼都重新掷一遍所有池子，
         // 组合出来的样子才会变；只摇一个的话，其余槽位永远停在上一次的结果上，
         // 摸鱼看起来就总是同一套。
-        // "保持不变"仍然由各槽位自己的 fidgetNone 权重决定（嘴 8、眼 11…），
+        // "默认"（这次不动）仍然由各槽位自己的 fidgetNone 权重决定（嘴 8、眼 11…），
         // 所以这不是"每次都全变"，而是"每次每个池子都掷一次骰子"。
         const changes = pool.map((slot) => [slot, draw(slot)]);
         // A fidget should still be MOVEMENT. If the weighted draw left everything
@@ -4619,7 +4619,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   /**
    * 摸鱼：每个槽位一张**条目表**，每条一行、可删，右上角 ＋ 可加。
    *
-   * 一条 = 一个候选：`保持不变`（label 为 null）或某个选项。删掉某条就是把它
+   * 一条 = 一个候选：`默认`（label 为 null，这次不动）或某个选项。删掉某条就是把它
    * 移出池子；整张表空了，这个槽位就彻底不参与摸鱼。
    */
   /**
@@ -4718,7 +4718,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     );
   }
 
-  /** 条目表里一条的唯一键：`保持不变 / 空着` 统一记成 `__none`。 */
+  /** 条目表里一条的唯一键：`默认 / 空着` 统一记成 `__none`。 */
   const entryKeyOf = (entry) => (entry.label === null || entry.label === undefined ? "__none" : entry.label);
 
   /**
@@ -4727,7 +4727,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
    * 两个池子本来就是同一套东西（用户原话"相位跟摸鱼是一样的功能"），差别只有三处，
    * 所以全部做成参数：
    *   - `setEntries` —— 存哪儿（摸鱼按槽位存，相位还要带相位名）
-   *   - `noneLabel`  —— 条目空值叫什么：摸鱼是「保持不变」，相位是「空着」
+   *   - `noneLabel`  —— 条目空值叫什么：摸鱼是「默认」（这次不动），相位是「空着」
    *   - `*Attr`      —— DOM 上的前缀，两张表要能分别寻址
    *
    * 条目行下面缩进的那层是**关系**（同时 / 前提），也能加能删。关系挂在选项上而不是
@@ -4857,7 +4857,10 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         key: slot.id,
         slot,
         entries: fidgetEntriesFor(slot),
-        noneLabel: "保持不变",
+        // 「默认」＝这个槽位这次不动（用户定的叫法）。它就是池子里的一条普通条目：
+        // 可以删（删了就是"这个槽位每次摸鱼都得出点东西"），所以**不置顶、不置灰**，
+        // 也不给它任何特殊待遇。
+        noneLabel: "默认",
         // 候选**全都**能加：`fidget:false` 只决定"默认池子里有没有它"，不决定
         // "能不能配"。原先这里传 false，于是 吐舌 / 星星眼 这些在界面上根本点不到。
         allowAll: true,

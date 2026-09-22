@@ -458,12 +458,31 @@ const weightRow = await ev('(() => {'
   + ' const cs = getComputedStyle(input);'
   + ' return JSON.stringify({ text: share ? share.textContent : null,'
   + ' barWidth: bar ? bar.style.width : null,'
-  + ' inputBorder: cs.borderTopWidth, inputBg: cs.backgroundColor }); })()')
+  + ' inputBorder: cs.borderTopWidth, inputBg: cs.backgroundColor, align: cs.textAlign }); })()')
 const wr = weightRow === null ? null : JSON.parse(weightRow)
 check('权重行标出了抽中概率（占比数字，不是只有原始权重）',
   wr !== null && /^\d+%$/.test(wr.text || "") && wr.barWidth === wr.text, String(weightRow))
 check('权重旋钮低调了（去边框去底色，不再是全行最抢眼的东西）',
   wr !== null && wr.inputBorder === "0px" && wr.inputBg === "rgba(0, 0, 0, 0)", String(weightRow))
+check('权重数字居中（用户要的）', wr !== null && wr.align === "center", String(weightRow))
+
+// 「默认」＝这个槽位这次不动。它是池子里的**普通一条**：不置顶、不置灰，
+// 删掉它就是"这个槽位每次摸鱼都得出点东西"。所以断言的是"能删 + 没被灰掉"，
+// **不是**"它排在第几" —— 锁死位置反而跟"不给它特殊待遇"矛盾。
+const defaultEntry = await ev('(() => {'
+  + ' const row = document.querySelector("[data-dsh-live2d-pet] [data-fidget-row=\'mouth:__none\']");'
+  + ' if (!row) return null;'
+  + ' const cs = getComputedStyle(row);'
+  + ' const del = row.querySelector("[data-pool-remove]");'
+  + ' return JSON.stringify({ label: row.querySelector("[data-row-label]").textContent,'
+  + ' off: row.hasAttribute("data-off"), bg: cs.backgroundColor,'
+  + ' deletable: del !== null && !!del.getAttribute("data-fidget-remove"),'
+  + ' old: document.body.textContent.includes("保持不变") }); })()')
+const de = defaultEntry === null ? null : JSON.parse(defaultEntry)
+check('空值条目叫「默认」（不再是「保持不变」）',
+  de !== null && de.label === "默认" && de.old === false, String(defaultEntry))
+check('「默认」不置灰、可以删（就是普通一条，没有特殊待遇）',
+  de !== null && de.bg === "rgba(0, 0, 0, 0)" && de.deletable === true, String(defaultEntry))
 
 // --- 相位池：条目可增删，而且是**随机抽**的 --------------------------------
 const clickProbe = (selector) => ev('(() => { const el = document.querySelector(' + JSON.stringify(probe(selector))
