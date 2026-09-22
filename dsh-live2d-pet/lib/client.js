@@ -4916,7 +4916,10 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
             // (glasses, stickers, hair, cloth, claws, desk, hands, then eyes,
             // mood, mouth, symbols, ambience, blush, desk actions).
             h("button", { type: "button", ...(tab === "slots" ? { "data-on": "" } : {}), onClick: () => setTab("slots") }, "装扮 " + (pet.expressionSlots ?? []).length),
-            h("button", { type: "button", ...(tab === "settings" ? { "data-on": "" } : {}), onClick: () => setTab("settings") }, "设置"),
+            // 这里原来还有第三个「设置」页签。它从一开始就是**过渡**：设置正文真正的家是
+            // DSH 自己的设置页（那一节由 host 注册，和这里共用同一份 store），右键面板
+            // 里再放一份，只是"改池子不用翻设置"。用户要求去掉 —— 面板现在只负责
+            // 「点一下换个样子」，改数值去设置页。
           ),
           h("div", { "data-body": "" }, tab === "slots"
             // Dress-up slots: one choice each, and choices in different slots
@@ -4951,9 +4954,6 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
                   ),
                 );
               })
-            : tab === "settings"
-            // 和 DSH 设置页共用同一个正文（值也共用一份，见模块里的 store）。
-            ? h("div", { "data-settings": "" }, h(PetSettingsBody, null))
             : tab === "motions"
             ? pet.motions.filter((entry) => !(pet.hiddenMotions ?? []).includes(entry.group))
               .map((entry) => h("div", { "data-group": "", key: entry.group },

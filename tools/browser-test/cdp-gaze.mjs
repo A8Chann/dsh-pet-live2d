@@ -265,17 +265,34 @@ check('嘴也跟着回到中位', mouthAfterLeave.open < 0.05 && Math.abs(mouthA
 await gazeAt(0.75, 0.5)
 check('指针回来后重新跟随', (await gaze()) === 'pointer', 'data-gaze=' + await gaze())
 
-// --- 设置面板：改「注视死区」必须立刻改变手感，并记进 localStorage -----------
+// --- 设置页：改「注视死区」必须立刻改变手感，并记进 localStorage ---------------
+// 设置正文现在**只**活在 DSH 自己的设置页那一节里：右键面板原来那个「设置」页签被用户
+// 要求去掉了（面板只负责"点一下换个样子"，改数值去设置页）。
+/**
+ * 挂载（或复用）设置正文的探针容器，返回它是否可用。
+ *
+ * 挂法和 DSH 设置页那条断言一样：`__pluginSections["pet-settings"]` 渲染进一个 div，
+ * 设置正文就带着 `[data-pet-settings]` 出现在页面里。幂等。
+ */
+const openSettings = async () => {
+  const ok = await ev('(() => {'
+    + ' if (document.querySelector("#dsh-settings-probe")) return true;'
+    + ' const slot = (window.__pluginSections ?? {})["pet-settings"];'
+    + ' if (!slot) return false;'
+    + ' const host = document.createElement("div"); host.id = "dsh-settings-probe"; document.body.appendChild(host);'
+    + ' window.ReactDOM.createRoot(host).render(slot.render());'
+    + ' return true })()')
+  await sleep(600)
+  return ok
+}
 await openPanel(ev)
 await sleep(700)
-await ev('(() => { const bs = Array.from(document.querySelectorAll("[data-dsh-live2d-pet] [data-tabs] button"));'
-  + ' const b = bs.find((x) => x.textContent === "设置"); if (b) b.click(); return !!b })()')
-await sleep(600)
-const hasSlider = await ev('!!document.querySelector("[data-dsh-live2d-pet] [data-input=\'gazeDeadzone\']")')
+check('设置正文能挂到 DSH 设置页那一节里', (await openSettings()) === true)
+const hasSlider = await ev('!!document.querySelector("#dsh-settings-probe [data-input=\'gazeDeadzone\']")')
 check('设置页有「注视死区」滑杆', hasSlider === true)
 // React 的受控 input 认的是原生 setter 派发的 input 事件，直接改 .value 会被它忽略。
 const setSlider = (key, value) => ev('(() => {'
-  + ' const el = document.querySelector("[data-dsh-live2d-pet] [data-input=\'' + key + '\']");'
+  + ' const el = document.querySelector("#dsh-settings-probe [data-input=\'' + key + '\']");'
   + ' if (!el) return false;'
   + ' const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;'
   + ' setter.call(el, ' + JSON.stringify(String(value)) + ');'
@@ -289,7 +306,7 @@ check('改动写进了 localStorage', stored !== null && stored.gazeDeadzone ===
 const nudgedAfter = await gazeAt(0.60, 0.5)
 check('死区生效：同一个位置现在不再牵引视线', Math.abs(nudgedAfter.x) < 0.01, JSON.stringify(nudgedAfter))
 // 恢复默认之后再拉一下，应该又能动了。
-await ev('(() => { const b = document.querySelector("[data-dsh-live2d-pet] [data-reset=\'tuning\']"); if (b) b.click(); return !!b })()')
+await ev('(() => { const b = document.querySelector("#dsh-settings-probe [data-reset=\'tuning\']"); if (b) b.click(); return !!b })()')
 await sleep(400)
 const restored = await gazeAt(0.60, 0.5)
 check('「恢复默认」把死区放回 0.12（又能动了）', Math.abs(restored.x) > 0.01, JSON.stringify(restored))
@@ -300,8 +317,11 @@ check('插件往 DSH 设置页注册了一节', sectionIds.includes("pet-setting
 const mounted = await ev('(() => {'
   + ' const slot = (window.__pluginSections ?? {})["pet-settings"];'
   + ' if (!slot) return "NO_SLOT";'
-  + ' const host = document.createElement("div"); host.id = "dsh-settings-probe"; document.body.appendChild(host);'
-  + ' window.ReactDOM.createRoot(host).render(slot.render());'
+  // **幂等**：上面可能已经挂过探针了，再建一个同 id 的容器就会有两份设置正文，
+  // 所有 `querySelectorAll` 的结果都会翻倍（相位槽位表、关系行都这么假红过）。
+  + ' let host = document.querySelector("#dsh-settings-probe");'
+  + ' if (!host) { host = document.createElement("div"); host.id = "dsh-settings-probe";'
+  + ' document.body.appendChild(host); window.ReactDOM.createRoot(host).render(slot.render()); }'
   + ' return slot.meta.label(); })()')
 check('那一节的标题是「桌宠」', mounted === "桌宠", String(mounted))
 await sleep(600)
@@ -432,8 +452,8 @@ check('「＋ 关系」下拉也是 border-box（74px 列同样会被撑爆）',
 // 「加槽位」和「加候选」是两种动作（新建一张表 vs 往这张表加一条），所以药丸必须
 // 长得不一样 —— 以前两者同为虚线，点错了后果还不同。这里直接断言两者边框不同。
 const chipKinds = await ev('(() => {'
-  + ' const slot = document.querySelector("[data-dsh-live2d-pet] [data-fidget-slot-add]");'
-  + ' const cand = document.querySelector("[data-dsh-live2d-pet] [data-pool-add]");'
+  + ' const slot = document.querySelector("#dsh-settings-probe [data-fidget-slot-add]");'
+  + ' const cand = document.querySelector("#dsh-settings-probe [data-pool-add]");'
   + ' if (!slot || !cand) return null;'
   + ' const s = getComputedStyle(slot); const c = getComputedStyle(cand);'
   + ' return JSON.stringify({ slotPill: slot.hasAttribute("data-add-option"),'
@@ -531,7 +551,7 @@ check('淡入是渐进的（中间帧落在 0 和 1 之间）',
 // 删掉它就是"这个槽位每次摸鱼都得出点东西"。所以断言的是"能删 + 没被灰掉"，
 // **不是**"它排在第几" —— 锁死位置反而跟"不给它特殊待遇"矛盾。
 const defaultEntry = await ev('(() => {'
-  + ' const row = document.querySelector("[data-dsh-live2d-pet] [data-fidget-row=\'mouth:__none\']");'
+  + ' const row = document.querySelector("#dsh-settings-probe [data-fidget-row=\'mouth:__none\']");'
   + ' if (!row) return null;'
   + ' const cs = getComputedStyle(row);'
   + ' const del = row.querySelector("[data-pool-remove]");'
@@ -592,7 +612,7 @@ await ev('window.__dshLive2dPet.setExpressions([])')
 await pickTab("装扮")
 await sleep(400)
 await slotPick("lhand", "无")
-await pickTab("设置")
+await openSettings()
 await sleep(600)
 check('再加一行 waiting 相位', (await clickProbe('[data-phase-add="waiting"]')) === true)
 await sleep(400)
@@ -639,7 +659,7 @@ await ev('window.__dshLive2dPet.fidgetNow()')
 await sleep(600)
 const poolBefore = await ev('window.__dshLive2dPet.fidgetTally().poolSize')
 const setWeight = (key, value) => ev('(() => {'
-  + ' const el = document.querySelector("[data-dsh-live2d-pet] [data-fidget-weight=\'' + key + '\']");'
+  + ' const el = document.querySelector("#dsh-settings-probe [data-fidget-weight=\'' + key + '\']");'
   + ' if (!el) return false;'
   + ' const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;'
   + ' setter.call(el, ' + JSON.stringify(String(value)) + ');'
@@ -659,11 +679,11 @@ check('权重 0 的那一条不再参与，但槽位本身还在池子里',
 
 // --- 条目可增删（用户画的 ×/＋：列表本身是数据，不是固定项改数值）-----------
 check('吹泡泡糖那一条还在表里（权重 0 只是不参与，不是删掉）',
-  (await ev('!!document.querySelector("[data-dsh-live2d-pet] [data-fidget-row=\'mouth:吹泡泡糖\']")')) === true)
-await ev('document.querySelector("[data-dsh-live2d-pet] [data-fidget-remove=\'mouth:吹泡泡糖\']").click()')
+  (await ev('!!document.querySelector("#dsh-settings-probe [data-fidget-row=\'mouth:吹泡泡糖\']")')) === true)
+await ev('document.querySelector("#dsh-settings-probe [data-fidget-remove=\'mouth:吹泡泡糖\']").click()')
 await sleep(400)
 check('点 × 之后那一条真的消失了',
-  (await ev('!!document.querySelector("[data-dsh-live2d-pet] [data-fidget-row=\'mouth:吹泡泡糖\']")')) === false)
+  (await ev('!!document.querySelector("#dsh-settings-probe [data-fidget-row=\'mouth:吹泡泡糖\']")')) === false)
 const pickInSelect = (selector, value) => ev('(() => {'
   + ' const el = document.querySelector(' + JSON.stringify(selector) + ');'
   + ' if (!el) return false;'
@@ -672,8 +692,8 @@ const pickInSelect = (selector, value) => ev('(() => {'
   + ' el.dispatchEvent(new Event("change", { bubbles: true }));'
   + ' return true })()')
 check('用 ＋ 能把它加回来',
-  (await clickChip('[data-dsh-live2d-pet] [data-fidget-add="mouth"][data-add-option="吹泡泡糖"]')) === true
-  && (await sleep(350), await ev('!!document.querySelector("[data-dsh-live2d-pet] [data-fidget-row=\'mouth:吹泡泡糖\']")')) === true)
+  (await clickChip('#dsh-settings-probe [data-fidget-add="mouth"][data-add-option="吹泡泡糖"]')) === true
+  && (await sleep(350), await ev('!!document.querySelector("#dsh-settings-probe [data-fidget-row=\'mouth:吹泡泡糖\']")')) === true)
 
 // --- 「默认」＝回到默认（清空这个槽位），不是"这次不动" -----------------------
 // 用户拿 `默认 10 : 脸红 1` 的池子指出过问题：那时「默认」被改成"这次不动"，于是脸红
@@ -713,7 +733,7 @@ check('手动清掉被配对钉住的槽位，配对会把它补回来（不变�
 // 摸鱼**可以**把眼睛槽掷回「默认」（那是池子自己的意思，权重就是干这个的）—— 但掷到
 // 「默认」必须**真的清掉**。用权重把它变成必然：眼睛槽的池子压成只剩「默认」。
 // 权重输入框在**设置**页的摸鱼表里，所以要先切回去。
-await pickTab("设置")
+await openSettings()
 await sleep(600)
 check('把眼睛槽的池子压成只剩「默认」',
   (await setWeight("eyes:爱心眼", 0)) === true, 'eyes:爱心眼')
@@ -809,21 +829,21 @@ check('手机掏出来了，但没选自拍 → 摸鱼不会自己拍（残留�
 // 用权重把这一轮变成必然，做一组只差"这轮有没有掏出手机"的对照实验。
 const setSlotWeights = async (slotId, keepKey) => {
   const keys = JSON.parse(await ev('JSON.stringify(Array.from(document.querySelectorAll('
-    + JSON.stringify('[data-dsh-live2d-pet] [data-fidget-weight^="' + slotId + ':"]')
+    + JSON.stringify('#dsh-settings-probe [data-fidget-weight^="' + slotId + ':"]')
     + ')).map((el) => el.getAttribute("data-fidget-weight")))'))
   for (const key of keys) await setWeight(key, key === keepKey ? 1 : 0)
   return keys
 }
-await pickTab("设置")
+await openSettings()
 await sleep(600)
 check('把 selfie 加进摸鱼池',
-  (await clickChip('[data-dsh-live2d-pet] [data-fidget-slot-add="selfie"]')) === true)
+  (await clickChip('#dsh-settings-probe [data-fidget-slot-add="selfie"]')) === true)
 await sleep(500)
 check('把「自拍」加进它的池子',
-  (await clickChip('[data-dsh-live2d-pet] [data-fidget-add="selfie"][data-add-option="自拍"]')) === true)
+  (await clickChip('#dsh-settings-probe [data-fidget-add="selfie"][data-add-option="自拍"]')) === true)
 await sleep(500)
 check('给「自拍」加一条「前提：右手 = 掏出手机」',
-  (await pickInSelect('[data-dsh-live2d-pet] [data-relation-add="selfie:自拍"]', "require|rhand|掏出手机")) === true)
+  (await pickInSelect('#dsh-settings-probe [data-relation-add="selfie:自拍"]', "require|rhand|掏出手机")) === true)
 await sleep(400)
 // 新加的槽位表是**空的**，所以只有「自拍」这一条（没有「默认」那条）。
 check('右手池只剩「双手比耶」', (await setSlotWeights("rhand", "rhand:双手比耶")).length >= 2)
@@ -845,7 +865,7 @@ check('手机在手但同一轮右手被掷成比耶 → 自拍被跳过（不�
   && motionA !== "Selfie" && motionA !== "SelfieQuick",
   JSON.stringify(premiseA) + ' motion=' + motionA)
 // B) 对照：这一轮**掏出手机** → 前提成立 → 该拍
-await pickTab("设置")
+await openSettings()
 await sleep(500)
 check('右手池改成只剩「掏出手机」', (await setSlotWeights("rhand", "rhand:掏出手机")).length >= 2)
 await pickTab("装扮")
@@ -876,7 +896,7 @@ check('手动点自拍：插件替你把手机掏出来，然后拍照（不静�
   && (motionC === "Selfie" || motionC === "SelfieQuick"),
   JSON.stringify(premiseC) + ' motion=' + motionC)
 // 收尾：把 selfie 从摸鱼池里"清空"（权重全 0 = 不参与），免得后面的段落每次摸鱼都在自拍。
-await pickTab("设置")
+await openSettings()
 await sleep(500)
 await setSlotWeights("selfie", "")
 await pickTab("装扮")
@@ -884,24 +904,24 @@ await sleep(400)
 await slotPick("selfie", "无")
 await slotPick("rhand", "无")
 await sleep(500)
-await pickTab("设置")
+await openSettings()
 await sleep(500)
 
 // --- 摸鱼也能加槽位和候选（这两件事原来都被写死在代码里）--------------------
 // 用户问"为什么摸鱼里面不能加槽位和候选"。答案是：界面上只列 FIDGET_SLOTS 那六个、
 // 运行时也只认那六个，候选还被 `fidget:false` 挡掉一批。默认集合应该只是宠物给的
 // **建议**，用户加进来的必须真的进池子、真的抽得到 —— 所以下面断言的是运行时行为。
-const fidgetAdd = (slotId, label) => clickChip('[data-dsh-live2d-pet] [data-fidget-add="' + slotId
+const fidgetAdd = (slotId, label) => clickChip('#dsh-settings-probe [data-fidget-add="' + slotId
   + '"][data-add-option="' + label + '"]')
 // 池子的槽位表在**两个地方**都有（摸鱼那一节 / 每个相位），所以查询必须带上
 // `[data-pool="fidget"]` 这个归属标记 —— 否则 `[data-pool-remove-slot="symbol"]`
 // 会先命中相位里那张同名表。这个坑当场踩了一次（删错了池子）。
-const fidgetPool = (sel) => '[data-dsh-live2d-pet] [data-pool="fidget"]' + sel
+const fidgetPool = (sel) => '#dsh-settings-probe [data-pool="fidget"]' + sel
 check('摸鱼那一节列出了可加的槽位（「符号」不在默认六个里）',
-  (await ev('!!document.querySelector("[data-dsh-live2d-pet] [data-fidget-slot-add=\'symbol\']")')) === true)
+  (await ev('!!document.querySelector("#dsh-settings-probe [data-fidget-slot-add=\'symbol\']")')) === true)
 check('默认那六个槽位没有「整个拿掉」的 ×',
   (await ev('!!document.querySelector(' + JSON.stringify(fidgetPool(' [data-pool-remove-slot="mouth"]')) + ')')) === false)
-await clickChip('[data-dsh-live2d-pet] [data-fidget-slot-add="symbol"]')
+await clickChip('#dsh-settings-probe [data-fidget-slot-add="symbol"]')
 await sleep(400)
 const symbolTable = await ev('!!document.querySelector(' + JSON.stringify(fidgetPool('[data-pool-slot="symbol"]')) + ')')
 const symbolEmpty = await ev('!!document.querySelector(' + JSON.stringify(fidgetPool('[data-pool-slot="symbol"] [data-pool-empty]')) + ')')
@@ -917,9 +937,9 @@ await sleep(700)
 check('加进来的槽位真的参与抽签了（抽中「感叹号」）',
   (await pins()).includes('感叹号'), JSON.stringify(await pins()))
 // pet.json 里标了 fidget:false 的候选（星星眼）原来在界面上根本点不到。
-await ev('document.querySelector("[data-dsh-live2d-pet] [data-fidget-remove=\'eyes:__none\']").click()')
+await ev('document.querySelector("#dsh-settings-probe [data-fidget-remove=\'eyes:__none\']").click()')
 await sleep(350)
-await ev('document.querySelector("[data-dsh-live2d-pet] [data-fidget-remove=\'eyes:爱心眼\']").click()')
+await ev('document.querySelector("#dsh-settings-probe [data-fidget-remove=\'eyes:爱心眼\']").click()')
 await sleep(350)
 check('标了 fidget:false 的候选（星星眼）现在也能加进池子',
   (await fidgetAdd('eyes', '星星眼')) === true)
@@ -933,11 +953,11 @@ await clickChip(fidgetPool(' [data-pool-remove-slot="symbol"]'))
 await sleep(400)
 check('拿掉之后那张表没了、可加的槽位又回来了',
   (await ev('!!document.querySelector(' + JSON.stringify(fidgetPool('[data-pool-slot="symbol"]')) + ')')) === false
-  && (await ev('!!document.querySelector("[data-dsh-live2d-pet] [data-fidget-slot-add=\'symbol\']")')) === true)
+  && (await ev('!!document.querySelector("#dsh-settings-probe [data-fidget-slot-add=\'symbol\']")')) === true)
 await ev('window.__dshLive2dPet.setExpressions([])')
 await sleep(300)
 // 两种关系必须分开显示：同时（pairs） vs 前提（requires）。
-const relations = JSON.parse(await ev('JSON.stringify(Array.from(document.querySelectorAll("[data-dsh-live2d-pet] [data-relation]")).map((el) => el.getAttribute("data-relation") + "|" + el.textContent))'))
+const relations = JSON.parse(await ev('JSON.stringify(Array.from(document.querySelectorAll("#dsh-settings-probe [data-relation]")).map((el) => el.getAttribute("data-relation") + "|" + el.textContent))'))
 check('「同时」那一层显示的是中文槽位标签（不是 id）',
   relations.some((row) => row.startsWith("pair|") && row.includes("贴纸")), JSON.stringify(relations))
 const requiresText = await ev('(() => { const g = document.querySelector("[data-dsh-live2d-pet] [data-slot=\'lhand\']"); return "ok" })()')
@@ -949,7 +969,7 @@ check('挤番茄酱 下面标的是「前提」（需要先有蛋包饭）',
 // 关系的归属是选项：删掉「喵喵手 → 同时：贴纸 = 猫猫」之后，在右键面板点同一个
 // 姿势就不该再带出猫猫贴纸。这条检查的是运行时行为，不是"那一行还在不在"。
 const relationRows = () => ev('document.querySelectorAll('
-  + JSON.stringify('[data-dsh-live2d-pet] [data-relation-of="rhand:喵喵手"]') + ').length')
+  + JSON.stringify('#dsh-settings-probe [data-relation-of="rhand:喵喵手"]') + ').length')
 const relaunch = async () => {
   await pickTab("装扮")
   await sleep(500)
@@ -961,14 +981,14 @@ await ev('window.__dshLive2dPet.setExpressions([])')
 await sleep(300)
 check('基线：点喵喵手会带出猫猫贴纸（关系来自 pet.json）',
   (await relaunch()).includes("猫猫贴纸"), JSON.stringify(await pins()))
-await pickTab("设置")
+await openSettings()
 await sleep(600)
 check('喵喵手 下面有一行关系', (await relationRows()) === 1, 'rows=' + await relationRows())
 check('关系行自带「×」和「＋ 关系」', await ev('!!document.querySelector('
-  + JSON.stringify('[data-dsh-live2d-pet] [data-relation-of="rhand:喵喵手"] [data-relation-remove]')
-  + ') && !!document.querySelector(' + JSON.stringify('[data-dsh-live2d-pet] [data-relation-add="rhand:喵喵手"]') + ')') === true)
+  + JSON.stringify('#dsh-settings-probe [data-relation-of="rhand:喵喵手"] [data-relation-remove]')
+  + ') && !!document.querySelector(' + JSON.stringify('#dsh-settings-probe [data-relation-add="rhand:喵喵手"]') + ')') === true)
 await ev('document.querySelector('
-  + JSON.stringify('[data-dsh-live2d-pet] [data-relation-of="rhand:喵喵手"][data-relation-key="sticker:猫猫"] [data-relation-remove]')
+  + JSON.stringify('#dsh-settings-probe [data-relation-of="rhand:喵喵手"][data-relation-key="sticker:猫猫"] [data-relation-remove]')
   + ').click()')
 await sleep(400)
 check('点 × 之后那一行关系没了', (await relationRows()) === 0, 'rows=' + await relationRows())
@@ -977,29 +997,29 @@ check('删关系写进了存档', afterDelete?.relations?.["rhand:喵喵手"]?.p
   JSON.stringify(afterDelete?.relations ?? null))
 check('删掉关系后，同一个姿势不再带出猫猫贴纸',
   !(await relaunch()).includes("猫猫贴纸"), JSON.stringify(await pins()))
-await pickTab("设置")
+await openSettings()
 await sleep(600)
 check('用 ＋ 能把关系加回来',
-  (await pickInSelect('[data-dsh-live2d-pet] [data-relation-add="rhand:喵喵手"]', "pair|sticker|猫猫")) === true
+  (await pickInSelect('#dsh-settings-probe [data-relation-add="rhand:喵喵手"]', "pair|sticker|猫猫")) === true
   && (await sleep(400), (await relationRows()) === 1), 'rows=' + await relationRows())
 check('加回来之后又带出猫猫贴纸',
   (await relaunch()).includes("猫猫贴纸"), JSON.stringify(await pins()))
 // 「前提」也能自己加：给 双手比耶 加一条「前提：左手 = 蛋包饭」。
-await pickTab("设置")
+await openSettings()
 await sleep(600)
-await pickInSelect('[data-dsh-live2d-pet] [data-relation-add="rhand:双手比耶"]', "require|lhand|蛋包饭")
+await pickInSelect('#dsh-settings-probe [data-relation-add="rhand:双手比耶"]', "require|lhand|蛋包饭")
 await sleep(400)
 const requireRows = JSON.parse(await ev('JSON.stringify(Array.from(document.querySelectorAll('
-  + JSON.stringify('[data-dsh-live2d-pet] [data-relation="require"]')
+  + JSON.stringify('#dsh-settings-probe [data-relation="require"]')
   + ')).map((el) => el.getAttribute("data-relation-of") + "|" + el.textContent))'))
 check('能给一个选项加「前提」关系',
   requireRows.some((row) => row.startsWith("rhand:双手比耶|") && row.includes("蛋包饭")), JSON.stringify(requireRows))
 await ev('document.querySelector('
-  + JSON.stringify('[data-dsh-live2d-pet] [data-relation-of="rhand:双手比耶"][data-relation-key="lhand:蛋包饭"] [data-relation-remove]')
+  + JSON.stringify('#dsh-settings-probe [data-relation-of="rhand:双手比耶"][data-relation-key="lhand:蛋包饭"] [data-relation-remove]')
   + ').click()')
 await sleep(400)
 const requireRowsAfter = JSON.parse(await ev('JSON.stringify(Array.from(document.querySelectorAll('
-  + JSON.stringify('[data-dsh-live2d-pet] [data-relation="require"]')
+  + JSON.stringify('#dsh-settings-probe [data-relation="require"]')
   + ')).map((el) => el.getAttribute("data-relation-of")))'))
 check('前提关系也能删掉',
   !requireRowsAfter.includes("rhand:双手比耶"), JSON.stringify(requireRowsAfter))
