@@ -363,6 +363,38 @@ const sectionStyled = await ev('(() => {'
   + ' return JSON.stringify({ border: cs.borderTopWidth, font: cs.fontSize }); })()')
 check('DSH 设置页那一节的控件有样式（不是裸控件）',
   sectionStyled !== null && !String(sectionStyled).includes('"border":"0px"'), String(sectionStyled))
+// --- 设置行几何：权重输入框不能和 × 删除按钮重叠 ------------------------------
+// 起因：input[type=number] 默认是 content-box，`width:44px` 只量内容、
+// padding+border 另算 —— 实际占 58px，比 grid 给它的 44px 列宽，
+// 于是框向右漫出来压住 ×。直接量两者的屏幕矩形，重叠就红。
+const rowGeometry = await ev('(() => {'
+  + ' const row = document.querySelector(' + JSON.stringify(probe('[data-phase-pool-row="tool:rhand:写本本"]')) + ');'
+  + ' if (!row) return null;'
+  + ' const r = (sel) => { const el = row.querySelector(sel); if (!el) return null; const b = el.getBoundingClientRect();'
+  + ' return { x: Math.round(b.x), right: Math.round(b.right), w: Math.round(b.width), box: getComputedStyle(el).boxSizing }; };'
+  + ' return JSON.stringify({ input: r("input"), remove: r("button"),'
+  + ' relation: r("select"), chip: getComputedStyle(row.querySelector("[data-add-option]") ?? row).borderTopStyle }); })()')
+const rowGeo = rowGeometry === null ? null : JSON.parse(rowGeometry)
+check('权重输入框和 × 不重叠（content-box 撑爆 grid 列）',
+  rowGeo !== null && rowGeo.input !== null && rowGeo.remove !== null && rowGeo.input.right <= rowGeo.remove.x,
+  String(rowGeometry))
+check('权重输入框是 border-box（不然列宽量的是内容，padding 另算）',
+  rowGeo !== null && rowGeo.input !== null && rowGeo.input.box === "border-box",
+  String(rowGeometry))
+check('「＋ 关系」下拉也是 border-box（74px 列同样会被撑爆）',
+  rowGeo !== null && rowGeo.relation !== null && rowGeo.relation.box === "border-box",
+  String(rowGeometry))
+// 摸鱼加槽位按钮：漏了 data-add-option 就会掉出药丸样式，变成裸按钮。
+const slotAddStyle = await ev('(() => {'
+  + ' const el = document.querySelector("[data-dsh-live2d-pet] [data-fidget-slot-add]");'
+  + ' if (!el) return null;'
+  + ' const cs = getComputedStyle(el);'
+  + ' return JSON.stringify({ pill: el.hasAttribute("data-add-option"),'
+  + ' border: cs.borderTopStyle, radius: cs.borderTopLeftRadius }); })()')
+check('摸鱼下面的加槽位按钮是药丸样式（不是裸按钮）',
+  slotAddStyle !== null && JSON.parse(slotAddStyle).pill === true
+  && JSON.parse(slotAddStyle).border === "dashed",
+  String(slotAddStyle))
 
 // --- 相位池：条目可增删，而且是**随机抽**的 --------------------------------
 const clickProbe = (selector) => ev('(() => { const el = document.querySelector(' + JSON.stringify(probe(selector))

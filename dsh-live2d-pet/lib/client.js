@@ -1682,11 +1682,15 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     scope + " [data-pool-row][data-off] [data-row-label]{opacity:.45;text-decoration:line-through}",
 
     // ---- 输入控件 ------------------------------------------------------
-    scope + " input[type=number]{width:44px;text-align:center;font-size:11px;"
+    // `box-sizing` 不能省：输入框和下拉默认是 content-box，`width:44px` 只量内容、
+    // padding 和 border 另算 —— 实际占 44+12+2=58px，比 grid 给的 44px 列宽，
+    // 表现就是输入框向右漫出来、压住 × 按钮。同样适用于第 5 列那个 74px 的
+    // 「＋ 关系」下拉。
+    scope + " input[type=number]{box-sizing:border-box;width:44px;text-align:center;font-size:11px;"
       + "-moz-appearance:textfield}",
     scope + " input[type=number]::-webkit-outer-spin-button,"
       + scope + " input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}",
-    scope + " input[type=number]," + scope + " select{font:inherit;color:inherit;"
+    scope + " input[type=number]," + scope + " select{box-sizing:border-box;font:inherit;color:inherit;"
       + "background:rgba(127,127,127,.08);border:1px solid rgba(127,127,127,.28);"
       + "border-radius:7px;padding:1px 6px;max-width:100%}",
     scope + " input[type=number]:hover," + scope + " select:hover{border-color:rgba(127,127,127,.5)}",
@@ -4774,11 +4778,15 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         removeAttr: "data-fidget-remove",
         setEntries: (entries) => setFidgetEntries(slot.id, entries),
       })),
+      // 和条目候选同一个药丸样式：`data-add-option` 是 SETTINGS_CSS 里
+      // `[data-add-option]` 药丸规则的钩子，漏了它就是裸按钮（下面 docs-and-workflow
+      // 也有一节讲这个：面板里曾经整节都是裸控件）。
       free.length === 0 ? null : h("div", { "data-add-row": "" },
         free.map((slot) => h("button", {
           key: slot.id,
           type: "button",
           "data-fidget-slot-add": slot.id,
+          "data-add-option": slot.id,
           title: "把这个槽位加进摸鱼池",
           onClick: () => addFidgetSlot(slot.id),
         }, "＋ " + slot.label))),
