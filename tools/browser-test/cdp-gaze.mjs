@@ -927,6 +927,69 @@ await sleep(400)
 await slotPick("selfie", "无")
 await slotPick("rhand", "无")
 await sleep(500)
+
+// --- 会话相位要"接管"：没点名的槽位也得让位 -----------------------------------
+// 用户报的两条：
+//   ① "会话时没有把插槽重置"：爱心眼 + 冒爱心 + 掏出手机 + 自拍 的时候进会话，
+//      右手一直停在手机、冒爱心一直挂着；
+//   ② "会话的状态没有在右键菜单的装扮里同步 button"：面板还显示你上次手选的。
+// 规则（`effectiveSlotChoice`）：装扮槽永远归用户；相位点名的槽位用相位抽到的；
+// **会话进行中、相位没点名的槽位一律让位**（空）；会话结束你原来的样子回来。
+await slotPick("eyes", "爱心眼")
+await slotPick("rhand", "掏出手机")
+await sleep(900)
+await slotPick("selfie", "自拍")
+await sleep(1200)
+const beforePhase = JSON.parse(await ev('JSON.stringify({'
+  + ' phone: window.__dshLive2dPet.drawn("phone"),'
+  + ' love: window.__dshLive2dPet.drawn("love") })'))
+check('进会话之前：手机在手、冒爱心亮着',
+  beforePhase.phone > 0.5 && beforePhase.love > 0.5, JSON.stringify(beforePhase))
+// 进会话（thinking 的池子只点名鲸鱼和左手：头顶鲸 / 画笔）
+await ev('window.__dshLive2dPet.phaseNow("thinking")')
+await sleep(1600)
+const inPhase = JSON.parse(await ev('JSON.stringify({'
+  + ' phone: window.__dshLive2dPet.drawn("phone"),'
+  + ' love: window.__dshLive2dPet.drawn("love"),'
+  + ' whale: window.__dshLive2dPet.drawn("jingyu"),'
+  + ' phase: document.querySelector("[data-dsh-live2d-pet]").getAttribute("data-phase") })'))
+check('会话中：没被点名的槽位让位 —— 手机收回、冒爱心收掉',
+  inPhase.phone < 0.2 && inPhase.love < 0.2, JSON.stringify(inPhase))
+check('会话中：相位点名的照常演出（头顶鲸）', inPhase.whale > 0.5, JSON.stringify(inPhase))
+// 面板要**跟着相位**，不是还显示你上次手选的
+const panelSync = JSON.parse(await ev('(() => {'
+  // 宠物根节点带的是 **data 属性**，不是 id —— 写成 `#dsh-live2d-pet` 会一个都查不到
+  // （我这么错过一次，三条断言全 false，看着像产品坏了）。
+  + ' const wrap = (id) => "[data-dsh-live2d-pet] [data-panel] [data-slot=\\"" + id + "\\"]";'
+  + ' const on = (sel) => { const b = document.querySelector(sel); return b !== null && b.hasAttribute("data-on") };'
+  + ' const chip = (id, label) => wrap(id) + " [data-slot-option=\\"" + label + "\\"]";'
+  + ' const none = (id) => { const g = document.querySelector(wrap(id));'
+  + '   const b = g === null ? null : Array.from(g.querySelectorAll("[data-chips] button"))[0];'
+  + '   return b !== null && b !== undefined && b.hasAttribute("data-on") };'
+  + ' return JSON.stringify({ found: document.querySelector(wrap("rhand")) !== null,'
+  + '   rhandPhone: on(chip("rhand", "掏出手机")), rhandNone: none("rhand"),'
+  + '   whaleOn: on(chip("whale", "头顶鲸")) }) })()'))
+check('面板同步相位：右手不再高亮「掏出手机」（整格空着），鲸鱼高亮「头顶鲸」',
+  panelSync.found === true && panelSync.rhandPhone === false
+  && panelSync.rhandNone === true && panelSync.whaleOn === true,
+  JSON.stringify(panelSync))
+// 会话中手点一下：要**真的换掉**（相位正接管着，只改用户选择是看不见的）
+await slotPick("rhand", "掏出手机")
+await sleep(1200)
+check('会话中手点「掏出手机」也能生效（相位的那一格被改掉，不是点了没反应）',
+  ((await ev('window.__dshLive2dPet.drawn("phone")')) ?? 0) > 0.5,
+  'phone=' + await ev('window.__dshLive2dPet.drawn("phone")'))
+// 会话结束：你原来的样子回来（爱心眼是"让位"，不是被删掉）
+await ev('window.__dshLive2dPet.phaseNow("idle")')
+await sleep(1600)
+const afterPhase = JSON.parse(await ev('JSON.stringify({'
+  + ' love: window.__dshLive2dPet.drawn("love"),'
+  + ' slots: window.__dshLive2dPet.slotSelections() })'))
+check('会话结束后：让位的槽位回来了（爱心眼还在 → 冒爱心又亮）',
+  afterPhase.slots.eyes === "爱心眼" && afterPhase.love > 0.5, JSON.stringify(afterPhase))
+await slotPick("eyes", "默认")
+await slotPick("rhand", "无")
+await sleep(600)
 await openSettings()
 await sleep(500)
 

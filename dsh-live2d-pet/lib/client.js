@@ -3248,7 +3248,18 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       // 相位池和摸鱼池是同一套抽签，所以诊断也照抄摸鱼的形状：`phaseNow` 立刻重抽
       // 一次（不用等真的相位切换），`phaseTally` 给出每个相位各抽中了什么。
       // 没有这两个的话，"池子里是随机的"就只能靠反复推 SSE 再数，慢且会抖。
-      api.phaseNow = (phase) => { if (typeof phase === "string") flushPhaseRef.current?.(phase); };
+      /**
+       * 诊断：直接应用一个相位（测试用）。
+       *
+       * **连状态一起设**，跟真实 SSE 路径一致：只调 applyPhase 的话 `data-phase` 还是
+       * 旧值、React 也不会重渲染 —— 面板跟着相位走这件事就测不出来（而且测出来的行为
+       * 跟真实路径不一样）。
+       */
+      api.phaseNow = (phase) => {
+        if (typeof phase !== "string") return;
+        setPhaseState(phase);
+        flushPhaseRef.current?.(phase);
+      };
       api.phaseTally = () => phaseTallyRef.current;
       api.resetPhaseTally = () => { phaseTallyRef.current = {}; };
       // 诊断：**有效关系**（pet.json + 用户覆盖合并后的结果）与存档里的覆盖。
@@ -3810,6 +3821,114 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     }, []);
 
     /**
+     * 一个槽位**此刻**显示的是什么 —— 面板高亮、配对、动作守卫三处都读它。
+     *
+     * 三段：
+     *   1. **装扮槽**永远归用户：眼镜/发饰/魔爪/巴菲/桌布/手机换色是"穿在身上的"，
+     *      会话相位不碰它们（用户明确要求），哪怕相位的池子里点了名；
+     *   2. 相位**点名**了这个槽位 → 用相位的选择（可能是 null = 相位说这里空着）；
+     *   3. 会话进行中、而相位没点名 → **空**：相位是"接管"，没点名的槽位也要让位。
+     *      以前这里退回用户的选择，于是"爱心眼 + 冒爱心 + 掏出手机"在整场会话里一直
+     *      挂着（用户报的"会话时没有把插槽重置"）；
+     *   4. 其余 → 用户自己的选择。
+     */
+    const effectiveSlotChoice = (slotId) => {
+      if (OUTFIT_SLOTS.indexOf(slotId) !== -1) return slotSelectionsRef.current[slotId];
+      if (Object.prototype.hasOwnProperty.call(phaseChoicesRef.current, slotId)) {
+        return phaseChoicesRef.current[slotId];
+      }
+      if (phaseRef.current !== "idle") return undefined;
+      return slotSelectionsRef.current[slotId];
+    };
+
+    /** 某个槽位此刻挂着哪个动作组（读**有效选择**）。 */
+    const motionGroupOfSlot = (slotId) => {
+      const label = effectiveSlotChoice(slotId);
+      if (label === undefined || label === null) return null;
+      const picked = (petRef.current?.expressionSlots ?? [])
+        .find((slot) => slot.id === slotId)?.options.find((o) => o.label === label);
+      return typeof picked?.motion === "string" ? picked.motion : null;
+    };
+
+    /**
+     * 身体此刻该播哪个动作 —— 按**有效选择**扫一遍槽位。
+     *
+     * "最后点的那个槽位"优先（`motionOwnerRef`），它不再是动作选项时回退到"扫描全部槽位
+     * 取第一个带 motion 的"。只用扫描会在"右手拿着手机时点吹泡泡糖"时把后者静默忽略
+     * （右手在清单里排在嘴部之前），只用记忆会在槽位被换掉后留下陈旧值。
+     */
+    const desiredSlotMotion = () => {
+      const owner = motionOwnerRef.current;
+      if (owner !== null) {
+        const owned = motionGroupOfSlot(owner);
+        if (owned !== null) return owned;
+      }
+      for (const other of petRef.current?.expressionSlots ?? []) {
+        const found = motionGroupOfSlot(other.id);
+        if (found !== null) return found;
+      }
+      return null;
+    };
+
+    /**
+     * 重算"替哪些*别的*槽位保姿势"。
+     *
+     * 身体只有一个动作，但姿势可以同时存在（掏出手机 + 吹泡泡糖，两组参数不相交），
+     * 所以除了当前演的那个，其余还挂着动作的槽位要把最后一帧写回去。
+     *
+     * **相位接管后也要重算**：那时候用户的槽位动作已经让位，姿势就不该再保着 —— 不然
+     * 会一直举着手机（用户报的"进入会话状态右手会停在手机状态"，根因就是这份名单只在
+     * `chooseSlotOption` 里更新，相位走不到）。
+     */
+    const syncKeptPoses = (playing) => {
+      const keepGroups = [];
+      for (const other of petRef.current?.expressionSlots ?? []) {
+        const found = motionGroupOfSlot(other.id);
+        if (found !== null && found !== playing && keepGroups.indexOf(found) === -1) keepGroups.push(found);
+      }
+      motion.current.setKeptPoses(keepGroups);
+    };
+
+    /**
+     * 把身体切到"有效选择要求的那一个动作"。
+     *
+     * **槽位点选和相位接管共用这一个**：相位接管时用户的槽位让位，挂在槽位上的
+     * `hold + persist` 动作（掏出手机/吹泡泡糖/自拍）必须跟着交还身体 —— 不然手会一直
+     * 举着手机（用户报的"进入会话状态右手会停在手机状态"）。相位接管以前不走这条，
+     * 于是那只手谁也放不下来。
+     */
+    const syncSlotMotion = () => {
+      const desired = desiredSlotMotion();
+      const previous = slotMotionRef.current;
+      slotMotionRef.current = desired;
+      // 只在"该播的动作真的换了"时才播 —— 原来还有个 `|| option !== null`，
+      // 意思是点任何表情都顺手把当前动作重播一遍。它会**重新快照**，而这时
+      // 动作早就在最后一帧停着了：掏出手机之后点爱心眼，快照里的 phone 记的就是
+      // 1（手机已在手里），于是"还原"忠实地把手机举着不放。
+      // 用户报的"掏出手机切不到其他状态"就是这个。
+      if (desired !== null && desired !== previous) {
+        motion.current.playOnce(desired, 0, { kind: "slot", hold: true, persist: true });
+      } else if (desired === null && previous !== null) {
+        // The slot gave up its motion: hand the body back. Other slots' pins
+        // are untouched, so their look survives.
+        motion.current.playIdle();
+      }
+    };
+
+    /**
+     * 会话进行中，手点（或配对带出）某个槽位时，**同时**改掉相位的这一格。
+     *
+     * 相位接管着这个槽位，只改用户的选择是看不见的 —— 用户会以为"点了没反应"。
+     * 覆盖只在这一场会话里有效：下一条相位消息来了就重新抽（`applyPhase` 从空开始）。
+     * 装扮槽不参与（它永远归用户，相位本来也压不过它）。
+     */
+    const markPhaseOverride = (slotId, label) => {
+      if (phaseRef.current === "idle") return;
+      if (OUTFIT_SLOTS.indexOf(slotId) !== -1) return;
+      phaseChoicesRef.current[slotId] = label === undefined ? null : label;
+    };
+
+    /**
      * 「同时」(pairs) 的**不变量**：把当前选择里所有配对的目标表达式补进来。
      *
      * 配对以前只是"选中那一刻"点亮一次，之后任何把它清掉的东西（摸鱼重掷、手动改目标
@@ -3819,14 +3938,12 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
      * 放在这里而不是 commitPins：**这是所有路径都经过的那个漏斗**（面板点选、摸鱼抽中、
      * 相位切换、归位、换宠物），只有一处的规则才不会走岔。
      *
-     * 源头取**有效选择**：相位正在接管某个槽位时以相位为准，否则相位演别的表情时
-     * 还会硬把配对目标钉在脸上（相位结束后自动回来）。
+     * 源头取**有效选择**（`effectiveSlotChoice`）：相位接管中以相位为准。
      */
     const pairPinsNow = () => {
       const pins = {};
       for (const slotId of slotByIdRef.current.keys()) {
-        const owns = Object.prototype.hasOwnProperty.call(phaseChoicesRef.current, slotId);
-        const label = owns ? phaseChoicesRef.current[slotId] : slotSelectionsRef.current[slotId];
+        const label = effectiveSlotChoice(slotId);
         if (label === null || label === undefined) continue;
         for (const [targetSlot, targetLabel] of Object.entries(relationsOf(slotId, label).pairs)) {
           const target = slotByIdRef.current.get(targetSlot)?.options.find((o) => o.label === targetLabel);
@@ -4038,6 +4155,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           if (wanted) chosen[slotId] = label;
           else delete chosen[slotId];
           slotSelectionsRef.current = chosen;
+          markPhaseOverride(slotId, wanted ? label : null);
       saveOutfit();
           if (!wanted && typeof target.options.find((o) => o.label === label)?.motion === "string") {
             slotMotionRef.current = null;
@@ -4111,6 +4229,9 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       if (option === null) delete chosen[slot.id];
       else chosen[slot.id] = option.label;
       slotSelectionsRef.current = chosen;
+      // 会话进行中点的：相位正接管着这个槽位，只改用户选择是**看不见的** —— 同时把
+      // 相位的这一格也改掉（只在这一场会话里有效，下一条相位消息来了就重抽）。
+      markPhaseOverride(slot.id, option === null ? null : option.label);
       applyExpressions(next);
       // A motion attached to a slot plays and PARKS on its last frame, so the
       // chosen look stays put instead of dropping back to the idle loop.
@@ -4125,51 +4246,17 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       else userSweepRef.current = option.sweep;
       applySweep();
       // 身体只有一个动作。**最后点的那个槽位**优先（见 motionOwnerRef），它不再是动作
-      // 选项时回退到"扫描全部槽位取第一个带 motion 的" —— 后者是原来的唯一规则，也正是
-      // "右手拿着手机时点吹泡泡糖被静默忽略"的原因（右手在清单里排在嘴部之前）。
-      const motionOf = (slotId) => {
-        const label = slotSelectionsRef.current[slotId];
-        if (label === undefined) return null;
-        const picked = (petRef.current?.expressionSlots ?? [])
-          .find((slot) => slot.id === slotId)?.options.find((o) => o.label === label);
-        return typeof picked?.motion === "string" ? picked.motion : null;
-      };
+      // 选项时回退到扫描 —— 规则收在 `desiredSlotMotion()` 里，相位接管走的是同一个。
+      //
       // 先把归属改掉，再算 desired：否则"刚点的这个"要等下一次点击才生效。
       if (option !== null && typeof option.motion === "string") motionOwnerRef.current = slot.id;
       else if (motionOwnerRef.current === slot.id) motionOwnerRef.current = null;
-      let desired = motionOwnerRef.current === null ? null : motionOf(motionOwnerRef.current);
-      if (desired === null) {
-        for (const other of petRef.current?.expressionSlots ?? []) {
-          const found = motionOf(other.id);
-          if (found !== null) {
-            desired = found;
-            break;
-          }
-        }
-      }
+      const desired = desiredSlotMotion();
       // 身体只有一个动作，但**姿势可以同时存在**：别的槽位还选着动作时，替它们把最后
       // 一帧的姿势写回去（掏出手机 + 吹泡泡糖，两组参数不相交）。清掉那个槽位就等于把
       // 它从名单里去掉，它写过的手会交还出去。
-      const keepGroups = [];
-      for (const other of petRef.current?.expressionSlots ?? []) {
-        const found = motionOf(other.id);
-        if (found !== null && found !== desired && keepGroups.indexOf(found) === -1) keepGroups.push(found);
-      }
-      motion.current.setKeptPoses(keepGroups);
-      const previous = slotMotionRef.current;
-      slotMotionRef.current = desired;
-      // 只在"该播的动作真的换了"时才播 —— 原来还有个 `|| option !== null`，
-      // 意思是点任何表情都顺手把当前动作重播一遍。它会**重新快照**，而这时
-      // 动作早就在最后一帧停着了：掏出手机之后点爱心眼，快照里的 phone 记的就是
-      // 1（手机已在手里），于是"还原"忠实地把手机举着不放。
-      // 用户报的"掏出手机切不到其他状态"就是这个。
-      if (desired !== null && desired !== previous) {
-        motion.current.playOnce(desired, 0, { kind: "slot", hold: true, persist: true });
-      } else if (desired === null && previous !== null) {
-        // The slot gave up its motion: hand the body back. Other slots' pins
-        // are untouched, so their look survives.
-        motion.current.playIdle();
-      }
+      syncKeptPoses(desired);
+      syncSlotMotion();
       // A dress-up choice PERSISTS. The auto-clear exists so a reaction or a
       // session phase cannot leave the pet stuck, but an outfit is an explicit
       // choice the user reverses from this panel (or with 归位), and expiring it
@@ -4256,6 +4343,10 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
        * 三轮不动就收手。
        */
       const applyPhase = (phase) => {
+        // 相位名记在这里（而不是只记在 SSE 回调里）：`effectiveSlotChoice` 靠它判断
+        // "会话进行中"，而诊断读口 `phaseNow()` 是直接调这个函数的 —— 分开写的话，
+        // 诊断走的相位不会让槽位让位，测出来的行为跟真实路径不一样。
+        phaseRef.current = phase;
         const slotById = new Map((pet?.expressionSlots ?? []).map((slot) => [slot.id, slot]));
         const pools = phasePoolsFor(phase);
         // 从**空**开始，而不是继承上一个相位的答案：相位是接管，不是叠加。
@@ -4367,6 +4458,9 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         }
         phaseGroupRef.current[phase] = group;
         phasePoolsRev.current = JSON.stringify(pools);
+        // 相位接管后重算"替谁保姿势"：用户那套槽位动作已经让位，姿势就不该再保着，
+        // 否则手会一直举着手机。名单过去只在 chooseSlotOption 里更新，相位走不到。
+        syncKeptPoses(group);
         const sustained = PHASE_SUSTAIN.indexOf(phase) !== -1;
         if (phase === "idle" || group === undefined) {
           // No motion for this phase: stop sustaining and return to rest.
@@ -4395,13 +4489,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       // selections, so it stays true while the look keeps the phone out and goes
       // false the moment the slot changes.
       motion.current.setGuardResolver((group) => {
-        // 相位"抽空了"这个槽位时不能退回用户的选择：owns 为真且值是 null 就是空。
-        const chosenOf = (slotId) => {
-          const owns = Object.prototype.hasOwnProperty.call(phaseChoicesRef.current, slotId);
-          return owns ? phaseChoicesRef.current[slotId] : slotSelectionsRef.current[slotId];
-        };
         const holds = (slotId, labels) => {
-          const chosen = chosenOf(slotId);
+          const chosen = effectiveSlotChoice(slotId);
           return chosen !== undefined && chosen !== null && labels.includes(chosen);
         };
         const guard = guardsRef.current[group];
@@ -4937,7 +5026,11 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
                 // "every expression is pinned": a motion-only option has an EMPTY
                 // expression list, and [].every(...) is vacuously true, so
                 // 掏出手机 and 吹泡泡糖 rendered as permanently pressed.
-                const chosenLabel = slotSelectionsRef.current[slot.id];
+                //
+                // 读的是**有效选择**（`effectiveSlotChoice`）：会话相位接管时，面板要跟着
+                // 显示相位抽到什么，而不是你上一次手选的 —— 以前两边脱节，用户报过
+                // "会话的状态没有在右键菜单的装扮里同步 button"。
+                const chosenLabel = effectiveSlotChoice(slot.id);
                 const active = slot.options.find((option) => option.label === chosenLabel);
                 return h("div", { "data-group": "", key: slot.id, "data-slot": slot.id },
                   h("span", null, slot.label),
