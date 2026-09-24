@@ -74,8 +74,24 @@ dsh plugin --profile web add "link:./dsh-pet-live2d/dsh-live2d-pet"
 
 ### 会话相位：同一套池子
 
-每个会话相位（`thinking` / `tool` / `waiting` / `done` / `failed`）下面是"槽位 → 条目表"，
-机制和摸鱼一样。相位表**一开始就列出全部相位**，显示的是**有效池子**：
+每个会话相位下面是"槽位 → 条目表"，机制和摸鱼一样。**宠物跟着 DSH 的真实事件换相位**：
+
+| 相位 | 什么时候 | 这只宠物演什么 |
+|---|---|---|
+| `thinking` | 模型在想 / 刚开工 | 抬头看 |
+| `tool` | 调工具（detail 带工具名） | 写本本 + 流汗 |
+| `waiting` | 有操作**等你批准** | 问号 |
+| `asking` | 它**问了你一个问题**、在等你回答 | 举手 + 问号 |
+| `helper` | 起了**子代理**（一段长活） | 喵喵手 + 调皮 |
+| `queued` | 你发的话**排队**了（它还在忙） | 感叹号（短促一下） |
+| `done` | 这一轮说完（庆祝 3.5 秒） | 开心 + 情绪花花 |
+| `failed` | 出错了 | 大哭 + 流汗 |
+
+来源是 `agent/status`、`tools/pre-execute|post-execute`、`approval/request`、
+`user-questions/request`、`subagent/start|end`、`agent/inbox/inserted`、
+`agent/turn-stopping`、`agent/error` —— 按主题折成上面这几个相位。
+
+相位表**一开始就列出全部相位**，显示的是**有效池子**：
 
 | 行头标记 | 含义 | 那一行有什么 |
 |---|---|---|

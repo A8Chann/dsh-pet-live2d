@@ -803,10 +803,15 @@ function runtimeRoute() {
 // comment frame.
 
 /** The activity phases the browser half understands. */
-export const ACTIVITY_PHASES = ['idle', 'thinking', 'waiting', 'tool', 'done', 'failed']
+export const ACTIVITY_PHASES = [
+  'idle', 'thinking', 'waiting', 'asking', 'tool', 'helper', 'queued', 'done', 'failed',
+]
 
 /** How long the 'done' celebration is held before falling back to idle. */
 const DONE_HOLD_MS = 3500
+
+/** "你的消息排队了"给一个短促的收到反应，然后回到原来在演的东西。 */
+const QUEUED_HOLD_MS = 1600
 
 /** SSE keep-alive interval. */
 const SSE_PING_MS = 30000
@@ -820,7 +825,7 @@ export class ActivityHub {
     this.phase = 'idle'
     this.detail = ''
     this.listeners = new Set()
-    this.doneTimer = undefined
+    this.holdTimer = undefined
   }
 
   /** Current snapshot (sent as the first frame of every stream). */
@@ -842,18 +847,29 @@ export class ActivityHub {
   }
 
   /**
+   * 演一个**短促反应**相位，过一会儿自动回落到 `fallback`。
+   *
+   * `done`（庆祝）和 `queued`（收到你排队的消息）都是这一类：宠物演一下，然后回到
+   * 它该在的地方。回落之前会确认相位没被别人接管 —— 这段时间里工具开始了、或者
+   * 新一轮说话了，就不要再把它拽回旧的 fallback。
+   */
+  hold(phase, ms, fallback = 'idle') {
+    if (this.holdTimer !== undefined) clearTimeout(this.holdTimer)
+    this.set(phase, '')
+    this.holdTimer = setTimeout(() => {
+      this.holdTimer = undefined
+      if (this.phase === phase) this.set(fallback, '')
+    }, ms)
+    // Keep the process free to exit; the timer is purely cosmetic.
+    this.holdTimer?.unref?.()
+  }
+
+  /**
    * Enter the 'done' celebration and fall back to idle after a hold, so the
    * pet visibly finishes a turn instead of snapping straight back.
    */
   celebrate() {
-    if (this.doneTimer !== undefined) clearTimeout(this.doneTimer)
-    this.set('done', '')
-    this.doneTimer = setTimeout(() => {
-      this.doneTimer = undefined
-      this.set('idle', '')
-    }, DONE_HOLD_MS)
-    // Keep the process free to exit; the timer is purely cosmetic.
-    this.doneTimer?.unref?.()
+    this.hold('done', DONE_HOLD_MS, 'idle')
   }
 
   emit() {
@@ -868,9 +884,9 @@ export class ActivityHub {
   }
 
   dispose() {
-    if (this.doneTimer !== undefined) {
-      clearTimeout(this.doneTimer)
-      this.doneTimer = undefined
+    if (this.holdTimer !== undefined) {
+      clearTimeout(this.holdTimer)
+      this.holdTimer = undefined
     }
     this.listeners.clear()
   }
@@ -957,6 +973,53 @@ export function attachActivityEvents(ctx, hub) {
       if (hub.phase === 'tool') hub.set('thinking', '')
     }, TOOL_IDLE_MS)
     return next()
+  })
+
+  // ---- DSH 0.1.7 里另外三个值得接的状态 --------------------------------------
+  //
+  // 事件词汇表在 0.1.7 里已经不小（`*.d.ts` 里声明了 100 个可订阅事件），但只有一部分
+  // 能翻译成"宠物该演什么"。挑的标准是**它填的是不是一个真实的空档**：
+  //
+  //   asking  ← user-questions/request：以前"在等你回答问题"这段时间宠物还在演"干活"，
+  //             看着像它没停过 ✗ —— 这是最大的一个空档；
+  //   helper  ← subagent/start|end：子代理是**长活**（几分钟），和一次普通工具调用
+  //             混在一起看不出区别；
+  //   queued  ← agent/inbox/inserted：你发的话在它忙的时候插进来，现在至少给个"收到"。
+  //
+  // 没接的（评估过，不值得）：`fs/write-intent` / `edit-intent` —— 宠物在 tool 相位已经
+  // 演「写本本」了，再拆一个 editing 和它重复；`workflow/*` —— 工作流本身是工具调用，
+  // 已被 tool 覆盖（`workflow/phase` 的标题倒是可以当 detail，但宠物目前不显示 detail）；
+  // `agent/status` 只有 idle / running 两个值，给不出更细的东西。
+
+  // `user-questions/request` 是 waterfall：链一直挂到**你把问题答完**才 resume，所以
+  // 这个相位正好等于"卡在等你"的那段，不用自己计时。
+  onWaterfall('user-questions/request', (_request, next) => {
+    hub.set('asking', '')
+    const answered = typeof next === 'function' ? next() : undefined
+    const back = () => {
+      if (hub.phase === 'asking') hub.set('thinking', '')
+    }
+    if (answered !== null && typeof answered?.then === 'function') {
+      answered.then(back, back)
+      return answered
+    }
+    back()
+    return answered
+  })
+  on('subagent/start', (info) => {
+    const label = typeof info?.name === 'string'
+      ? info.name
+      : (typeof info?.label === 'string' ? info.label : '')
+    hub.set('helper', label)
+  })
+  on('subagent/end', () => {
+    if (hub.phase === 'helper') hub.set('thinking', '')
+  })
+  on('agent/inbox/inserted', () => {
+    // 回到"刚才在演的那个"（可能是 tool / asking，也可能是 idle）——不要一律回 idle，
+    // 那会让一个正在跑工具的回合看起来停了。
+    const previous = hub.phase
+    hub.hold('queued', QUEUED_HOLD_MS, previous === 'queued' ? 'thinking' : previous)
   })
 }
 

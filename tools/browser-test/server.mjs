@@ -146,7 +146,10 @@ const server = createServer(async (req, res) => {
     const event = url.searchParams.get('event') || ''
     const name = url.searchParams.get('name') || ''
     let resumed = false
-    const next = async () => { resumed = true; return { kind: 'accept' } }
+    // 链 resume 的那一刻宠物在演什么。waterfall 型的事件（提问、写文件）**整个挂在链上**，
+    // 等 handler 返回时相位早回落了 —— 不在这里当场记一笔，`asking` 根本观测不到。
+    let phaseAtNext = null
+    const next = async () => { resumed = true; phaseAtNext = hub.snapshot().phase; return { kind: 'accept' } }
     const payload = event.startsWith('tools/')
       ? { name, callId: 'test-call', parent: undefined }
       : { status: name, agent: {} }
@@ -156,7 +159,9 @@ const server = createServer(async (req, res) => {
       try { await handler(payload, next) } catch (error) { console.error('emit ' + event + ': ' + error) }
     }
     res.writeHead(200, { 'content-type': 'application/json' })
-    res.end(JSON.stringify({ event, handlers: handlers.length, resumed, phase: hub.snapshot().phase }))
+    res.end(JSON.stringify({
+      event, handlers: handlers.length, resumed, phaseAtNext, phase: hub.snapshot().phase,
+    }))
     return
   }
 

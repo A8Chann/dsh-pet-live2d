@@ -128,6 +128,37 @@ await api('/__emit?event=tools/post-execute&name=read')
 await sleep(2000)
 check('a lone tool still steps down afterwards', (await attr('data-phase')) === 'thinking', 'data-phase=' + await attr('data-phase'))
 
+// --- DSH 0.1.7 新接的三个状态 ------------------------------------------------
+// 事件词汇表不小（0.1.7 的 `*.d.ts` 里声明了 100 个可订阅事件），但只有一部分能翻译成
+// "宠物该演什么"。接的三个填的都是**真实的空档**，没接的（fs/write-intent、workflow/*）
+// 理由写在 lib/index.js 的注释里。
+// 先回一个干净的起点。
+await api('/__emit?event=agent/status&name=running')
+await sleep(300)
+// ① 向你提问：waterfall 一直挂到你把问题答完，所以 asking 正好等于"卡在等你"的那段。
+//    相位要在 next() 那一刻读 —— handler 返回时链已经 resume、相位早回落了。
+const asking = await api('/__emit?event=user-questions/request&name=which')
+check('user-questions/request 有订阅者', asking.handlers > 0, 'handlers=' + asking.handlers)
+check('提问会 resume 链（否则会卡住整个问答）', asking.resumed === true)
+check('提问期间宠物演 asking（以前还在演"干活"）',
+  asking.phaseAtNext === 'asking', 'phaseAtNext=' + asking.phaseAtNext)
+// ② 子代理：长活，和一次普通工具调用分开。
+const helper = await api('/__emit?event=subagent/start&name=explore')
+check('子代理跑起来进入 helper', helper.phase === 'helper', 'phase=' + helper.phase)
+await api('/__emit?event=subagent/end&name=explore')
+check('子代理结束回到 thinking',
+  (await api('/__emit?event=agent/status&name=running')).phase === 'thinking')
+// ③ 消息排队：短促一个"收到"，然后回到刚才在演的东西。
+const queued = await api('/__emit?event=tools/pre-execute&name=read')
+check('先让宠物在 tool 相位', queued.phase === 'tool', 'phase=' + queued.phase)
+const inbox = await api('/__emit?event=agent/inbox/inserted&name=hi')
+check('消息排队时给一个短促的 queued 反应', inbox.phase === 'queued', 'phase=' + inbox.phase)
+// 读**客户端镜像的** data-phase 来观察回落：用 `/__emit` 去轮询相位本身就是扰动
+// （每发一次 `agent/status:running` 就把相位按回 thinking，永远看不到 tool）。
+const backToTool = await until(async () => (await attr('data-phase')) === 'tool', 5000)
+check('queued 是短促的：回落到排队前那个相位（tool），不是一律回 idle',
+  backToTool, 'data-phase=' + await attr('data-phase'))
+
 // --- a turn ending celebrates, then settles --------------------------------
 const turn = await api('/__emit?event=agent/turn-stopping&name=done')
 check('agent/turn-stopping drives the done phase', turn.phase === 'done', 'phase=' + turn.phase)

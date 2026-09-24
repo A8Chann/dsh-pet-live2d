@@ -568,6 +568,22 @@
         "lhand": "橡皮",
         "symbol": "问号"
       },
+      "asking": {
+        "whale": "头顶鲸",
+        "rhand": "双手比耶",
+        "mood": "开心兴奋",
+        "symbol": "问号"
+      },
+      "helper": {
+        "whale": "头顶鲸",
+        "rhand": "喵喵手",
+        "mood": "调皮"
+      },
+      "queued": {
+        "whale": "头顶鲸",
+        "mood": "开心兴奋",
+        "symbol": "感叹号"
+      },
       "done": {
         "whale": "头顶鲸",
         "lhand": "橡皮",
