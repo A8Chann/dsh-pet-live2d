@@ -1054,8 +1054,12 @@ check('挤番茄酱 下面标的是「前提」（需要先有蛋包饭）',
 // --- 关系能增删，而且删了必须**真的不生效** ----------------------------------
 // 关系的归属是选项：删掉「喵喵手 → 同时：贴纸 = 猫猫」之后，在右键面板点同一个
 // 姿势就不该再带出猫猫贴纸。这条检查的是运行时行为，不是"那一行还在不在"。
+// **必须限定在摸鱼池里**：同一个选项（右手=喵喵手）只要出现在某个相位的池子里，
+// 那一份也会渲染自己的关系行 —— 宠物加了 helper 相位（池子里正好有喵喵手）之后，
+// 全页统计会数出 2 行，看着像"关系被加了两次"。（和之前 `[data-pool-remove-slot]`
+// 删错池子是同一个教训：查关系/条目一定要带 `[data-pool="fidget"]` 这条路。）
 const relationRows = () => ev('document.querySelectorAll('
-  + JSON.stringify('#dsh-settings-probe [data-relation-of="rhand:喵喵手"]') + ').length')
+  + JSON.stringify('#dsh-settings-probe [data-pool="fidget"] [data-relation-of="rhand:喵喵手"]') + ').length')
 const relaunch = async () => {
   await pickTab("装扮")
   await sleep(500)

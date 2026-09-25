@@ -59,6 +59,46 @@ const probe = JSON.parse(await ev(`(() => {
 check('the model yields a measurable head region', probe.head !== null, JSON.stringify(probe.head))
 check('part of the character is NOT head', probe.body !== null, JSON.stringify(probe.body))
 
+// --- 摸头判定 = 模型自己的几何，不是手绘方框 ---------------------------------
+// 用户："看看摸头的区域能否精准匹配头部的模型而不是手绘区域"。
+//
+// 老实现：用英文正则 `face|eye|mouth|…` 猜 drawable → 这只模型的 drawable 叫 `Part46` /
+// `lianhong` / `Face_line` 这种，正则**一个都匹配不上** → 静默退化成"点哪都算头"。
+// 现在这条路是三段：cdi3 的部件名（作者的中文命名）→ 引擎原始表的 parentPartIndices →
+// 那批 drawable 的下标 → 点在三角形内。**任何一段断掉都会静默退回方框**，
+// 所以下面每条各验一段，而不是只验"最后返回了 true/false"。
+const headInfo = JSON.parse(await ev('JSON.stringify(window.__dshLive2dPet.headDebug())'))
+check('cdi3 里挑到了头部部件（作者的中文命名）', headInfo.parts >= 10, 'parts=' + headInfo.parts)
+check('部件映射成了 drawable 下标（部件 id ≠ drawable id，这一步最容易断）',
+  headInfo.drawableIndices >= 50, 'drawableIndices=' + headInfo.drawableIndices)
+check('顶点在包装层、三角形索引在 core 层 —— 两边都读得到',
+  String(headInfo.vertexProbe).startsWith('len='), 'vertexProbe=' + headInfo.vertexProbe)
+const region = JSON.parse(await ev(`(() => {
+  const c = window.__dshLive2dPet
+  const r = document.querySelector('[data-dsh-live2d-pet] [data-stage]').getBoundingClientRect()
+  const cols = 40, rows = 28
+  let diff = 0, hits = 0, minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity
+  for (let iy = 0; iy < rows; iy++) {
+    for (let ix = 0; ix < cols; ix++) {
+      const lx = r.width * (ix + 0.5) / cols, ly = r.height * (iy + 0.5) / rows
+      const hit = c.hitsHead(lx, ly)
+      if (c.hitsHeadBox(lx, ly) !== hit) diff += 1
+      if (!hit) continue
+      hits += 1
+      minX = Math.min(minX, ix); maxX = Math.max(maxX, ix)
+      minY = Math.min(minY, iy); maxY = Math.max(maxY, iy)
+    }
+  }
+  // 自身包围盒的四个角：真头部是圆的，四角不该全是命中（那说明它就是个方框）
+  const corners = [[minX, minY], [maxX, minY], [minX, maxY], [maxX, maxY]].filter(([ix, iy]) =>
+    c.hitsHead(r.width * (ix + 0.5) / cols, r.height * (iy + 0.5) / rows)).length
+  return JSON.stringify({ diff, hits, corners, minY, rows, cols })
+})()`))
+check('几何判定和旧方框判定确实不同（不同 = 新规则真的在生效，不是静默退回）',
+  region.diff >= 20, 'diff=' + region.diff + '/' + (region.rows * region.cols))
+check('判定区域不是方框：它自己包围盒的四角没有全中', region.corners <= 2, 'corners=' + region.corners + '/4')
+check('头部集中在上半部分', region.hits > 40 && region.minY < region.rows * 0.3, JSON.stringify(region))
+
 // --- tapping the head swings the hammer ------------------------------------
 await ev('window.__dshLive2dPet.playIdle()')
 await sleep(900)

@@ -281,6 +281,117 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
      * Runs once per attach. The values are model-space, so they stay valid
      * across resizes and drags; `hitsHead` maps through the live transform.
      */
+    /** Head drawable ids (picked by the host from cdi3 part names). Empty = legacy box. */
+    let headParts = [];
+    /** 由 headParts 解出来的 drawable 下标（换模型要重算，缓存起来）。 */
+    let headIndices = null;
+
+    /**
+     * 头部 drawable 的**下标**：cdi3 的部件名 → 引擎原始表。
+     *
+     * 为什么不直接用部件 id 去 `getDrawableIndex()`：cdi3 的 `Parts` 是**部件** id
+     * （`Part46`、`neck_m` 这种），而那个 API 认的是 **drawable** id（`lianhong`、
+     * `Face_line` 这种）—— 两个命名空间不同名，拿部件 id 查永远是 -1（实测这只模型
+     * 21 个部件一个都解不出来，判定静默退回方框）。
+     *
+     * 引擎的原始表里有 `drawables.parentPartIndices` 和 `parts.ids`，两边一接就得到
+     * "哪些 drawable 属于作者命名为头/脸/眼/眉/嘴/耳/发的那些部件" —— 用的是作者自己
+     * 的分类，不是猜名字。
+     *
+     * @returns {number[]|null} drawable 下标；表结构不认识时返回 null（退回方框）
+     */
+    const headDrawableIndices = () => {
+      const raw = model?.internalModel?.coreModel?._model;
+      const parent = raw?.drawables?.parentPartIndices;
+      const partIds = raw?.parts?.ids;
+      if (parent === undefined || partIds === undefined) return null;
+      const ids = Array.from(partIds).map(String);
+      if (ids.length === 0 || headParts.length === 0) return null;
+      const wanted = new Set(headParts);
+      const out = [];
+      for (let i = 0; i < parent.length; i += 1) {
+        const partIndex = parent[i];
+        if (partIndex < 0 || partIndex >= ids.length) continue;
+        if (!wanted.has(ids[partIndex])) continue;
+        out.push(i);
+      }
+      return out.length > 0 ? out : null;
+    };
+
+    /**
+     * 头部判定：点 (x,y)（**模型空间**）落在头部 drawable 的三角面里吗？
+     *
+     * @returns {boolean|null} `null` = 读不到顶点（调用方落回方框判定，别把宠物变哑巴）
+     */
+    const hitsHeadGeometry = (x, y) => {
+      const im = model?.internalModel;
+      if (im === undefined || im === null) return null;
+      // 顶点在**包装层**、三角形索引在**core 层**（实测：`im` 有 getDrawableVertices，
+      // `im.coreModel` 才有 getDrawableVertexIndices）—— 只查一个就会静默返回 null、
+      // 悄悄退回方框判定。两边各取所长。
+      const verticesOf = typeof im.getDrawableVertices === "function"
+        ? (index) => im.getDrawableVertices(index)
+        : (typeof im.coreModel?.getDrawableVertices === "function"
+          ? (index) => im.coreModel.getDrawableVertices(index)
+          : null);
+      const indicesOf = typeof im.getDrawableVertexIndices === "function"
+        ? (index) => im.getDrawableVertexIndices(index)
+        : (typeof im.coreModel?.getDrawableVertexIndices === "function"
+          ? (index) => im.coreModel.getDrawableVertexIndices(index)
+          : null);
+      if (verticesOf === null || indicesOf === null) return null;
+      if (headIndices === null) headIndices = headDrawableIndices();
+      if (headIndices === null) return null;
+      let read = false;
+      try {
+        for (const index of headIndices) {
+          const verts = verticesOf(index);
+          if (verts === undefined || verts === null || verts.length < 6) continue;
+          read = true;
+          // 先用这个 drawable 的包围盒排除（绝大多数部件一眼就出局，不用扫三角形）。
+          let minX = Infinity;
+          let minY = Infinity;
+          let maxX = -Infinity;
+          let maxY = -Infinity;
+          for (let i = 0; i < verts.length; i += 2) {
+            const vx = verts[i];
+            const vy = verts[i + 1];
+            if (vx < minX) minX = vx;
+            if (vx > maxX) maxX = vx;
+            if (vy < minY) minY = vy;
+            if (vy > maxY) maxY = vy;
+          }
+          if (x < minX || x > maxX || y < minY || y > maxY) continue;
+          const indices = indicesOf(index);
+          if (indices === undefined || indices === null) continue;
+          for (let i = 0; i + 2 < indices.length; i += 3) {
+            if (pointInTriangle(x, y, verts, indices[i], indices[i + 1], indices[i + 2])) return true;
+          }
+        }
+      } catch {
+        // 读到一半炸了：当作"读不到"，让调用方用方框兜底。
+        return null;
+      }
+      return read ? false : null;
+    };
+
+    /** 点 (x,y) 在 verts 的第 i0/i1/i2 号顶点组成的三角形里吗（同向叉积法）。 */
+    const pointInTriangle = (x, y, verts, i0, i1, i2) => {
+      const ax = verts[i0 * 2];
+      const ay = verts[i0 * 2 + 1];
+      const bx = verts[i1 * 2];
+      const by = verts[i1 * 2 + 1];
+      const cx = verts[i2 * 2];
+      const cy = verts[i2 * 2 + 1];
+      const d1 = (x - bx) * (ay - by) - (ax - bx) * (y - by);
+      const d2 = (x - cx) * (by - cy) - (bx - cx) * (y - cy);
+      const d3 = (x - ax) * (cy - ay) - (cx - ax) * (y - ay);
+      const hasNeg = d1 < 0 || d2 < 0 || d3 < 0;
+      const hasPos = d1 > 0 || d2 > 0 || d3 > 0;
+      return !(hasNeg && hasPos);
+    };
+
+
     const measureHead = (nextModel) => {
       try {
         const im = nextModel?.internalModel;
@@ -1302,6 +1413,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         ambientCursor = 0;
         poseSnapshots.clear();
         paramIndexCache.clear();
+        headIndices = null;
         const idleDuration = idleName === null ? 0 : (groups[idleName]?.[0]?.duration ?? 0);
         ambientPeriodMs = idleDuration > 0 ? idleDuration : 4000;
         // Locate the head once, from the model's own geometry; it is stored in
@@ -1691,28 +1803,41 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         }
         return false;
       },
+      /** Head-part ids, pushed in by the component once the catalog is ready. */
+      setHeadParts(ids) {
+        headParts = Array.isArray(ids) ? ids.filter((id) => typeof id === "string") : [];
+        // 换宠物 / 换模型：下标缓存必须作废，否则会拿旧模型的 drawable 判定。
+        headIndices = null;
+      },
       idleName: () => idleName,
       groups: () => groups,
       /** Declared playback policy for one motion group (diagnostics). */
       optionsFor,
       /** Whether the idle fidget is allowed to pick this motion group. */
       fidgetAllowed,
-      /**
-       * Whether a tap landed on the head (requirement #1).
+    /**
+     * Whether a tap landed on the head (requirement #1).
        *
-       * The stored box is in MODEL space, so the click is pushed through the
-       * model's own inverse transform — the same mapping the engine uses for
-       * gaze — which keeps it correct at any pet size or position.
+       * 有 cdi3 部件名时**按模型自己的三角面**判定：把点映到模型空间，对每个头部
+       * drawable 先做包围盒快速排除，再做点在三角形内 —— 用的就是模型当前的几何
+       * （发型边缘、脸部轮廓都对），而不是一个手调内边距的方框。顶点每次点击现读，
+       * 所以头歪着、身体摆着也是准的。
        *
-       * Returns true when the head could not be measured: an unrecognised model
-       * keeps the previous "any tap reacts" behaviour instead of going inert.
+       * 没有部件名（换宠物、没 cdi3）时退回旧行为：用英文部件名猜出来的方框；
+       * 连那个都测不到就返回 true —— 不认识的模型保持"点哪都算头"，而不是变哑巴。
        */
       hitsHead(x, y) {
-        if (headBox === null || model === null || vendor === null) return true;
+        if (model === null || vendor === null) return true;
         try {
           // Pass one arg only: the engine then clones into a fresh Point, so
           // the stage-space input and the model-space output never alias.
           const point = model.toModelPosition(new vendor.Point(x, y));
+          if (headParts.length > 0) {
+            const hit = hitsHeadGeometry(point.x, point.y);
+            // 几何判定只在"真的能读到顶点"时算数；读不到就落回方框。
+            if (hit !== null) return hit;
+          }
+          if (headBox === null) return true;
           return point.x >= headBox.minX && point.x <= headBox.maxX
             && point.y >= headBox.minY && point.y <= headBox.maxY;
         } catch {
@@ -1721,6 +1846,78 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       },
       /** Diagnostic: the measured head box in model space, or null. */
       headBox: () => headBox,
+      /**
+       * Diagnostic: **旧**方框规则（手调内边距的那个），用来跟几何判定对比。
+       *
+       * 存在的意义是测试：能证明"新规则真的不一样"，而不是两条路返回同一个答案。
+       */
+      hitsHeadBox: (x, y) => {
+        if (headBox === null || model === null || vendor === null) return null;
+        try {
+          const point = model.toModelPosition(new vendor.Point(x, y));
+          return point.x >= headBox.minX && point.x <= headBox.maxX
+            && point.y >= headBox.minY && point.y <= headBox.maxY;
+        } catch {
+          return null;
+        }
+      },
+      /** Diagnostic: 头部部件（来自 cdi3 的作者命名），空数组 = 退回旧判定。 */
+      headPartIDs: () => headParts.slice(),
+      /** Diagnostic: 模型声明的全部 drawable 名（认"头"只能靠这些名字）。 */
+      drawableIDs: () => {
+        const im = model?.internalModel;
+        return typeof im?.getDrawableIDs === "function" ? Array.from(im.getDrawableIDs()).map(String) : [];
+      },
+      /**
+       * Diagnostic: 引擎原始表里 drawable → 父部件 的对应关系。
+       *
+       * cdi3 的 `Parts` 是**部件** id（`Part46` 这种），`getDrawableIndex()` 认的是
+       * drawable id（`lianhong` 这种）—— 两个命名空间不同名，直接拿部件 id 去查永远是 -1。
+       * 引擎的原始表里带着 `parentPartIndices`，把两边接起来才能用上作者的命名。
+       */
+      partTables: () => {
+        const core = model?.internalModel?.coreModel;
+        const raw = core?._model;
+        const parts = raw?.parts;
+        const drawables = raw?.drawables;
+        return {
+          partKeys: parts === undefined ? [] : Object.keys(parts),
+          partIds: parts?.ids === undefined ? [] : Array.from(parts.ids).map(String),
+          drawableKeys: drawables === undefined ? [] : Object.keys(drawables),
+          parentPartIndices: drawables?.parentPartIndices === undefined
+            ? null
+            : Array.from(drawables.parentPartIndices).slice(0, 12),
+        };
+      },
+      /**
+       * Diagnostic: 摸头判定的内部状态。
+       *
+       * cdi3 的 `Parts` 是**部件**（part）id，而 `getDrawableIndex()` 认的是 **drawable**
+       * id —— 两个命名空间不一定同名（这只模型里就不同）。所以这里要把"挑到的部件"
+       * 和"真的能在模型里解出下标的"分开报，否则判定静默退回方框、外面看不出来。
+       */
+      headDebug: () => {
+        if (headIndices === null) headIndices = headDrawableIndices();
+        const im = model?.internalModel;
+        const core = im?.coreModel;
+        const has = (target) => ["getDrawableVertices", "getDrawableVertexIndices", "getDrawableIndex", "getDrawableBounds", "getDrawableIDs"]
+          .filter((name) => typeof target?.[name] === "function");
+        let vertexProbe = "n/a";
+        try {
+          const v = im?.getDrawableVertices?.(headIndices?.[0] ?? 0);
+          vertexProbe = v === undefined ? "undefined" : (v === null ? "null" : "len=" + v.length);
+        } catch (error) {
+          vertexProbe = "throw: " + String(error?.message ?? error);
+        }
+        return {
+          parts: headParts.length,
+          drawableIndices: headIndices === null ? 0 : headIndices.length,
+          apiOnInternalModel: has(im),
+          apiOnCoreModel: has(core),
+          vertexProbe,
+          box: headBox,
+        };
+      },
       /**
        * Play a motion with its declared policy applied; used by the panel, the
        * tap reaction and the session-phase driver.
@@ -3531,6 +3728,9 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       phaseExpressionRef.current = Object.assign({}, phaseBaseRef.current.expressions);
       // 设置界面（含 DSH 设置页那个独立组件）需要清单里有哪些动作/表情/槽位。
       MANIFEST.current = pet;
+      // 头部部件（宿主从 cdi3 的作者命名里挑的，21 个）交给控制器：摸头判定按这些
+      // 部件的**真实三角面**测，而不是一个手调内边距的方框。
+      motion.current.setHeadParts(pet.headParts ?? []);
       // 清单换了（换宠物 / pet.json 改了槽位结构）就先剪一遍存档：
       // 旧槽位的覆盖会让"关系指向不存在的槽位"这类问题**静默**发生。
       pruneOverrides(pet);

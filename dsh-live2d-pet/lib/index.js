@@ -274,6 +274,75 @@ function normaliseSlots(raw) {
   return out
 }
 
+/**
+ * 名字里带这些字的部件算"头"：作者在 cdi3 里给每个部件起了中文名
+ * （`Part46` = 脸蛋、`Part57/58` = 眼睛、`Part14` = 头发、`Part45/68` = 耳朵…）。
+ */
+const HEAD_PART_NAME_HINTS = /头|脸|面|眼|眉|嘴|耳|发|eye|face|hair|head|ear|brow|mouth|cheek|nose/i
+
+/**
+ * 从 cdi3 里挑出头部部件的 drawable id。
+ *
+ * 为什么要读 cdi3：摸头判定要知道"哪些 drawable 是头"。原来浏览器半区用的是写死的
+ * 英文正则（`face|eye|mouth|…`），而这只模型的 drawable id 是 `Part46` 这种 ——
+ * **一个都匹配不上**，于是判定静默退化成"点哪都算头"。作者自己的中文名才是权威分类。
+ *
+ * @returns {string[]} drawable id；没有 cdi3 或没挑到就是空数组（浏览器半区会退回旧行为）。
+ */
+function readHeadParts(dir, modelPath) {
+  try {
+    const base = modelPath.replace(/\.model3\.json$/i, '')
+    const file = findCdi3(dir, base)
+    if (file === undefined) return []
+    const cdi3 = readJson(file)
+    const parts = cdi3?.Parts
+    if (!Array.isArray(parts)) return []
+    const out = []
+    for (const part of parts) {
+      if (part === null || typeof part !== 'object') continue
+      const id = typeof part.Id === 'string' ? part.Id : undefined
+      if (id === undefined || id === '') continue
+      const name = typeof part.Name === 'string' ? part.Name : ''
+      if (!HEAD_PART_NAME_HINTS.test(name) && !HEAD_PART_NAME_HINTS.test(id)) continue
+      out.push(id)
+    }
+    return out
+  } catch {
+    return []
+  }
+}
+
+/**
+ * 找 cdi3.json。
+ *
+ * 它**不在** model3.json 的引用里（那是 Cubism Editor 的元数据，运行时不读），所以只能
+ * 按约定找：与模型同名的 `<base>.cdi3.json` 优先，其次模型旁边、再其次宠物目录和它的
+ * 直接子目录 —— 这只宠物就放在 `model/` 子目录里，只在根目录找会一个都挑不到。
+ */
+function findCdi3(dir, base) {
+  const direct = [join(dir, base + '.cdi3.json'), join(dir, 'model', base + '.cdi3.json')]
+  for (const file of direct) {
+    if (existsSync(file)) return file
+  }
+  const roots = [dir]
+  try {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isDirectory() && entry.name !== 'node_modules') roots.push(join(dir, entry.name))
+    }
+  } catch {
+    /* 读不了就只用 dir 本身 */
+  }
+  for (const root of roots) {
+    try {
+      const hit = readdirSync(root).find((name) => name.toLowerCase().endsWith('.cdi3.json'))
+      if (hit !== undefined) return join(root, hit)
+    } catch {
+      /* 跳过读不了的目录 */
+    }
+  }
+  return undefined
+}
+
 /** Scan one pet directory into a catalog entry, or undefined when unusable. */
 export function scanPet(dir, id) {
   const manifestFile = join(dir, 'pet.json')
@@ -426,6 +495,9 @@ export function scanPet(dir, id) {
     // premise is missing (a selfie with no phone out, a spray with no whale)
     // must not play at all, from ANY path: the panel, a fidget or a phase.
     motionGuards: typeof block.motionGuards === 'object' && block.motionGuards !== null ? block.motionGuards : {},
+    // 头部部件（drawable id）：摸头判定按这些部件的**真实几何**判定，不再靠写死的
+    // 内边距方框。空数组 = 没 cdi3 或没挑到，浏览器半区退回旧行为。
+    headParts: readHeadParts(dir, modelPath),
     // 摸鱼默认盯哪几个槽位。以前这六个是**写死在浏览器半区**的（"宠物自己的身子"），
     // 但宠物作者（和用户）会想改：这只宠物把「自拍」也放进了摸鱼池。写在这里之后，
     // "默认集合"也成了宠物自己声明的东西，用户加的槽位照样覆盖在上面。
@@ -624,6 +696,7 @@ function catalogRoute() {
           expressionSlots: pet.expressionSlots,
           looksByPhase: pet.looksByPhase,
           motionGuards: pet.motionGuards,
+          headParts: pet.headParts,
           fidgetSlots: pet.fidgetSlots,
           hiddenMotions: pet.hiddenMotions,
           motionOptions: pet.motionOptions,
