@@ -281,33 +281,35 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
      * Runs once per attach. The values are model-space, so they stay valid
      * across resizes and drags; `hitsHead` maps through the live transform.
      */
-    /** Head drawable ids (picked by the host from cdi3 part names). Empty = legacy box. */
+    /** 头部 / 尾巴部件 id（宿主从 cdi3 的作者命名里挑的）。空 = 该互动退回旧行为。 */
     let headParts = [];
-    /** 由 headParts 解出来的 drawable 下标（换模型要重算，缓存起来）。 */
+    let tailParts = [];
+    /** 由 parts 解出来的 drawable 下标（换模型要重算，缓存起来）。 */
     let headIndices = null;
+    let tailIndices = null;
 
     /**
-     * 头部 drawable 的**下标**：cdi3 的部件名 → 引擎原始表。
+     * 部件 id → drawable 下标：cdi3 的部件名 → 引擎原始表。
      *
      * 为什么不直接用部件 id 去 `getDrawableIndex()`：cdi3 的 `Parts` 是**部件** id
      * （`Part46`、`neck_m` 这种），而那个 API 认的是 **drawable** id（`lianhong`、
      * `Face_line` 这种）—— 两个命名空间不同名，拿部件 id 查永远是 -1（实测这只模型
-     * 21 个部件一个都解不出来，判定静默退回方框）。
+     * 21 个头部部件一个都解不出来，判定静默退回方框）。
      *
      * 引擎的原始表里有 `drawables.parentPartIndices` 和 `parts.ids`，两边一接就得到
-     * "哪些 drawable 属于作者命名为头/脸/眼/眉/嘴/耳/发的那些部件" —— 用的是作者自己
-     * 的分类，不是猜名字。
+     * "哪些 drawable 属于作者命名为头/脸/眼/眉/嘴/耳/发（或尾/翅/鳍）的那些部件" ——
+     * 用的是作者自己的分类，不是猜名字。
      *
-     * @returns {number[]|null} drawable 下标；表结构不认识时返回 null（退回方框）
+     * @returns {number[]|null} drawable 下标；表结构不认识时返回 null（退回旧行为）
      */
-    const headDrawableIndices = () => {
+    const drawableIndicesForParts = (parts) => {
       const raw = model?.internalModel?.coreModel?._model;
       const parent = raw?.drawables?.parentPartIndices;
       const partIds = raw?.parts?.ids;
       if (parent === undefined || partIds === undefined) return null;
       const ids = Array.from(partIds).map(String);
-      if (ids.length === 0 || headParts.length === 0) return null;
-      const wanted = new Set(headParts);
+      if (ids.length === 0 || parts.length === 0) return null;
+      const wanted = new Set(parts);
       const out = [];
       for (let i = 0; i < parent.length; i += 1) {
         const partIndex = parent[i];
@@ -319,11 +321,12 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     };
 
     /**
-     * 头部判定：点 (x,y)（**模型空间**）落在头部 drawable 的三角面里吗？
+     * 点在不在这些 drawable 的**三角面**里（模型空间）。
      *
-     * @returns {boolean|null} `null` = 读不到顶点（调用方落回方框判定，别把宠物变哑巴）
+     * @param {number[]|null} indices drawable 下标（null = 解不出来）
+     * @returns {boolean|null} `null` = 读不到顶点（调用方落回旧行为，别把宠物变哑巴）
      */
-    const hitsHeadGeometry = (x, y) => {
+    const hitsPartsGeometry = (indices, x, y) => {
       const im = model?.internalModel;
       if (im === undefined || im === null) return null;
       // 顶点在**包装层**、三角形索引在**core 层**（实测：`im` 有 getDrawableVertices，
@@ -340,11 +343,10 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           ? (index) => im.coreModel.getDrawableVertexIndices(index)
           : null);
       if (verticesOf === null || indicesOf === null) return null;
-      if (headIndices === null) headIndices = headDrawableIndices();
-      if (headIndices === null) return null;
+      if (indices === null) return null;
       let read = false;
       try {
-        for (const index of headIndices) {
+        for (const index of indices) {
           const verts = verticesOf(index);
           if (verts === undefined || verts === null || verts.length < 6) continue;
           read = true;
@@ -383,6 +385,10 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       const by = verts[i1 * 2 + 1];
       const cx = verts[i2 * 2];
       const cy = verts[i2 * 2 + 1];
+      // 退化三角形（三个点几乎重合）**面积为零**，叉积全 0 → 下面的判定会返回 true，
+      // 于是"每个点都算命中"。隐藏的部件（缩放成一点）正好是这种，必须直接排掉。
+      const area = (bx - ax) * (cy - ay) - (cx - ax) * (by - ay);
+      if (Math.abs(area) < 1e-6) return false;
       const d1 = (x - bx) * (ay - by) - (ax - bx) * (y - by);
       const d2 = (x - cx) * (by - cy) - (bx - cx) * (y - cy);
       const d3 = (x - ax) * (cy - ay) - (cx - ax) * (y - ay);
@@ -1809,6 +1815,11 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         // 换宠物 / 换模型：下标缓存必须作废，否则会拿旧模型的 drawable 判定。
         headIndices = null;
       },
+      /** Tail-part ids（同上，摸尾巴用）。 */
+      setTailParts(ids) {
+        tailParts = Array.isArray(ids) ? ids.filter((id) => typeof id === "string") : [];
+        tailIndices = null;
+      },
       idleName: () => idleName,
       groups: () => groups,
       /** Declared playback policy for one motion group (diagnostics). */
@@ -1833,7 +1844,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           // the stage-space input and the model-space output never alias.
           const point = model.toModelPosition(new vendor.Point(x, y));
           if (headParts.length > 0) {
-            const hit = hitsHeadGeometry(point.x, point.y);
+            if (headIndices === null) headIndices = drawableIndicesForParts(headParts);
+            const hit = hitsPartsGeometry(headIndices, point.x, point.y);
             // 几何判定只在"真的能读到顶点"时算数；读不到就落回方框。
             if (hit !== null) return hit;
           }
@@ -1846,6 +1858,25 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       },
       /** Diagnostic: the measured head box in model space, or null. */
       headBox: () => headBox,
+      /**
+       * 这一下点在尾巴上吗？
+       *
+       * 和摸头同一套判定（模型自己的三角面），只是部件集合换成 cdi3 里命名为
+       * 尾/鳍/翅/翼 的那些。**没有尾巴部件时返回 false**（不是 true）：摸尾巴是个
+       * 新增的互动，测不出来就不该乱触发（摸头那边相反，它要兼容旧模型）。
+       */
+      hitsTail(x, y) {
+        if (model === null || vendor === null) return false;
+        if (tailParts.length === 0) return false;
+        try {
+          const point = model.toModelPosition(new vendor.Point(x, y));
+          if (tailIndices === null) tailIndices = drawableIndicesForParts(tailParts);
+          const hit = hitsPartsGeometry(tailIndices, point.x, point.y);
+          return hit === true;
+        } catch {
+          return false;
+        }
+      },
       /**
        * Diagnostic: **旧**方框规则（手调内边距的那个），用来跟几何判定对比。
        *
@@ -1897,7 +1928,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
        * 和"真的能在模型里解出下标的"分开报，否则判定静默退回方框、外面看不出来。
        */
       headDebug: () => {
-        if (headIndices === null) headIndices = headDrawableIndices();
+        if (headIndices === null) headIndices = drawableIndicesForParts(headParts);
+        if (tailIndices === null) tailIndices = drawableIndicesForParts(tailParts);
         const im = model?.internalModel;
         const core = im?.coreModel;
         const has = (target) => ["getDrawableVertices", "getDrawableVertexIndices", "getDrawableIndex", "getDrawableBounds", "getDrawableIDs"]
@@ -1912,6 +1944,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         return {
           parts: headParts.length,
           drawableIndices: headIndices === null ? 0 : headIndices.length,
+          tailParts: tailParts.length,
+          tailDrawableIndices: tailIndices === null ? 0 : tailIndices.length,
           apiOnInternalModel: has(im),
           apiOnCoreModel: has(core),
           vertexProbe,
@@ -2105,7 +2139,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       + "--pp-accent:rgba(90,140,230,.15);--pp-accent-2:rgba(90,140,230,.18);"
       + "--pp-accent-3:rgba(90,140,230,.26);--pp-shadow:0 14px 34px rgba(20,30,50,.18);"
       + "--pp-shadow-sm:0 8px 20px rgba(20,30,50,.14)}",
-    ROOT_SEL + " [data-bubble]{position:absolute;left:50%;bottom:100%;transform:translateX(-50%);margin-bottom:6px;max-width:min(240px,60vw);width:max-content;padding:7px 11px;border-radius:12px;background:linear-gradient(160deg,var(--pp-bubble-a),var(--pp-bubble-b));border:1px solid var(--pp-line);box-shadow:var(--pp-shadow-sm);color:var(--pp-ink);font:400 12px/1.5 inherit;white-space:pre-wrap;pointer-events:none}",
+    ROOT_SEL + " [data-bubble]{position:absolute;left:50%;bottom:100%;transform:translateX(-50%) translate(var(--bubble-x,0px),var(--bubble-y,0px));margin-bottom:6px;max-width:min(240px,60vw);width:max-content;padding:7px 11px;border-radius:12px;background:linear-gradient(160deg,var(--pp-bubble-a),var(--pp-bubble-b));border:1px solid var(--pp-line);box-shadow:var(--pp-shadow-sm);color:var(--pp-ink);font:400 12px/1.5 inherit;white-space:pre-wrap;pointer-events:none}",
     // Sits outside the pet's box entirely, so it must re-arm itself.
     ROOT_SEL + " [data-panel]{position:absolute;right:calc(100% + 10px);bottom:0;width:270px;max-height:min(440px,72vh);display:flex;flex-direction:column;border-radius:14px;overflow:hidden;background:var(--pp-surface);backdrop-filter:blur(14px);border:1px solid var(--pp-line);box-shadow:var(--pp-shadow);color:var(--pp-ink);font:400 12px/1.5 inherit;pointer-events:auto}",
     ROOT_SEL + " [data-panel] header{display:flex;align-items:center;gap:6px;padding:9px 11px;border-bottom:1px solid var(--pp-line-soft);font-weight:600}",
@@ -2335,11 +2369,42 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
 
   // ------------------------------------------------------------ lines
 
-  const LINES = {
-    greet: ["你好呀，我是鲸鱼娘～", "今天也一起加油吧！", "终于见到你了", "摸鱼时间到？"],
-    click: ["呀！", "痒痒的～", "干嘛呀", "摸摸头？", "嘿嘿"],
-    reset: ["表情归位～", "清清爽爽"],
-    loadFailed: ["呜呜，模型加载失败了"],
+  /**
+   * 台词：**宠物默认 + 用户覆盖**。
+   *
+   * 默认值写在 pet.json 的 `live2d.lines` 里（宠物自己的声音），用户在设置页改过的存
+   * 浏览器（`PHASE_OVERRIDES.lines`）。每条都是**一组**（随机挑一句），相位台词是单句。
+   */
+  const LINE_KEYS = ["greet", "click", "pat", "tail", "spin", "reset", "loadFailed"];
+  const PHASE_LINE_KEYS = ["thinking", "tool", "waiting", "asking", "helper", "queued", "done", "failed"];
+
+  /** 把一条"用 | 分隔"的输入切成台词数组（设置页的输入框就是这个格式）。 */
+  const splitLineInput = (text) =>
+    String(text ?? "")
+      .split("|")
+      .map((part) => part.trim())
+      .filter((part) => part !== "");
+
+  /** 台词数组 -> 输入框里的一行。 */
+  const joinLineInput = (list) => (Array.isArray(list) ? list.join(" | ") : "");
+
+  /** 有效台词：宠物默认 + 用户覆盖（覆盖为空就退回默认）。 */
+  const linesNow = () => {
+    const base = MANIFEST.current?.lines ?? {};
+    const over = PHASE_OVERRIDES.lines ?? {};
+    const out = {};
+    for (const key of LINE_KEYS) {
+      const mine = Array.isArray(over[key]) ? over[key].filter((s) => typeof s === "string" && s !== "") : [];
+      const fallback = Array.isArray(base[key]) ? base[key].filter((s) => typeof s === "string" && s !== "") : [];
+      out[key] = mine.length > 0 ? mine : fallback;
+    }
+    out.phase = {};
+    for (const key of PHASE_LINE_KEYS) {
+      const mine = typeof over.phase?.[key] === "string" ? over.phase[key] : undefined;
+      const fallback = typeof base.phase?.[key] === "string" ? base.phase[key] : "";
+      out.phase[key] = mine !== undefined ? mine : fallback;
+    }
+    return out;
   };
 
   function pick(list) {
@@ -2378,6 +2443,13 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     /** 摸鱼：静置多久才算「闲下来」，以及之后每次摸鱼的随机间隔上界（ms）。 */
     fidgetQuietMs: 12000,
     fidgetGapMs: 26000,
+    /** 气泡相对角色默认位置（头顶）的偏移，px；以及一句话停留多久。 */
+    bubbleOffsetX: 0,
+    bubbleOffsetY: 0,
+    bubbleHoldMs: 4200,
+    /** 鼠标绕圈：在 spinWindowMs 内累计转过 spinTurns 圈就算转晕。 */
+    spinTurns: 2,
+    spinWindowMs: 1600,
   };
 
   /** 出厂值快照（「恢复默认」用）。 */
@@ -2400,11 +2472,18 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     // 摸鱼那一组单独排，界面上分开展示（见 TUNING_GROUPS）。
     { key: "fidgetQuietMs", label: "静置多久开始", min: 2000, max: 120000, step: 1000, group: "fidget" },
     { key: "fidgetGapMs", label: "之后最长间隔", min: 4000, max: 300000, step: 1000, group: "fidget" },
+    // 互动与气泡（见「互动」那张卡）。
+    { key: "bubbleOffsetX", label: "气泡左右偏移 px", min: -240, max: 240, step: 2, group: "bubble" },
+    { key: "bubbleOffsetY", label: "气泡上下偏移 px", min: -240, max: 240, step: 2, group: "bubble" },
+    { key: "bubbleHoldMs", label: "一句话停留 ms", min: 800, max: 15000, step: 200, group: "bubble" },
+    { key: "spinTurns", label: "转几圈算晕", min: 1, max: 6, step: 0.5, group: "bubble" },
+    { key: "spinWindowMs", label: "要在多少 ms 内", min: 300, max: 6000, step: 100, group: "bubble" },
   ];
   /** 可调项的分组（没写 group 的都归「手感」）。hint 显示在卡片右上角。 */
   const TUNING_GROUPS = [
     { id: "feel", label: "手感", hint: "指针 / 嘴 / 眨眼" },
     { id: "fidget", label: "摸鱼节奏", hint: "多久开始、间隔多长" },
+    { id: "bubble", label: "互动与气泡", hint: "转圈阈值 / 气泡位置" },
   ];
   const tuningGroupOf = (field) => field.group ?? "feel";
   const TUNING_KEY = "dsh-pet-live2d.settings.v1";
@@ -2444,7 +2523,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
    * 姿势本身的性质 —— 在摸鱼表里改它，右键面板点同一个姿势、相位池里抽到它，
    * 行为必须一致。所以它单独存一层，而不是挂在条目上。
    */
-  const PHASE_OVERRIDES = { phases: {}, fidget: {}, relations: {} };
+  const PHASE_OVERRIDES = { phases: {}, fidget: {}, relations: {}, lines: {} };
 
   /** 槽位 id -> 中文标签（关系行显示「贴纸」而不是 `sticker`）。 */
   const slotLabelOf = (slotId) =>
@@ -2559,7 +2638,18 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
    *
    * 和数字项分开存：它们不是滑杆，校验方式也不同（true/false）。
    */
-  const FLAGS = { outfitArchive: true };
+  const FLAGS = {
+    /** 装扮是否跨启动记住（那六件穿在身上的东西）。 */
+    outfitArchive: true,
+    /** 气泡总开关：关掉之后任何台词都不弹（含问候、摸头、相位）。 */
+    bubbleEnabled: true,
+    /** 摸头互动（判定用的是模型自己的几何，见 hitsHead）。 */
+    patEnabled: true,
+    /** 摸尾巴互动。 */
+    tailEnabled: true,
+    /** 鼠标绕圈转晕。 */
+    spinEnabled: true,
+  };
   const FLAG_DEFAULTS = Object.freeze(Object.assign({}, FLAGS));
   const OVERRIDE_KEY = "dsh-pet-live2d.settings.v2";
 
@@ -3112,6 +3202,22 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   ];
 
   /**
+   * 互动的反应候选：宠物默认（pet.json 的 `patReactions` / `tailReactions` /
+   * `spinReactions`）+ 用户覆盖（`PHASE_OVERRIDES.interactions`）。
+   *
+   * 条目是**标签**（「重锤出击」「星星眼」这种）：先当动作组找（宠物会给动作起中文名），
+   * 找不到就当表达式名。这样设置界面里可以拿宠物自己的清单当候选，用户不用记 id。
+   */
+  const interactionReactions = (key) => {
+    const mine = PHASE_OVERRIDES.interactions?.[key];
+    const list = Array.isArray(mine) && mine.length > 0 ? mine : (MANIFEST.current?.[key] ?? []);
+    return Array.isArray(list) ? list.filter((name) => typeof name === "string" && name !== "") : [];
+  };
+
+  /** 跑一条反应（由点击/转圈触发）。 */
+  const runReactionRef = { current: () => false };
+
+  /**
    * How long a session phase keeps replaying its motion.
    *
    * "持续播放" — a phase is a STATE, not an event, so a one-shot animation that
@@ -3631,10 +3737,19 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       ? (catalog.pets.find((entry) => entry.id === petId) ?? catalog.pets[0])
       : undefined;
 
+    /**
+     * 弹一句气泡。
+     *
+     * 三件可配的事都收在这里（用户要的"所有文本都可配 / 位置可配 / 可以开关"）：
+     * 气泡总开关关掉时**直接不弹**（连问候也不弹）；位置偏移走 TUNING，渲染时当 CSS 变量；
+     * 文本本身由调用方从 `linesNow()` 取（宠物默认 + 用户覆盖）。
+     */
     const say = useCallback((text) => {
+      if (!FLAGS.bubbleEnabled) return;
+      if (typeof text !== "string" || text === "") return;
       setBubble(text);
       window.clearTimeout(bubbleTimer.current);
-      bubbleTimer.current = window.setTimeout(() => setBubble(null), 4200);
+      bubbleTimer.current = window.setTimeout(() => setBubble(null), TUNING.bubbleHoldMs);
     }, []);
 
     useEffect(() => () => window.clearTimeout(bubbleTimer.current), []);
@@ -3731,6 +3846,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       // 头部部件（宿主从 cdi3 的作者命名里挑的，21 个）交给控制器：摸头判定按这些
       // 部件的**真实三角面**测，而不是一个手调内边距的方框。
       motion.current.setHeadParts(pet.headParts ?? []);
+      motion.current.setTailParts(pet.tailParts ?? []);
       // 清单换了（换宠物 / pet.json 改了槽位结构）就先剪一遍存档：
       // 旧槽位的覆盖会让"关系指向不存在的槽位"这类问题**静默**发生。
       pruneOverrides(pet);
@@ -3892,7 +4008,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       boot().catch((reason) => {
         if (!disposed) {
           setError(String((reason && reason.message) || reason));
-          say(pick(LINES.loadFailed));
+          say(pick(linesNow().loadFailed));
         }
       });
 
@@ -3947,7 +4063,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     useEffect(() => {
       if (!ready || greeted.current) return;
       greeted.current = true;
-      say(pick(LINES.greet));
+      say(pick(linesNow().greet));
     }, [ready, say]);
 
 
@@ -3970,10 +4086,51 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       let resting = false;
       focusDefault();
       resting = true;
+      // 转圈检测的状态：上一次的角度、累计转角、以及上次触发的时间（防连触）。
+      let spinLastAngle = null;
+      let spinTotal = 0;
+      let spinLastFire = 0;
+      const spinTrack = (rect, x, y) => {
+        if (!FLAGS.spinEnabled) return;
+        const cx = rect.width / 2;
+        const cy = rect.height / 2;
+        const dx = x - cx;
+        const dy = y - cy;
+        // 太靠近中心时角度会剧烈抖动（半径趋近 0）：跳过，不参与累计。
+        if (Math.hypot(dx, dy) < rect.width * 0.12) return;
+        const angle = Math.atan2(dy, dx);
+        if (spinLastAngle === null) {
+          spinLastAngle = angle;
+          return;
+        }
+        let delta = angle - spinLastAngle;
+        // 归一化到 (-π, π]，否则跨越 ±π 时会出现一整个 2π 的假增量。
+        if (delta > Math.PI) delta -= Math.PI * 2;
+        if (delta < -Math.PI) delta += Math.PI * 2;
+        spinLastAngle = angle;
+        spinTotal += delta;
+        const now = Date.now();
+        // 时间窗过了就清零：慢悠悠地转不算"转圈"。
+        if (now - spinLastFire > TUNING.spinWindowMs + 400 && Math.abs(spinTotal) < Math.PI) spinTotal = 0;
+        if (Math.abs(spinTotal) < TUNING.spinTurns * Math.PI * 2) return;
+        if (now - spinLastFire < 1500) return;
+        spinTotal = 0;
+        spinLastFire = now;
+        lastInteraction.current = now;
+        const list = interactionReactions("spinReactions");
+        if (list.length > 0) runReactionRef.current(pick(list));
+        say(pick(linesNow().spin));
+      };
       const onMove = (event) => {
         const rect = stage.getBoundingClientRect();
         const x = event.clientX - rect.left;
         const y = event.clientY - rect.top;
+        // ---- 鼠标围着转圈 → 转晕 ------------------------------------------
+        // 判定的是"围绕舞台中心的**累计转角**"：每次移动取与上一次的夹角增量
+        // （归一化到 ±180°），在一段时间窗内累计；够 spinTurns 圈就触发一次。
+        // 用累计角而不是"位置绕了几圈"，是因为前者对半径不敏感 —— 贴着角色转
+        // 小圈和远远地转大圈都算，符合"逗她"的直觉。
+        spinTrack(rect, x, y);
         const near = x >= -TUNING.gazeRange && y >= -TUNING.gazeRange
           && x <= rect.width + TUNING.gazeRange && y <= rect.height + TUNING.gazeRange;
         if (near) {
@@ -4284,6 +4441,30 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     }, [armExpressionClear]);
 
     /**
+     * 跑一条互动反应（点击 / 转圈触发）。
+     *
+     * 标签先当**动作组**找（宠物在 catalog.json 里给动作起了中文名），找不到就当
+     * **表达式**闪一下（闪完由 EXPRESSION_HOLD_MS 自动收，不会永久占着槽位）。
+     */
+    const runReaction = useCallback((label) => {
+      if (typeof label !== "string" || label === "") return false;
+      const groups = motion.current.groups();
+      const entry = (petRef.current?.motions ?? []).find((item) => item.label === label);
+      const group = entry !== undefined && Array.isArray(groups[entry.group]) ? entry.group : undefined;
+      if (group !== undefined) {
+        motion.current.playOnce(group, 0, { kind: "tap" });
+        return true;
+      }
+      if (Array.isArray(groups[label])) {
+        motion.current.playOnce(label, 0, { kind: "tap" });
+        return true;
+      }
+      flashExpression(label);
+      return true;
+    }, [flashExpression]);
+    runReactionRef.current = runReaction;
+
+    /**
      * Choose an option within one dress-up slot.
      *
      * Every other slot keeps its choice — that is the whole point of the slots,
@@ -4487,7 +4668,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       }
       commitPinsRef.current();
       motion.current.resetToRest();
-      say(pick(LINES.reset));
+      say(pick(linesNow().reset));
     }, [applyExpressions, say]);
 
     /**
@@ -4680,6 +4861,10 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           phasePinsRef.current[expression] = true;
           commitPinsRef.current();
         }
+        // 相位台词（pet.json 的 `lines.phase.<相位>`，用户可在设置里改）。
+        // 空字符串 = 这个相位不弹（idle 就没有），所以这里只是"有才弹"。
+        const line = linesNow().phase[phase] ?? "";
+        if (line !== "") say(line);
       };
       // The sustain loop lives in the controller, but the phase -> group map
       // comes from the pet manifest, so hand the resolver over. 池子里抽到过动作的
@@ -4993,6 +5178,14 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       return motion.current.hitsHead(clientX - rect.left, clientY - rect.top);
     }, []);
 
+    /** 摸尾巴的命中（和摸头同一套，坐标换算也一样走舞台矩形）。 */
+    const hitsTail = useCallback((clientX, clientY) => {
+      const stage = stageRef.current;
+      if (stage === null) return false;
+      const rect = stage.getBoundingClientRect();
+      return motion.current.hitsTail(clientX - rect.left, clientY - rect.top);
+    }, []);
+
     /**
      * Right-click on the pet opens the whole control panel.
      *
@@ -5047,10 +5240,11 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         // Resolved once, at press time: the model keeps swaying, so asking
         // again on release could answer differently than the press did.
         onHead: hitsHead(event.clientX, event.clientY),
+        onTail: hitsTail(event.clientX, event.clientY),
       };
       setDragging(true);
       try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* not capturable */ }
-    }, [hitsModel, hitsHead]);
+    }, [hitsModel, hitsHead, hitsTail]);
 
     useEffect(() => {
       const onMove = (event) => {
@@ -5080,25 +5274,23 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           });
         } else if (state.onModel) {
           lastInteraction.current = Date.now();
-          if (state.onHead) {
-            // Patting the head picks ONE of three reactions at random
-            // (requirement #5) — and deliberately does not blush. The two face
-            // reactions are transient: they are flashed and the auto-clear
-            // takes them away, so a pat never leaves a permanent face on a
-            // slot the user chose.
-            const reaction = pick(HEAD_PAT_REACTIONS);
-            if (reaction.motion !== undefined) {
-              const groups = motion.current.groups();
-              const tap = [reaction.motion, "TapHead", "tap_head"].find((group) => Array.isArray(groups[group]));
-              if (tap !== undefined) motion.current.playOnce(tap, 0, { kind: "tap" });
-            } else if (reaction.expression !== undefined) {
-              flashExpression(reaction.expression);
-            }
-            say(pick(LINES.click));
+          if (state.onTail && FLAGS.tailEnabled) {
+            // 摸尾巴：判据和摸头同一套（模型自己的三角面），部件集合是 cdi3 里
+            // 命名为尾/鳍/翅/翼 的那些。反应从 pet.json 的 `tailReactions` 里随机。
+            const list = interactionReactions("tailReactions");
+            if (list.length > 0) runReactionRef.current(pick(list));
+            say(pick(linesNow().tail));
+          } else if (state.onHead && FLAGS.patEnabled) {
+            // 摸头：从 `patReactions` 里随机挑一个（默认是 重锤出击 / 问号 / 星星眼），
+            // 并且**故意不脸红**。表情类反应是"闪一下"，到点由自动清理收走，
+            // 所以摸头不会在用户选的槽位上留下永久表情。
+            const list = interactionReactions("patReactions");
+            if (list.length > 0) runReactionRef.current(pick(list));
+            say(pick(linesNow().pat));
           } else {
             // Anywhere else on the character is a lighter acknowledgement —
             // deliberately WITHOUT 重锤出击, which now belongs to the head only.
-            say(pick(LINES.click));
+            say(pick(linesNow().click));
           }
         }
       };
@@ -5315,7 +5507,14 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           ...(maskPath === "" ? {} : { onPointerDown, onContextMenu }),
         }),
       ),
-      bubble === null ? null : h("div", { "data-bubble": "" }, bubble),
+      // 气泡的偏移量走 CSS 变量（值，不是布局）：位置规则仍然只写在样式表里。
+      bubble === null ? null : h("div", {
+        "data-bubble": "",
+        style: {
+          "--bubble-x": TUNING.bubbleOffsetX + "px",
+          "--bubble-y": TUNING.bubbleOffsetY + "px",
+        },
+      }, bubble),
       panel,
     );
   }

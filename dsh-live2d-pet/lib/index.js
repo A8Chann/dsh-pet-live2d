@@ -281,15 +281,21 @@ function normaliseSlots(raw) {
 const HEAD_PART_NAME_HINTS = /头|脸|面|眼|眉|嘴|耳|发|eye|face|hair|head|ear|brow|mouth|cheek|nose/i
 
 /**
- * 从 cdi3 里挑出头部部件的 drawable id。
+ * 名字里带这些字的部件算"尾巴/翅膀"（这只宠物有 15 个：狐狸尾 / 猫尾 / 狼尾 / 大翅膀…，
+ * 都是可换的配件，同一时刻只有一个是显形的）。
+ */
+const TAIL_PART_NAME_HINTS = /尾|鳍|翅|翼|fin|tail|wing/i
+
+/**
+ * 从 cdi3 里按名字挑部件。
  *
- * 为什么要读 cdi3：摸头判定要知道"哪些 drawable 是头"。原来浏览器半区用的是写死的
- * 英文正则（`face|eye|mouth|…`），而这只模型的 drawable id 是 `Part46` 这种 ——
+ * 为什么要读 cdi3：摸头/摸尾巴要知道"哪些 drawable 是头、是尾巴"。原来浏览器半区用的是
+ * 写死的英文正则（`face|eye|mouth|…`），而这只模型的 drawable id 是 `Part46` 这种 ——
  * **一个都匹配不上**，于是判定静默退化成"点哪都算头"。作者自己的中文名才是权威分类。
  *
- * @returns {string[]} drawable id；没有 cdi3 或没挑到就是空数组（浏览器半区会退回旧行为）。
+ * @returns {string[]} 部件 id；没有 cdi3 或没挑到就是空数组（浏览器半区会退回旧行为）。
  */
-function readHeadParts(dir, modelPath) {
+function readPartsMatching(dir, modelPath, hints) {
   try {
     const base = modelPath.replace(/\.model3\.json$/i, '')
     const file = findCdi3(dir, base)
@@ -303,7 +309,7 @@ function readHeadParts(dir, modelPath) {
       const id = typeof part.Id === 'string' ? part.Id : undefined
       if (id === undefined || id === '') continue
       const name = typeof part.Name === 'string' ? part.Name : ''
-      if (!HEAD_PART_NAME_HINTS.test(name) && !HEAD_PART_NAME_HINTS.test(id)) continue
+      if (!hints.test(name) && !hints.test(id)) continue
       out.push(id)
     }
     return out
@@ -341,6 +347,13 @@ function findCdi3(dir, base) {
     }
   }
   return undefined
+}
+
+/**
+ * 互动反应候选：一串标签（动作的中文名，或表情名）。非字符串/空的都丢掉。
+ */
+function readReactionList(value) {
+  return Array.isArray(value) ? value.filter((name) => typeof name === 'string' && name !== '') : []
 }
 
 /** Scan one pet directory into a catalog entry, or undefined when unusable. */
@@ -495,9 +508,17 @@ export function scanPet(dir, id) {
     // premise is missing (a selfie with no phone out, a spray with no whale)
     // must not play at all, from ANY path: the panel, a fidget or a phase.
     motionGuards: typeof block.motionGuards === 'object' && block.motionGuards !== null ? block.motionGuards : {},
-    // 头部部件（drawable id）：摸头判定按这些部件的**真实几何**判定，不再靠写死的
-    // 内边距方框。空数组 = 没 cdi3 或没挑到，浏览器半区退回旧行为。
-    headParts: readHeadParts(dir, modelPath),
+    // 头部 / 尾巴部件（部件 id）：摸头、摸尾巴按这些部件的**真实几何**判定。
+    // 空数组 = 没 cdi3 或没挑到，浏览器半区退回旧行为。
+    headParts: readPartsMatching(dir, modelPath, HEAD_PART_NAME_HINTS),
+    tailParts: readPartsMatching(dir, modelPath, TAIL_PART_NAME_HINTS),
+    // 台词：宠物自己的声音（问候 / 点击 / 摸头 / 摸尾巴 / 转晕 / 归位 / 每个相位）。
+    // 用户能在设置里逐条改，改过的存浏览器；这里是**默认值**。
+    lines: typeof block.lines === 'object' && block.lines !== null ? block.lines : {},
+    // 互动反应候选（标签：动作的中文名或表情名）。摸头 / 摸尾巴 / 转晕各一组。
+    patReactions: readReactionList(block.patReactions),
+    tailReactions: readReactionList(block.tailReactions),
+    spinReactions: readReactionList(block.spinReactions),
     // 摸鱼默认盯哪几个槽位。以前这六个是**写死在浏览器半区**的（"宠物自己的身子"），
     // 但宠物作者（和用户）会想改：这只宠物把「自拍」也放进了摸鱼池。写在这里之后，
     // "默认集合"也成了宠物自己声明的东西，用户加的槽位照样覆盖在上面。
@@ -697,6 +718,11 @@ function catalogRoute() {
           looksByPhase: pet.looksByPhase,
           motionGuards: pet.motionGuards,
           headParts: pet.headParts,
+          tailParts: pet.tailParts,
+          lines: pet.lines,
+          patReactions: pet.patReactions,
+          tailReactions: pet.tailReactions,
+          spinReactions: pet.spinReactions,
           fidgetSlots: pet.fidgetSlots,
           hiddenMotions: pet.hiddenMotions,
           motionOptions: pet.motionOptions,
