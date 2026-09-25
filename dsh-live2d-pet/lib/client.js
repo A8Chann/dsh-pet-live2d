@@ -289,7 +289,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     let tailIndices = null;
 
     /**
-     * 部件 id → drawable 下标：cdi3 的部件名 → 引擎原始表。
+     * 部件 id → drawable 下标（带所属部件下标）：cdi3 的部件名 → 引擎原始表。
      *
      * 为什么不直接用部件 id 去 `getDrawableIndex()`：cdi3 的 `Parts` 是**部件** id
      * （`Part46`、`neck_m` 这种），而那个 API 认的是 **drawable** id（`lianhong`、
@@ -300,7 +300,10 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
      * "哪些 drawable 属于作者命名为头/脸/眼/眉/嘴/耳/发（或尾/翅/鳍）的那些部件" ——
      * 用的是作者自己的分类，不是猜名字。
      *
-     * @returns {number[]|null} drawable 下标；表结构不认识时返回 null（退回旧行为）
+     * 返回的是 `[{ index, part }]`：`part` 留着，因为**判定时要按部件透明度过滤**
+     * （见 isDrawableVisible）—— 隐藏的配件几何还在原地。
+     *
+     * @returns {Array<{index:number, part:number}>|null} 表结构不认识时返回 null
      */
     const drawableIndicesForParts = (parts) => {
       const raw = model?.internalModel?.coreModel?._model;
@@ -315,9 +318,36 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         const partIndex = parent[i];
         if (partIndex < 0 || partIndex >= ids.length) continue;
         if (!wanted.has(ids[partIndex])) continue;
-        out.push(i);
+        out.push({ index: i, part: partIndex });
       }
       return out.length > 0 ? out : null;
+    };
+
+    /**
+     * 这个 drawable 现在"看得见"吗？
+     *
+     * **注意：判定里不拿它当闸门。** 我试过用透明度过滤隐藏配件，结果是"真尾巴一起
+     * 被滤掉"—— 这只宠物的尾巴/翅膀全是**可选配件**，同一时刻只有一个显形，其余靠
+     * **缩放成一点**藏起来（被面积下限排掉就够了）；而 `opacities` 表在渲染期未必是
+     * 最终值，拿它当闸门会误杀正在显形的那一个。
+     *
+     * 现在只留给诊断用（`partsDebug` / `partHitCounts` 报"过滤前 vs 过滤后"）。
+     * "隐藏翅膀抢走摸头"这个真问题改由**路由优先级**解决：摸头优先于摸尾巴。
+     */
+    const isDrawableVisible = (entry) => {
+      const im = model?.internalModel;
+      try {
+        if (typeof im?.getDrawableDynamicFlagIsVisible === "function"
+          && im.getDrawableDynamicFlagIsVisible(entry.index) === false) return false;
+      } catch {
+        /* 没有这个 API 就继续看透明度 */
+      }
+      const raw = im?.coreModel?._model;
+      const drawOpacity = raw?.drawables?.opacities?.[entry.index];
+      if (typeof drawOpacity === "number" && drawOpacity <= 0.001) return false;
+      const partOpacity = raw?.parts?.opacities?.[entry.part];
+      if (typeof partOpacity === "number" && partOpacity <= 0.001) return false;
+      return true;
     };
 
     /**
@@ -346,8 +376,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       if (indices === null) return null;
       let read = false;
       try {
-        for (const index of indices) {
-          const verts = verticesOf(index);
+        for (const entry of indices) {
+          const verts = verticesOf(entry.index);
           if (verts === undefined || verts === null || verts.length < 6) continue;
           read = true;
           // 先用这个 drawable 的包围盒排除（绝大多数部件一眼就出局，不用扫三角形）。
@@ -1936,21 +1966,157 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           .filter((name) => typeof target?.[name] === "function");
         let vertexProbe = "n/a";
         try {
-          const v = im?.getDrawableVertices?.(headIndices?.[0] ?? 0);
+          const v = im?.getDrawableVertices?.(headIndices?.[0]?.index ?? 0);
           vertexProbe = v === undefined ? "undefined" : (v === null ? "null" : "len=" + v.length);
         } catch (error) {
           vertexProbe = "throw: " + String(error?.message ?? error);
         }
+        const visible = (list) => (list === null ? 0 : list.filter((entry) => isDrawableVisible(entry)).length);
         return {
           parts: headParts.length,
           drawableIndices: headIndices === null ? 0 : headIndices.length,
+          headVisible: visible(headIndices),
           tailParts: tailParts.length,
           tailDrawableIndices: tailIndices === null ? 0 : tailIndices.length,
+          tailVisible: visible(tailIndices),
           apiOnInternalModel: has(im),
           apiOnCoreModel: has(core),
           vertexProbe,
           box: headBox,
         };
+      },
+      /**
+       * Diagnostic: 逐部件的透明度 / 几何范围 / drawable 数。
+       *
+       * "摸头顺带把摸尾巴也触发"这类问题要先分清是**隐藏的配件**（同一时刻只有一个
+       * 显形：狐狸尾 / 猫尾 / 狼尾 / 天使翅膀…）几何还留在原地，还是判定本身写错了。
+       *
+       * **必须挂在控制器上**：`tailParts` 是这一层的闭包变量，放到组件的 api 里会
+       * `tailParts is not defined`（我就这么错过一次，调用直接抛异常、外面只看到 undefined）。
+       */
+      partsDebug: (which) => {
+        const list = which === "tail" ? tailParts : headParts;
+        const raw = model?.internalModel?.coreModel?._model;
+        const im = model?.internalModel;
+        const partIds = raw?.parts?.ids === undefined ? [] : Array.from(raw.parts.ids).map(String);
+        const parent = raw?.drawables?.parentPartIndices;
+        const out = [];
+        for (const id of list) {
+          const index = partIds.indexOf(id);
+          const opacity = raw?.parts?.opacities?.[index];
+          let minX = Infinity;
+          let minY = Infinity;
+          let maxX = -Infinity;
+          let maxY = -Infinity;
+          let drawables = 0;
+          let visibleDrawables = 0;
+          if (parent !== undefined) {
+            for (let i = 0; i < parent.length; i += 1) {
+              if (parent[i] !== index) continue;
+              drawables += 1;
+              if (isDrawableVisible({ index: i, part: index })) visibleDrawables += 1;
+              try {
+                const verts = im?.getDrawableVertices?.(i);
+                if (verts === undefined || verts === null) continue;
+                for (let k = 0; k < verts.length; k += 2) {
+                  if (verts[k] < minX) minX = verts[k];
+                  if (verts[k] > maxX) maxX = verts[k];
+                  if (verts[k + 1] < minY) minY = verts[k + 1];
+                  if (verts[k + 1] > maxY) maxY = verts[k + 1];
+                }
+              } catch {
+                /* 读不到就跳过 */
+              }
+            }
+          }
+          out.push({
+            id,
+            partIndex: index,
+            opacity: typeof opacity === "number" ? Math.round(opacity * 1000) / 1000 : null,
+            drawables,
+            visibleDrawables,
+            box: maxX > minX
+              ? { minX: Math.round(minX), maxX: Math.round(maxX), minY: Math.round(minY), maxY: Math.round(maxY) }
+              : null,
+          });
+        }
+        return out;
+      },
+      /**
+       * Diagnostic: 每个部件在模型空间的命中点数（过滤前 / 过滤后）+ 它的 drawable
+       * 透明度范围。
+       *
+       * 采样**直接在模型空间**做，不经过 `vendor.Point` —— 第一版在 api 闭包里用了
+       * `vendor`（那是控制器里的变量，这里根本看不到），每次调用都抛异常被 catch 吞掉，
+       * 于是所有部件都报 0，看着像"这个部件完全没几何"。
+       */
+      partHitCounts: (which, cols = 48, rows = 36) => {
+        const parts = which === "tail" ? tailParts : headParts;
+        const im = model?.internalModel;
+        const raw = im?.coreModel?._model;
+        const partIds = raw?.parts?.ids === undefined ? [] : Array.from(raw.parts.ids).map(String);
+        const parent = raw?.drawables?.parentPartIndices;
+        const out = [];
+        for (const id of parts) {
+          const partIndex = partIds.indexOf(id);
+          const entries = [];
+          if (parent !== undefined) {
+            for (let i = 0; i < parent.length; i += 1) {
+              if (partIndex >= 0) {
+                if (parent[i] === partIndex) entries.push({ index: i, part: partIndex });
+              } else if (typeof im?.getDrawableIndex === "function" && im.getDrawableIndex(id) === i) {
+                // id 不在 parts.ids 里（它其实是个 drawable id）：按 drawable 找它自己。
+                entries.push({ index: i, part: -1 });
+              }
+            }
+          }
+          const opacities = [];
+          let minX = Infinity;
+          let minY = Infinity;
+          let maxX = -Infinity;
+          let maxY = -Infinity;
+          for (const entry of entries) {
+            const value = raw?.drawables?.opacities?.[entry.index];
+            if (typeof value === "number") opacities.push(Math.round(value * 1000) / 1000);
+            try {
+              const verts = im?.getDrawableVertices?.(entry.index);
+              if (verts === undefined || verts === null) continue;
+              for (let k = 0; k < verts.length; k += 2) {
+                if (verts[k] < minX) minX = verts[k];
+                if (verts[k] > maxX) maxX = verts[k];
+                if (verts[k + 1] < minY) minY = verts[k + 1];
+                if (verts[k + 1] > maxY) maxY = verts[k + 1];
+              }
+            } catch {
+              /* 跳过 */
+            }
+          }
+          let hitsAll = 0;
+          let hitsVisible = 0;
+          if (entries.length > 0 && maxX > minX && maxY > minY) {
+            const visible = entries.filter((entry) => isDrawableVisible(entry));
+            const pad = 20;
+            for (let iy = 0; iy < rows; iy += 1) {
+              for (let ix = 0; ix < cols; ix += 1) {
+                const px = (minX - pad) + (maxX - minX + pad * 2) * (ix + 0.5) / cols;
+                const py = (minY - pad) + (maxY - minY + pad * 2) * (iy + 0.5) / rows;
+                if (hitsPartsGeometry(entries, px, py) === true) hitsAll += 1;
+                if (visible.length > 0 && hitsPartsGeometry(visible, px, py) === true) hitsVisible += 1;
+              }
+            }
+          }
+          out.push({
+            id,
+            partIndex,
+            drawables: entries.length,
+            opacityMin: opacities.length === 0 ? null : Math.min(...opacities),
+            opacityMax: opacities.length === 0 ? null : Math.max(...opacities),
+            box: maxX > minX ? { minX: Math.round(minX), maxX: Math.round(maxX), minY: Math.round(minY), maxY: Math.round(maxY) } : null,
+            hitsAll,
+            hitsVisible,
+          });
+        }
+        return out;
       },
       /**
        * Play a motion with its declared policy applied; used by the panel, the
@@ -5387,19 +5553,22 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           });
         } else if (state.onModel) {
           lastInteraction.current = Date.now();
-          if (state.onTail && FLAGS.tailEnabled) {
-            // 摸尾巴：判据和摸头同一套（模型自己的三角面），部件集合是 cdi3 里
-            // 命名为尾/鳍/翅/翼 的那些。反应从 pet.json 的 `tailReactions` 里随机。
-            const list = interactionReactions("tailReactions");
-            if (list.length > 0) runReactionRef.current(pick(list));
-            say(pick(linesNow().tail));
-          } else if (state.onHead && FLAGS.patEnabled) {
+          // **摸头优先于摸尾巴**：两者区域可能重叠（尾巴/翅膀挂件在身后，几何上会伸到
+          // 头部附近），先判头才符合直觉 —— 用户报的"摸头出的是摸尾巴的效果"就是
+          // 原来先判尾巴造成的。隐藏配件的问题另有 isDrawableVisible 兜着。
+          if (state.onHead && FLAGS.patEnabled) {
             // 摸头：从 `patReactions` 里随机挑一个（默认是 重锤出击 / 问号 / 星星眼），
             // 并且**故意不脸红**。表情类反应是"闪一下"，到点由自动清理收走，
             // 所以摸头不会在用户选的槽位上留下永久表情。
             const list = interactionReactions("patReactions");
             if (list.length > 0) runReactionRef.current(pick(list));
             say(pick(linesNow().pat));
+          } else if (state.onTail && FLAGS.tailEnabled) {
+            // 摸尾巴：判据和摸头同一套（模型自己的三角面），部件集合是 cdi3 里
+            // 命名为尾/鳍/翅/翼 的那些。反应从 pet.json 的 `tailReactions` 里随机。
+            const list = interactionReactions("tailReactions");
+            if (list.length > 0) runReactionRef.current(pick(list));
+            say(pick(linesNow().tail));
           } else {
             // Anywhere else on the character is a lighter acknowledgement —
             // deliberately WITHOUT 重锤出击, which now belongs to the head only.

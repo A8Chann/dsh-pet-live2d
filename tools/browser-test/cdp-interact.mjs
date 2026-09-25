@@ -51,6 +51,11 @@ const json = async (expr) => {
   try { return JSON.parse(raw) } catch { return null }
 }
 const bubble = () => ev('(document.querySelector("[data-dsh-live2d-pet] [data-bubble]")||{}).textContent ?? null')
+/** 在页面坐标点一下（按下 + 抬起，走真实的 pointer 事件）。 */
+const clickAt = async (x, y) => {
+  await send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', buttons: 1, clickCount: 1 })
+  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', buttons: 0, clickCount: 1 })
+}
 /** 用原生 setter 派发，React 的受控 input 才认（直接改 .value 会被忽略）。 */
 const setInput = (selector, value) => ev(`(() => {
   const el = document.querySelector(${JSON.stringify(selector)})
@@ -131,26 +136,55 @@ check('摸头默认候选 = 宠物声明的三个',
   (chips?.patOn ?? []).length === 3 && (chips?.patOn ?? []).includes('重锤出击'), JSON.stringify(chips?.patOn))
 check('转晕默认候选 = 晕晕', (chips?.spinOn ?? []).includes('晕晕'), JSON.stringify(chips?.spinOn))
 
-// --- (3) 摸尾巴：判定与反应 -------------------------------------------------
-// 在网格里找"命中尾巴、但不是头"的点（探针式定位，确定性）。
+// --- (3) 摸尾巴：判定与**路由** -------------------------------------------------
+// 用户报的："现在摸头也是出现的摸尾巴的效果"。根因有两条：
+//   ① 尾巴/翅膀是**可选配件**，同一时刻只有一个显形，其余几何还在原地 → 判定区域会重叠；
+//   ② 点击路由原来**先判尾巴再判头**，于是重叠区的点击一律算摸尾巴。
+// 所以这里必须断**路由**（点头给的台词是哪一类），而不是只断"存在只命中尾巴的点"——
+// 我第一版就是那么写的，结果 1112 个头部命中点里 697 个同时命中尾巴，测试却是绿的。
+const tailParts = (await json('JSON.stringify(window.__dshLive2dPet.partHitCounts("tail"))')) ?? []
+const tailGeometry = tailParts.filter((p) => (p?.hitsAll ?? 0) > 0).map((p) => p.id)
 const tailProbe = await json(`(() => {
   const c = window.__dshLive2dPet
   const r = document.querySelector('[data-dsh-live2d-pet] [data-stage]').getBoundingClientRect()
-  let tail = null, headCount = 0, tailCount = 0
+  let sumX = 0, sumY = 0, n = 0, tailOnly = null, both = 0, head = 0, tail = 0
   for (let iy = 0; iy < 40; iy++) {
     for (let ix = 0; ix < 40; ix++) {
       const lx = r.width * (ix + 0.5) / 40, ly = r.height * (iy + 0.5) / 40
-      const isTail = c.hitsTail(lx, ly)
-      if (c.hitsHead(lx, ly)) headCount += 1
-      if (isTail) { tailCount += 1; if (tail === null && !c.hitsHead(lx, ly)) tail = { lx, ly } }
+      const h = c.hitsHead(lx, ly), t = c.hitsTail(lx, ly)
+      if (h) head += 1
+      if (t) tail += 1
+      if (h && t) both += 1
+      // 点要落在**头部区域的重心**上、而且真的落在角色身上（遮罩里）：模型一直在动，
+      // 取"最上面第一个命中点"（= 头顶边缘）等换完坐标它已经挪开了，点击会落空。
+      if (h && !t && c.hitsMask(lx, ly, r.width, r.height)) { sumX += lx; sumY += ly; n += 1 }
+      if (t && !h && tailOnly === null) tailOnly = { lx, ly }
     }
   }
-  return JSON.stringify({ tail, headCount, tailCount, rect: { x: r.x, y: r.y } })
+  const headPoint = n > 0 ? { lx: sumX / n, ly: sumY / n, samples: n } : null
+  return JSON.stringify({ headPoint, tailOnly, both, head, tail, rect: { x: r.x, y: r.y } })
 })()`)
-check('摸尾巴判定有命中区域（模型里确实有尾巴/翅膀部件）',
-  (tailProbe?.tailCount ?? 0) > 0, JSON.stringify({ tailCount: tailProbe?.tailCount, headCount: tailProbe?.headCount }))
-check('尾巴区域和头部区域是分开的（存在只命中尾巴的点）',
-  tailProbe?.tail !== null && tailProbe?.tail !== undefined, JSON.stringify(tailProbe?.tail))
+check('摸尾巴判定与几何一致：有几何就该有命中；几何全退化（默认没戴尾巴配件）就该一个都不中',
+  tailGeometry.length > 0 ? (tailProbe?.tail ?? 0) > 0 : (tailProbe?.tail ?? -1) === 0,
+  '有几何的部件=' + JSON.stringify(tailGeometry) + ' tail 命中=' + tailProbe?.tail)
+check('找得到一个只在头部的点（下面那条路由断言才有意义）',
+  tailProbe?.headPoint !== null && tailProbe?.headPoint !== undefined,
+  JSON.stringify({ headPoint: tailProbe?.headPoint, both: tailProbe?.both, head: tailProbe?.head, tail: tailProbe?.tail }))
+if (tailProbe?.headPoint) {
+  const patLines = await ev('JSON.stringify(window.__dshLive2dPet.effectiveLines().pat)')
+  const tailLines = await ev('JSON.stringify(window.__dshLive2dPet.effectiveLines().tail)')
+  await ev('window.__dshLive2dPet.phaseNow("idle")')
+  await sleep(600)
+  await clickAt(tailProbe.rect.x + tailProbe.headPoint.lx, tailProbe.rect.y + tailProbe.headPoint.ly)
+  const said = await until(async () => {
+    const text = await bubble()
+    return text !== null && (String(patLines).includes(text) || String(tailLines).includes(text))
+  }, 6000)
+  const text = await bubble()
+  check('点头部给的是**摸头**的台词，不是摸尾巴的（用户报的就是这个）',
+    said && String(patLines).includes(text),
+    'bubble=' + text + ' pat=' + String(patLines) + ' tail=' + String(tailLines))
+}
 
 // --- (5)(7)(8) 气泡：相位台词 / 偏移 / 总开关 -------------------------------
 await ev('window.__dshLive2dPet.phaseNow("thinking")')

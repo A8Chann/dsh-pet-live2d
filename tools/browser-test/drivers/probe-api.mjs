@@ -41,4 +41,64 @@ console.log('lineFields 类型:', await ev('typeof window.__dshLive2dPet?.lineFi
 console.log('lineFields():', await ev('JSON.stringify(window.__dshLive2dPet?.lineFields?.() ?? null)'))
 console.log('effectiveLines().pat:', await ev('JSON.stringify(window.__dshLive2dPet?.effectiveLines?.().pat ?? null)'))
 console.log('__pluginSections:', await ev('JSON.stringify(Object.keys(window.__pluginSections ?? {}))'))
+console.log('drawable 表字段:', await ev('JSON.stringify(window.__dshLive2dPet.partTables().drawableKeys)'))
+// 逐部件：透明度 / 包围盒 / drawable 数 —— "隐藏的配件是不是还留着几何"，一看便知。
+console.log('partsDebug 类型:', await ev('typeof window.__dshLive2dPet.partsDebug'))
+console.log('调用结果:', await ev(`(() => {
+  try { return JSON.stringify(window.__dshLive2dPet.partsDebug("tail")).slice(0, 200) }
+  catch (error) { return 'THREW: ' + String(error && error.message || error) }
+})()`))
+const tail = JSON.parse((await ev(`(() => {
+  try { return JSON.stringify(window.__dshLive2dPet.partsDebug("tail")) }
+  catch { return '[]' }
+})()`)) ?? '[]')
+console.log('--- 尾巴/翅膀部件（' + tail.length + ' 个）---')
+for (const p of tail) {
+  console.log('  ' + String(p.id).padEnd(24) + ' opacity=' + String(p.opacity).padEnd(7)
+    + ' drawables=' + String(p.drawables).padEnd(3) + ' box=' + JSON.stringify(p.box))
+}
+// 头部与尾巴的重叠：有多少采样点**同时**命中两边 —— >0 就是"摸头出摸尾效果"的根因。
+const overlap = JSON.parse(await ev(`(() => {
+  const c = window.__dshLive2dPet
+  const r = document.querySelector('[data-dsh-live2d-pet] [data-stage]').getBoundingClientRect()
+  let both = 0, head = 0, tail = 0
+  for (let iy = 0; iy < 60; iy++) {
+    for (let ix = 0; ix < 60; ix++) {
+      const lx = r.width * (ix + 0.5) / 60, ly = r.height * (iy + 0.5) / 60
+      const h = c.hitsHead(lx, ly), t = c.hitsTail(lx, ly)
+      if (h) head += 1
+      if (t) tail += 1
+      if (h && t) both += 1
+    }
+  }
+  return JSON.stringify({ both, head, tail })
+})()`))
+console.log('重叠统计:', JSON.stringify(overlap))
+// 逐部件：它在判定网格里贡献了多少命中点（过滤前 / 过滤后）+ drawable 透明度范围。
+const perPart = JSON.parse((await ev(`(() => {
+  try { return JSON.stringify(window.__dshLive2dPet.partHitCounts('tail')) } catch (e) { return JSON.stringify({ error: String(e && e.message || e) }) }
+})()`)) ?? '[]')
+console.log('--- 每个尾巴部件（模型空间采样）---')
+for (const p of (Array.isArray(perPart) ? perPart : [perPart])) {
+  console.log('  ' + String(p.id).padEnd(22) + ' part=' + String(p.partIndex).padEnd(5)
+    + ' draw=' + String(p.drawables).padEnd(3) + ' opa=' + String(p.opacityMin) + '..' + String(p.opacityMax)
+    + ' hitsAll=' + String(p.hitsAll).padEnd(5) + ' hitsVisible=' + String(p.hitsVisible)
+    + ' box=' + JSON.stringify(p.box))
+}
+// "判定是不是静态的"：等两秒半再采一次，区域变了才说明它跟着动画走。
+const sample = () => ev(`(() => {
+  const c = window.__dshLive2dPet
+  const r = document.querySelector('[data-dsh-live2d-pet] [data-stage]').getBoundingClientRect()
+  let sig = ""
+  for (let iy = 0; iy < 24; iy++) for (let ix = 0; ix < 24; ix++) {
+    sig += c.hitsHead(r.width * (ix + 0.5) / 24, r.height * (iy + 0.5) / 24) ? "1" : "0"
+  }
+  return sig
+})()`)
+const s1 = await sample()
+await sleep(2500)
+const s2 = await sample()
+let diff = 0
+for (let i = 0; i < Math.min(s1.length, s2.length); i += 1) if (s1[i] !== s2[i]) diff += 1
+console.log('头部判定区域 2.5 秒内变化的格子数:', diff, '/', s1.length)
 ws.close(); edge.kill(); server.kill(); await sleep(300); process.exit(0)
