@@ -36,6 +36,7 @@ export const SUITE = {
   'cdp-passthrough.mjs': '只有角色可拖动，透明处事件穿透',
   'cdp-merge.mjs': '装扮菜单：多槽位叠加、跨槽保留、白魔爪双层',
   'cdp-bubble.mjs': '动作定格能关掉：吹泡泡糖/掏手机 → 无，连测三轮',
+  'cdp-interact.mjs': '互动与气泡：摸尾巴/转圈转晕/相位台词/文本·位置·开关可配',
 }
 
 const argv = process.argv.slice(2)

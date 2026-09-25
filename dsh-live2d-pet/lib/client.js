@@ -2271,6 +2271,24 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     // 滑杆外观（轨道/圆钮/填充）和面板底部那根共用，见 sliderLook。
     ...sliderLook(scope + " input[type=range]"),
     scope + " input[type=checkbox]{accent-color:rgba(120,170,255,.9)}",
+    // ---- 台词 / 互动 ---------------------------------------------------
+    // 台词是**文本**输入（不是数字），要能看清自己写了什么：给足宽度、字色正常，
+    // 只在 hover/focus 时提亮边框 —— 和权重那个"读数旋钮"是两种东西，别共用样式。
+    scope + " [data-line-row]{display:grid;grid-template-columns:120px 1fr;align-items:center;"
+      + "gap:6px;padding:2px 0}",
+    scope + " input[type=text]{box-sizing:border-box;width:100%;min-width:0;font:inherit;"
+      + "font-size:11px;color:inherit;background:rgba(127,127,127,.08);"
+      + "border:1px solid rgba(127,127,127,.28);border-radius:7px;padding:2px 7px}",
+    scope + " input[type=text]:hover{border-color:rgba(127,127,127,.5)}",
+    scope + " input[type=text]:focus-visible{outline:2px solid rgba(120,170,255,.5);outline-offset:1px}",
+    scope + " [data-note-inline]{font-size:10px;opacity:.55;margin-left:6px}",
+    // 反应候选：一行 chips（和槽位选项同一套观感），选中的加底色。
+    scope + " [data-reaction-set]{padding:5px 0 2px}",
+    scope + " [data-reaction-set] [data-chips]{display:flex;flex-wrap:wrap;gap:4px;padding-top:4px}",
+    scope + " [data-reaction-set] [data-chips] button{font-size:10px;padding:2px 8px;"
+      + "border-radius:999px;border:1px solid rgba(127,127,127,.28);background:rgba(127,127,127,.08)}",
+    scope + " [data-reaction-set] [data-chips] button[data-on]{background:rgba(120,170,255,.28);"
+      + "border-color:rgba(120,170,255,.6)}",
     scope + " code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;"
       + "opacity:.7;font-variant-numeric:tabular-nums}",
 
@@ -2476,15 +2494,18 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     { key: "bubbleOffsetX", label: "气泡左右偏移 px", min: -240, max: 240, step: 2, group: "bubble" },
     { key: "bubbleOffsetY", label: "气泡上下偏移 px", min: -240, max: 240, step: 2, group: "bubble" },
     { key: "bubbleHoldMs", label: "一句话停留 ms", min: 800, max: 15000, step: 200, group: "bubble" },
-    { key: "spinTurns", label: "转几圈算晕", min: 1, max: 6, step: 0.5, group: "bubble" },
-    { key: "spinWindowMs", label: "要在多少 ms 内", min: 300, max: 6000, step: 100, group: "bubble" },
+    { key: "spinTurns", label: "转几圈算晕", min: 1, max: 6, step: 0.5, group: "interact" },
+    { key: "spinWindowMs", label: "要在多少 ms 内", min: 300, max: 6000, step: 100, group: "interact" },
   ];
   /** 可调项的分组（没写 group 的都归「手感」）。hint 显示在卡片右上角。 */
   const TUNING_GROUPS = [
     { id: "feel", label: "手感", hint: "指针 / 嘴 / 眨眼" },
     { id: "fidget", label: "摸鱼节奏", hint: "多久开始、间隔多长" },
-    { id: "bubble", label: "互动与气泡", hint: "转圈阈值 / 气泡位置" },
+    { id: "interact", label: "互动", hint: "摸头 / 摸尾巴 / 转圈" },
+    { id: "bubble", label: "气泡", hint: "显示什么 · 在哪" },
   ];
+  /** 这几组自己排进了「互动」「气泡」卡里，不要再单独出一张卡。 */
+  const TUNING_GROUPS_INLINE = ["fidget", "interact", "bubble"];
   const tuningGroupOf = (field) => field.group ?? "feel";
   const TUNING_KEY = "dsh-pet-live2d.settings.v1";
   /** 装扮存档的 key。放这里是因为开关（applyFlag）也要用它清存档。 */
@@ -2777,6 +2798,36 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         if (typeof flags[key] === "boolean") FLAGS[key] = flags[key];
       }
     }
+    // 互动反应候选：三组标签数组。
+    const interactions = saved.interactions;
+    if (interactions !== null && typeof interactions === "object") {
+      const next = {};
+      for (const [key, list] of Object.entries(interactions)) {
+        if (!Array.isArray(list)) continue;
+        const clean = list.filter((label) => typeof label === "string" && label !== "");
+        if (clean.length > 0) next[key] = clean;
+      }
+      if (Object.keys(next).length > 0) PHASE_OVERRIDES.interactions = next;
+    }
+    // 台词覆盖：两层（每条一组 + 相位的单句）。数组要清掉空串，否则 `[""]` 会被
+    // 当成"用户改过"，`linesNow()` 就永远拿不到宠物默认了。
+    const lines = saved.lines;
+    if (lines !== null && typeof lines === "object") {
+      const next = {};
+      for (const [key, value] of Object.entries(lines)) {
+        if (key === "phase") {
+          const phases = {};
+          for (const [phase, text] of Object.entries(value ?? {})) {
+            if (typeof text === "string") phases[phase] = text;
+          }
+          if (Object.keys(phases).length > 0) next.phase = phases;
+        } else if (Array.isArray(value)) {
+          const clean = value.filter((text) => typeof text === "string" && text !== "");
+          if (clean.length > 0) next[key] = clean;
+        }
+      }
+      if (Object.keys(next).length > 0) PHASE_OVERRIDES.lines = next;
+    }
   };
 
   /** 改一处覆盖：写进 store、存档、广播（两个设置界面立刻同步）。 */
@@ -2794,6 +2845,27 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           options: Object.assign({}, current.options, entry.options),
         };
       }
+    }
+    if (patch.interactions !== undefined) {
+      for (const [key, list] of Object.entries(patch.interactions)) {
+        PHASE_OVERRIDES.interactions[key] = Array.isArray(list) ? list.slice() : [];
+      }
+    }
+    // 台词是**两层**（每条一组，相位再一层），所以逐层合并 —— 直接 Object.assign 的话
+    // 改一句相位台词会把其它相位整片冲掉。
+    if (patch.lines !== undefined) {
+      const current = PHASE_OVERRIDES.lines ?? {};
+      const next = Object.assign({}, current);
+      for (const [key, value] of Object.entries(patch.lines)) {
+        if (key === "phase") {
+          next.phase = Object.assign({}, current.phase, value);
+        } else if (Array.isArray(value)) {
+          next[key] = value.slice();
+        } else if (typeof value === "string") {
+          next[key] = value;
+        }
+      }
+      PHASE_OVERRIDES.lines = next;
     }
     saveOverrides();
     notifySettings();
@@ -3218,6 +3290,15 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   const runReactionRef = { current: () => false };
 
   /**
+   * 转圈检测的读数（诊断用）。
+   *
+   * "绕着转圈没反应"这类问题必须能分辨**三种**可能：事件没来（moves 不动）、
+   * 累计不够（total 不涨）、还是触发了但被别的东西盖住（fires 涨了却没效果）。
+   * 只看最后那个"弹没弹台词"是分不出来的。
+   */
+  const spinStatsRef = { current: { moves: 0, total: 0, fires: 0 } };
+
+  /**
    * How long a session phase keeps replaying its motion.
    *
    * "持续播放" — a phase is a STATE, not an event, so a one-shot animation that
@@ -3584,6 +3665,27 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         fidgetSlots: Object.keys(PHASE_OVERRIDES.fidget),
         relationKeys: Object.keys(PHASE_OVERRIDES.relations),
         phases: Object.keys(PHASE_OVERRIDES.phases),
+        interactions: Object.keys(PHASE_OVERRIDES.interactions ?? {}),
+        lines: Object.keys(PHASE_OVERRIDES.lines ?? {}),
+        linePhases: Object.keys(PHASE_OVERRIDES.lines?.phase ?? {}),
+        flags: Object.assign({}, FLAGS),
+      });
+      // 台词的**有效值**（宠物默认 + 用户覆盖）—— "改文本"这类断言要能直接读到结果，
+      // 而不是去 DOM 里抠 input.value（那是"界面显示了什么"，不是"她真的会说什么"）。
+      api.effectiveLines = () => linesNow();
+      /** 某个互动的**有效**反应候选（同样是与宠物默认合并后的结果）。 */
+      api.effectiveReactions = (key) => interactionReactions(key);
+      /** 台词的字段清单（测试用它确认"每一个字段都有输入框"）。 */
+      api.lineFields = () => ({
+        plain: LINE_FIELDS.map((field) => field.key),
+        phase: PHASE_LINE_FIELDS.map((field) => field.key),
+      });
+      /** 转圈检测的读数：moves（事件到没到）/ total（累计角）/ fires（触发了几次）。 */
+      api.spinDebug = () => Object.assign({}, spinStatsRef.current, {
+        enabled: FLAGS.spinEnabled,
+        turns: TUNING.spinTurns,
+        windowMs: TUNING.spinWindowMs,
+        threshold: TUNING.spinTurns * Math.PI * 2,
       });
     }, []);
     /**
@@ -4086,12 +4188,14 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       let resting = false;
       focusDefault();
       resting = true;
-      // 转圈检测的状态：上一次的角度、累计转角、以及上次触发的时间（防连触）。
+      // 转圈检测的状态：上一次的角度、累计转角、这轮累计的起始时刻、上次触发时刻。
       let spinLastAngle = null;
       let spinTotal = 0;
+      let spinStartedAt = 0;
       let spinLastFire = 0;
       const spinTrack = (rect, x, y) => {
         if (!FLAGS.spinEnabled) return;
+        spinStatsRef.current.moves += 1;
         const cx = rect.width / 2;
         const cy = rect.height / 2;
         const dx = x - cx;
@@ -4101,6 +4205,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         const angle = Math.atan2(dy, dx);
         if (spinLastAngle === null) {
           spinLastAngle = angle;
+          spinStartedAt = Date.now();
           return;
         }
         let delta = angle - spinLastAngle;
@@ -4108,14 +4213,22 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         if (delta > Math.PI) delta -= Math.PI * 2;
         if (delta < -Math.PI) delta += Math.PI * 2;
         spinLastAngle = angle;
-        spinTotal += delta;
         const now = Date.now();
-        // 时间窗过了就清零：慢悠悠地转不算"转圈"。
-        if (now - spinLastFire > TUNING.spinWindowMs + 400 && Math.abs(spinTotal) < Math.PI) spinTotal = 0;
+        // "要在多少 ms 内转够 N 圈"：窗口从**这轮累计开始**算起，超时就整轮作废、
+        // 从这一下重新开始。原来写的是 `now - spinLastFire > 窗口` —— 那个值一开始
+        // 恒大于窗口，于是每次移动都把累计清零，永远攒不到 π（诊断读口里 total 一直是 0.07）。
+        if (now - spinStartedAt > TUNING.spinWindowMs) {
+          spinTotal = 0;
+          spinStartedAt = now;
+        }
+        spinTotal += delta;
+        spinStatsRef.current.total = spinTotal;
         if (Math.abs(spinTotal) < TUNING.spinTurns * Math.PI * 2) return;
         if (now - spinLastFire < 1500) return;
         spinTotal = 0;
+        spinStartedAt = now;
         spinLastFire = now;
+        spinStatsRef.current.fires += 1;
         lastInteraction.current = now;
         const list = interactionReactions("spinReactions");
         if (list.length > 0) runReactionRef.current(pick(list));
@@ -5960,6 +6073,129 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
    * 按标签页条件渲染的 —— 一切到"设置"，Pet 的 hook 数量就变了，React 会抛
    * "Rendered more hooks than during the previous render" 并把**整只宠物**卸载。
    */
+  /** 设置页里每条台词的标题（顺序 = 显示顺序）。 */
+  const LINE_FIELDS = [
+    { key: "greet", label: "开始的时候" },
+    { key: "click", label: "点她身上（不是头和尾巴）" },
+    { key: "pat", label: "摸摸头" },
+    { key: "tail", label: "摸尾巴" },
+    { key: "spin", label: "被转晕" },
+    { key: "reset", label: "点「归位」" },
+    { key: "loadFailed", label: "模型加载失败" },
+  ];
+  const PHASE_LINE_FIELDS = [
+    { key: "thinking", label: "思考中" },
+    { key: "tool", label: "用工具" },
+    { key: "waiting", label: "等你批准" },
+    { key: "asking", label: "等你回答" },
+    { key: "helper", label: "叫了帮手" },
+    { key: "queued", label: "消息排队" },
+    { key: "done", label: "这一轮完成" },
+    { key: "failed", label: "出错" },
+  ];
+
+  /**
+   * 互动：三个开关 + 三套反应候选。
+   *
+   * 候选直接用**宠物自己的清单**（动作的中文名 + 表情名），用户不用记 id —— 
+   * `runReaction()` 也是这个顺序：先当动作组找，找不到就闪一下表情。
+   */
+  function InteractControls() {
+    useSettings();
+    const listFor = (key) => {
+      const mine = PHASE_OVERRIDES.interactions?.[key];
+      if (Array.isArray(mine) && mine.length > 0) return mine;
+      const base = MANIFEST.current?.[key];
+      return Array.isArray(base) ? base : [];
+    };
+    const toggle = (key, label) => {
+      const next = listFor(key).slice();
+      const at = next.indexOf(label);
+      if (at >= 0) next.splice(at, 1);
+      else next.push(label);
+      applyOverride({ interactions: { [key]: next } });
+    };
+    const pet = MANIFEST.current ?? {};
+    const candidates = Array.from(new Set([
+      ...(pet.motions ?? []).map((motion) => motion.label),
+      ...(pet.expressions ?? []).map((expression) => expression.label),
+    ].filter((label) => typeof label === "string" && label !== "")));
+    const switchRow = (key, label, note) => h("label", { "data-flag-row": key },
+      h("input", {
+        type: "checkbox",
+        checked: FLAGS[key] === true,
+        "data-flag": key,
+        onChange: (event) => applyFlag(key, event.target.checked),
+      }),
+      h("span", { "data-row-label": "" }, label),
+      note === undefined ? null : h("span", { "data-note-inline": "" }, note),
+    );
+    const reactionRow = (key, title, note) => h("div", { "data-reaction-set": key },
+      h("div", { "data-row-label": "" }, title, note === undefined ? null : h("span", { "data-note-inline": "" }, note)),
+      h("div", { "data-chips": "" }, candidates.length === 0
+        ? h("span", { "data-note-inline": "" }, "这只宠物没有可选的动作/表情")
+        : candidates.map((label) => {
+          const on = listFor(key).includes(label);
+          return h("button", {
+            key: label,
+            type: "button",
+            "data-reaction-chip": key + ":" + label,
+            ...(on ? { "data-on": "" } : {}),
+            onClick: () => toggle(key, label),
+          }, label);
+        })),
+    );
+    return h("div", { "data-settings": "", "data-setting": "interact" },
+      switchRow("patEnabled", "摸头有反应"),
+      switchRow("tailEnabled", "摸尾巴有反应"),
+      switchRow("spinEnabled", "鼠标绕着转圈会晕"),
+      h(TuningControls, { key: "spin", group: "interact" }),
+      reactionRow("patReactions", "摸头时演什么", "（随机一个）"),
+      reactionRow("tailReactions", "摸尾巴时演什么", "（随机一个）"),
+      reactionRow("spinReactions", "转晕时演什么", "（随机一个）"),
+    );
+  }
+
+  /**
+   * 台词：所有气泡文本。
+   *
+   * 一组 = 一行输入，**用 `|` 分隔多个变体**（随机挑一句）；相位台词是单句。
+   * 留空就退回宠物默认（`pet.json` 的 `live2d.lines`），所以"看一眼"不会把默认改掉。
+   */
+  function LineControls() {
+    useSettings();
+    const effective = linesNow();
+    const setLines = (patch) => applyOverride({ lines: patch });
+    const row = (id, label, value, onInput, placeholder) => h("label", { "data-line-row": id },
+      h("span", { "data-row-label": "" }, label),
+      h("input", {
+        type: "text",
+        value,
+        placeholder,
+        "data-line-input": id,
+        onChange: (event) => onInput(event.target.value),
+      }),
+    );
+    return h("div", { "data-settings": "", "data-setting": "lines" },
+      h("div", { "data-note": "" }, "多个变体用 | 分隔（随机挑一句）。留空 = 用宠物默认。"),
+      ...LINE_FIELDS.map((field) => row(
+        field.key,
+        field.label,
+        joinLineInput(effective[field.key]),
+        (text) => setLines({ [field.key]: splitLineInput(text) }),
+        joinLineInput(MANIFEST.current?.lines?.[field.key]),
+      )),
+      h("div", { "data-row-label": "", "data-note": "" }, "会话相位"),
+      ...PHASE_LINE_FIELDS.map((field) => row(
+        "phase:" + field.key,
+        field.label,
+        effective.phase?.[field.key] ?? "",
+        (text) => setLines({ phase: { [field.key]: text } }),
+        MANIFEST.current?.lines?.phase?.[field.key] ?? "",
+      )),
+    );
+  }
+
   function PetSettingsBody() {
     useSettings();
     const card = (key, title, hint, body) => h("div", { key, "data-card": key },
@@ -5970,7 +6206,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       h("div", { "data-card-body": "" }, body),
     );
     return [
-      ...TUNING_GROUPS.filter((group) => group.id !== "fidget").map((group) => card(
+      ...TUNING_GROUPS.filter((group) => !TUNING_GROUPS_INLINE.includes(group.id)).map((group) => card(
         "tune-" + group.id, group.label, group.hint, h(TuningControls, { group: group.id }))),
       card("phases", "会话相位", "每个相位一组池子", h(PhaseControls, null)),
       // 「摸鱼节奏」（多久摸一次）和「摸鱼」（摸鱼做什么）是同一件事的两半，原来
@@ -5980,6 +6216,22 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         h(FidgetControls, { key: "pools" }),
       ]),
       card("outfit", "装扮", null, h(OutfitControls, null)),
+      // 互动与气泡：开关、反应候选、以及**所有**气泡文本都在这两张卡里。
+      card("interact", "互动", "摸头 / 摸尾巴 / 转圈", h(InteractControls, null)),
+      card("bubble", "气泡", "显示什么 · 在哪 · 停留多久", [
+        h("label", { "data-flag-row": "bubbleEnabled" },
+          h("input", {
+            type: "checkbox",
+            checked: FLAGS.bubbleEnabled === true,
+            "data-flag": "bubbleEnabled",
+            onChange: (event) => applyFlag("bubbleEnabled", event.target.checked),
+          }),
+          h("span", { "data-row-label": "" }, "显示气泡"),
+          h("span", { "data-note-inline": "" }, FLAGS.bubbleEnabled ? "" : "已关：任何台词都不弹"),
+        ),
+        h(TuningControls, { key: "bubble", group: "bubble" }),
+        h(LineControls, { key: "lines" }),
+      ]),
     ];
   }
 
