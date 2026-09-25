@@ -311,25 +311,36 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       const parent = raw?.drawables?.parentPartIndices;
       const partIds = raw?.parts?.ids;
       const coreIds = raw?.drawables?.ids;
-      if (parent === undefined || partIds === undefined) return null;
+      if (parent === undefined || partIds === undefined || coreIds === undefined) return null;
       const ids = Array.from(partIds).map(String);
       if (ids.length === 0 || parts.length === 0) return null;
       const wanted = new Set(parts);
+      const coreIndexById = new Map();
+      for (let i = 0; i < coreIds.length; i += 1) coreIndexById.set(String(coreIds[i]), i);
+      // **以包装层的顺序为主**：顶点就是按 `internalModel.getDrawableIDs()` 的顺序读的
+      // （单块 `drawableProbe` 走得通的正是这条路）。反过来"遍历原始表再翻译下标"，
+      // 只要两套顺序有一处不一致，取到的顶点就是别的 drawable —— 表现就是"几何明明
+      // 又大又真，聚合判定一个都不中"。这里逐个 id 反查它属于哪个部件，不存在歧义。
+      const wrapperIds = typeof im?.getDrawableIDs === "function"
+        ? Array.from(im.getDrawableIDs()).map(String)
+        : null;
       const out = [];
-      for (let i = 0; i < parent.length; i += 1) {
-        const partIndex = parent[i];
-        if (partIndex < 0 || partIndex >= ids.length) continue;
-        if (!wanted.has(ids[partIndex])) continue;
-        // **下标空间要对齐**：读顶点的是包装层（`internalModel.getDrawableVertices`），
-        // 而这里拿到的是引擎原始表的下标 —— 两套顺序不保证一致（这只模型里就不一致：
-        // 头部那批碰巧对得上，尾巴那批全部错位，于是"几何明明又大又真，判定一个都不中"）。
-        // 用 id 映射一次，一致时是恒等，不一致时也不会张冠李戴。
-        let index = i;
-        if (coreIds !== undefined && typeof im?.getDrawableIndex === "function") {
-          const mapped = im.getDrawableIndex(String(coreIds[i]));
-          if (mapped >= 0) index = mapped;
+      if (wrapperIds !== null) {
+        for (let w = 0; w < wrapperIds.length; w += 1) {
+          const coreIndex = coreIndexById.get(wrapperIds[w]);
+          if (coreIndex === undefined) continue;
+          const partIndex = parent[coreIndex];
+          if (partIndex === undefined || partIndex < 0 || partIndex >= ids.length) continue;
+          if (!wanted.has(ids[partIndex])) continue;
+          out.push({ id: wrapperIds[w], index: w, coreIndex, part: partIndex });
         }
-        out.push({ index, coreIndex: i, part: partIndex });
+      } else {
+        for (let i = 0; i < parent.length; i += 1) {
+          const partIndex = parent[i];
+          if (partIndex < 0 || partIndex >= ids.length) continue;
+          if (!wanted.has(ids[partIndex])) continue;
+          out.push({ id: String(coreIds[i]), index: i, coreIndex: i, part: partIndex });
+        }
       }
       return out.length > 0 ? out : null;
     };
@@ -370,25 +381,30 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     const hitsPartsGeometry = (indices, x, y) => {
       const im = model?.internalModel;
       if (im === undefined || im === null) return null;
-      // 顶点在**包装层**、三角形索引在**core 层**（实测：`im` 有 getDrawableVertices，
-      // `im.coreModel` 才有 getDrawableVertexIndices）—— 只查一个就会静默返回 null、
-      // 悄悄退回方框判定。两边各取所长。
+      // 顶点用**包装层**的（core 的 `getDrawableVertices` 不在同一个坐标空间里：整条换成
+      // core 之后连头部判定都变成 0 命中）。三角形索引只有 core 有；两套按**同一个下标**
+      // 取用时是自洽的（单块 `drawableProbe` 用同一组合能命中，已实测）。
+      const core = im.coreModel;
       const verticesOf = typeof im.getDrawableVertices === "function"
         ? (index) => im.getDrawableVertices(index)
-        : (typeof im.coreModel?.getDrawableVertices === "function"
-          ? (index) => im.coreModel.getDrawableVertices(index)
-          : null);
-      const indicesOf = typeof im.getDrawableVertexIndices === "function"
-        ? (index) => im.getDrawableVertexIndices(index)
-        : (typeof im.coreModel?.getDrawableVertexIndices === "function"
-          ? (index) => im.coreModel.getDrawableVertexIndices(index)
-          : null);
+        : (typeof core?.getDrawableVertices === "function" ? (index) => core.getDrawableVertices(index) : null);
+      const indicesOf = typeof core?.getDrawableVertexIndices === "function"
+        ? (index) => core.getDrawableVertexIndices(index)
+        : (typeof im.getDrawableVertexIndices === "function" ? (index) => im.getDrawableVertexIndices(index) : null);
       if (verticesOf === null || indicesOf === null) return null;
       if (indices === null) return null;
       let read = false;
       try {
         for (const entry of indices) {
-          const verts = verticesOf(entry.index);
+          // **调用时用 id 重新解一次下标**，别信缓存的 `entry.index`：
+          // 单块 `drawableProbe` 走得通、聚合路径走不通，两者剩下的唯一差别就是这个
+          // （它每次都用 id 现查，聚合路径用映射时算好并存下来的那份）。
+          let index = entry.index;
+          if (typeof entry.id === "string" && typeof im.getDrawableIndex === "function") {
+            const fresh = im.getDrawableIndex(entry.id);
+            if (fresh >= 0) index = fresh;
+          }
+          const verts = verticesOf(index);
           if (verts === undefined || verts === null || verts.length < 6) continue;
           read = true;
           // 先用这个 drawable 的包围盒排除（绝大多数部件一眼就出局，不用扫三角形）。
@@ -2125,6 +2141,16 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
             box: maxX > minX ? { minX: Math.round(minX), maxX: Math.round(maxX), minY: Math.round(minY), maxY: Math.round(maxY) } : null,
             hitsAll,
             hitsVisible,
+            // 每块报：id / 包装层下标 / 原始表下标。
+            // **别再在这里调 `api.xxx`**：`api` 是控制器返回出去的那个对象，控制器内部
+            // 看不到它 —— 调了就是 `api is not defined`，整个函数抛异常、所有读数变 0，
+            // 而外面看起来像"这个部件完全没有几何"（我为此白查了三轮）。
+            entries: entries.map((entry) => ({
+              id: entry.id ?? null,
+              index: entry.index,
+              core: entry.coreIndex,
+              part: entry.part,
+            })),
           });
         }
         return out;

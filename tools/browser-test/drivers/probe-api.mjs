@@ -74,11 +74,26 @@ const overlap = JSON.parse(await ev(`(() => {
   return JSON.stringify({ both, head, tail })
 })()`))
 console.log('重叠统计:', JSON.stringify(overlap))
+// **真正在用的那个函数**：hitsTail 在网格上的命中数（别再信诊断函数）。
+const realTail = await ev(`(() => {
+  const c = window.__dshLive2dPet
+  const r = document.querySelector('[data-dsh-live2d-pet] [data-stage]').getBoundingClientRect()
+  let hits = 0, first = null
+  for (let iy = 0; iy < 48; iy++) {
+    for (let ix = 0; ix < 48; ix++) {
+      const lx = r.width * (ix + 0.5) / 48, ly = r.height * (iy + 0.5) / 48
+      if (c.hitsTail(lx, ly)) { hits += 1; if (first === null) first = { lx: Math.round(lx), ly: Math.round(ly) } }
+    }
+  }
+  return JSON.stringify({ hits, first })
+})()`)
+console.log('hitsTail 真实命中数（48x48 网格）:', realTail)
 // 逐部件：它在判定网格里贡献了多少命中点（过滤前 / 过滤后）+ drawable 透明度范围。
 const perPart = JSON.parse((await ev(`(() => {
   try { return JSON.stringify(window.__dshLive2dPet.partHitCounts('tail')) } catch (e) { return JSON.stringify({ error: String(e && e.message || e) }) }
 })()`)) ?? '[]')
 console.log('--- 每个尾巴部件（模型空间采样）---')
+console.log('RAW ' + JSON.stringify(perPart))
 for (const p of (Array.isArray(perPart) ? perPart : [perPart])) {
   console.log('  ' + String(p.id).padEnd(22) + ' part=' + String(p.partIndex).padEnd(5)
     + ' draw=' + String(p.drawables).padEnd(3) + ' opa=' + String(p.opacityMin) + '..' + String(p.opacityMax)
