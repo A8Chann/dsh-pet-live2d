@@ -101,4 +101,23 @@ const s2 = await sample()
 let diff = 0
 for (let i = 0; i < Math.min(s1.length, s2.length); i += 1) if (s1[i] !== s2[i]) diff += 1
 console.log('头部判定区域 2.5 秒内变化的格子数:', diff, '/', s1.length)
+// 对每个 drawable 单测三角面判定：头部那几个应该中，尾巴那几个应该也中。
+for (const id of ['Face_line', 'lianhong', 'ArtMesh75', 'ArtMesh36', 'ArtMesh38', 'ArtMesh253']) {
+  console.log('  probe ' + id.padEnd(14) + ' -> ' + await ev(`(() => {
+    try { return JSON.stringify(window.__dshLive2dPet.drawableProbe(${JSON.stringify(id)})) }
+    catch (e) { return 'THREW: ' + String(e && e.message || e) }
+  })()`))
+}
+// 全部 drawable：所属部件名 + 包围盒。找"她身上真正在画尾巴的那一个"。
+const all = JSON.parse((await ev(`(() => {
+  try { return JSON.stringify(window.__dshLive2dPet.drawableTable()) } catch (e) { return JSON.stringify({ error: String(e && e.message || e) }) }
+})()`)) ?? '[]')
+console.log('--- 全部 drawable（' + (Array.isArray(all) ? all.length : '?') + ' 个，按 v 坐标（越大越高）倒序）---')
+if (Array.isArray(all)) {
+  const rows = all.slice().sort((a, b) => (b.box ? b.box.maxY : -1e9) - (a.box ? a.box.maxY : -1e9))
+  for (const r of rows) {
+    console.log('  ' + String(r.id).padEnd(22) + ' part=' + String(r.partName).padEnd(14)
+      + ' v=' + String(r.vertexCount).padEnd(5) + ' box=' + JSON.stringify(r.box))
+  }
+}
 ws.close(); edge.kill(); server.kill(); await sleep(300); process.exit(0)

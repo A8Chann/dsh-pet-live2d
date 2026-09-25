@@ -307,8 +307,10 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
      */
     const drawableIndicesForParts = (parts) => {
       const raw = model?.internalModel?.coreModel?._model;
+      const im = model?.internalModel;
       const parent = raw?.drawables?.parentPartIndices;
       const partIds = raw?.parts?.ids;
+      const coreIds = raw?.drawables?.ids;
       if (parent === undefined || partIds === undefined) return null;
       const ids = Array.from(partIds).map(String);
       if (ids.length === 0 || parts.length === 0) return null;
@@ -318,7 +320,16 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         const partIndex = parent[i];
         if (partIndex < 0 || partIndex >= ids.length) continue;
         if (!wanted.has(ids[partIndex])) continue;
-        out.push({ index: i, part: partIndex });
+        // **下标空间要对齐**：读顶点的是包装层（`internalModel.getDrawableVertices`），
+        // 而这里拿到的是引擎原始表的下标 —— 两套顺序不保证一致（这只模型里就不一致：
+        // 头部那批碰巧对得上，尾巴那批全部错位，于是"几何明明又大又真，判定一个都不中"）。
+        // 用 id 映射一次，一致时是恒等，不一致时也不会张冠李戴。
+        let index = i;
+        if (coreIds !== undefined && typeof im?.getDrawableIndex === "function") {
+          const mapped = im.getDrawableIndex(String(coreIds[i]));
+          if (mapped >= 0) index = mapped;
+        }
+        out.push({ index, coreIndex: i, part: partIndex });
       }
       return out.length > 0 ? out : null;
     };
@@ -2117,6 +2128,116 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           });
         }
         return out;
+      },
+      /**
+       * Diagnostic: 全部 drawable 的 id / 所属部件名 / 顶点数 / 包围盒（模型空间）。
+       *
+       * 找"她身上真正在画尾巴的那一个"用这个：作者给**部件**起了中文名（尾巴翅膀/猫尾/
+       * 大翅膀…），但 drawable 本身多半叫 `ArtMesh123`。按包围盒的位置就能认出来
+       * （尾巴在身体下后方、翅膀在两侧）。
+       */
+      drawableTable: () => {
+        const im = model?.internalModel;
+        const raw = im?.coreModel?._model;
+        const ids = typeof im?.getDrawableIDs === "function" ? Array.from(im.getDrawableIDs()).map(String) : [];
+        const partIds = raw?.parts?.ids === undefined ? [] : Array.from(raw.parts.ids).map(String);
+        const parent = raw?.drawables?.parentPartIndices;
+        const cdi3Names = MANIFEST.current?.partNames ?? {};
+        return ids.map((id, index) => {
+          const partIndex = parent === undefined ? -1 : parent[index];
+          const partId = partIndex >= 0 && partIndex < partIds.length ? partIds[partIndex] : null;
+          let minX = Infinity;
+          let minY = Infinity;
+          let maxX = -Infinity;
+          let maxY = -Infinity;
+          let vertexCount = 0;
+          try {
+            const verts = im?.getDrawableVertices?.(index);
+            if (verts !== undefined && verts !== null) {
+              vertexCount = Math.floor(verts.length / 2);
+              for (let k = 0; k < verts.length; k += 2) {
+                if (verts[k] < minX) minX = verts[k];
+                if (verts[k] > maxX) maxX = verts[k];
+                if (verts[k + 1] < minY) minY = verts[k + 1];
+                if (verts[k + 1] > maxY) maxY = verts[k + 1];
+              }
+            }
+          } catch {
+            /* 跳过 */
+          }
+          return {
+            id,
+            index,
+            partId,
+            partName: partId === null ? "(无部件)" : (cdi3Names[partId] ?? partId),
+            vertexCount,
+            box: maxX > minX ? { minX: Math.round(minX), maxX: Math.round(maxX), minY: Math.round(minY), maxY: Math.round(maxY) } : null,
+          };
+        });
+      },
+      /**
+       * Diagnostic: 单看一个 drawable 的三角面判定为什么命中/不命中。
+       *
+       * 头部判定好用、尾巴判定一个都不中（而它的几何明明又大又真）——这种"同一段代码
+       * 对不同 drawable 表现不同"的问题，只能把中间量摊开看：顶点数、索引数、索引范围、
+       * 以及用**它自己的重心**去测的结果。
+       */
+      drawableProbe: (id) => {
+        const im = model?.internalModel;
+        const index = typeof im?.getDrawableIndex === "function" ? im.getDrawableIndex(id) : -1;
+        if (index < 0) return { id, found: false };
+        const vertices = im?.getDrawableVertices?.(index);
+        const indices = (typeof im?.getDrawableVertexIndices === "function"
+          ? im.getDrawableVertexIndices(index)
+          : im?.coreModel?.getDrawableVertexIndices?.(index));
+        const verts = vertices === undefined || vertices === null ? [] : Array.from(vertices);
+        const idx = indices === undefined || indices === null ? [] : Array.from(indices);
+        let minIndex = Infinity;
+        let maxIndex = -Infinity;
+        for (const value of idx) {
+          if (value < minIndex) minIndex = value;
+          if (value > maxIndex) maxIndex = value;
+        }
+        const vertexCount = Math.floor(verts.length / 2);
+        // 用顶点的平均位置当查询点：它一定在几何内部（凸的情况下）。
+        let sumX = 0;
+        let sumY = 0;
+        for (let i = 0; i < verts.length; i += 2) {
+          sumX += verts[i];
+          sumY += verts[i + 1];
+        }
+        const cx = vertexCount === 0 ? 0 : sumX / vertexCount;
+        const cy = vertexCount === 0 ? 0 : sumY / vertexCount;
+        let triangles = 0;
+        let degenerate = 0;
+        let contains = 0;
+        for (let i = 0; i + 2 < idx.length; i += 3) {
+          triangles += 1;
+          const a = idx[i];
+          const b = idx[i + 1];
+          const c = idx[i + 2];
+          if (a * 2 + 1 >= verts.length || b * 2 + 1 >= verts.length || c * 2 + 1 >= verts.length) continue;
+          const area = (verts[b * 2] - verts[a * 2]) * (verts[c * 2 + 1] - verts[a * 2 + 1])
+            - (verts[c * 2] - verts[a * 2]) * (verts[b * 2 + 1] - verts[a * 2 + 1]);
+          if (Math.abs(area) < 1e-6) {
+            degenerate += 1;
+            continue;
+          }
+          if (pointInTriangle(cx, cy, verts, a, b, c)) contains += 1;
+        }
+        return {
+          id,
+          found: true,
+          index,
+          vertexCount,
+          indexCount: idx.length,
+          minIndex: Number.isFinite(minIndex) ? minIndex : null,
+          maxIndex: Number.isFinite(maxIndex) ? maxIndex : null,
+          triangles,
+          degenerate,
+          centroidHits: contains,
+          centroid: { x: Math.round(cx), y: Math.round(cy) },
+        };
       },
       /**
        * Play a motion with its declared policy applied; used by the panel, the

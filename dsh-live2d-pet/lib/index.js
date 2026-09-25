@@ -356,6 +356,31 @@ function readReactionList(value) {
   return Array.isArray(value) ? value.filter((name) => typeof name === 'string' && name !== '') : []
 }
 
+/**
+ * 部件 id → 作者给的中文名（`Part46` → `脸蛋`）。
+ *
+ * 诊断用（`drawableTable()`）：把 drawable 归到有意义的部件名下，才能一眼看出
+ * "她身上真正在画尾巴的是哪个 drawable" —— 光看 `ArtMesh123` 是认不出来的。
+ */
+function readPartNames(dir, modelPath) {
+  try {
+    const base = modelPath.replace(/\.model3\.json$/i, '')
+    const file = findCdi3(dir, base)
+    if (file === undefined) return {}
+    const parts = readJson(file)?.Parts
+    if (!Array.isArray(parts)) return {}
+    const out = {}
+    for (const part of parts) {
+      if (part === null || typeof part !== 'object') continue
+      if (typeof part.Id !== 'string' || typeof part.Name !== 'string') continue
+      if (part.Name !== '') out[part.Id] = part.Name
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
+
 /** Scan one pet directory into a catalog entry, or undefined when unusable. */
 export function scanPet(dir, id) {
   const manifestFile = join(dir, 'pet.json')
@@ -512,6 +537,8 @@ export function scanPet(dir, id) {
     // 空数组 = 没 cdi3 或没挑到，浏览器半区退回旧行为。
     headParts: readPartsMatching(dir, modelPath, HEAD_PART_NAME_HINTS),
     tailParts: readPartsMatching(dir, modelPath, TAIL_PART_NAME_HINTS),
+    // 部件 id → 中文名（诊断用，见客户端 drawableTable()）。
+    partNames: readPartNames(dir, modelPath),
     // 台词：宠物自己的声音（问候 / 点击 / 摸头 / 摸尾巴 / 转晕 / 归位 / 每个相位）。
     // 用户能在设置里逐条改，改过的存浏览器；这里是**默认值**。
     lines: typeof block.lines === 'object' && block.lines !== null ? block.lines : {},
@@ -719,6 +746,7 @@ function catalogRoute() {
           motionGuards: pet.motionGuards,
           headParts: pet.headParts,
           tailParts: pet.tailParts,
+          partNames: pet.partNames,
           lines: pet.lines,
           patReactions: pet.patReactions,
           tailReactions: pet.tailReactions,
