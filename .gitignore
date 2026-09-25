@@ -36,6 +36,9 @@ local-assets/
 out.txt
 push.out
 push.err
+# driver / 套件的输出重定向（`node run-suite.mjs > suite.txt`）。同样是"每次跑都会变"
+# 的东西，不是源码 —— 一并中招过一次。
+tools/browser-test/*.txt
 
 # ---- proprietary runtime ----
 # Live2D Cubism Core must be obtained from Live2D Inc. by the user.
