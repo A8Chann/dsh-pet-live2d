@@ -7,7 +7,7 @@
 //   node tools/probe-client-load.mjs
 import { createServer } from 'node:http'
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { DESKTOP, PLUGIN, ROOT } from './paths.mjs'
 
@@ -80,12 +80,15 @@ socket.addEventListener('message', (event) => {
   }
   events.push(message)
 })
-await new Promise((resolve) => {
+// 开两个域（用上面那个 `send`）。
+/** CDP 命令。名字带 cdp 前缀：文件开头那个 `send` 是给 HTTP 响应用的。 */
+const cdpSend = (method, params) => new Promise((resolve) => {
   const id = ++seq
-  pending.set(id, resolve)
-  socket.send(JSON.stringify({ id, method: 'Runtime.enable' }))
-  socket.send(JSON.stringify({ id: id + 1, method: 'Page.enable' }))
+  pending.set(id, (message) => resolve(message))
+  socket.send(JSON.stringify({ id, method, params: params ?? {} }))
 })
+await cdpSend('Runtime.enable')
+await cdpSend('Page.enable')
 const evaluate = (expression) => new Promise((resolve) => {
   const id = ++seq
   pending.set(id, (message) => resolve(message.result?.result?.value))
@@ -122,6 +125,34 @@ console.log('  卡片 : ' + await evaluate('JSON.stringify([...document.querySel
 console.log('  显示位置那张卡的按钮 : ' + await evaluate('JSON.stringify([...document.querySelectorAll("#dsh-settings-probe [data-layer-options] button")].map((n) => n.textContent))'))
 console.log('  状态行 : ' + await evaluate('String(document.querySelector("#dsh-settings-probe [data-layer-status]")?.textContent ?? "(没有)")'))
 console.log('  渲染期间的异常 : ' + await evaluate('JSON.stringify(window.__errors ?? [])'))
+
+// 布局/观感的**确定信号**：药丸按钮该是圆的、并排的、比正文小。CSS 没生效时这三条全变 ——
+// 比"截图看着对不对"可靠，也比"类名在不在"有意义。（真的踩过：选项挤成一行字。）
+const chips = JSON.parse(await evaluate(`JSON.stringify([...document.querySelectorAll('#dsh-settings-probe [data-layer-options] button')].map((n) => {
+  const style = getComputedStyle(n);
+  const box = n.getBoundingClientRect();
+  return { text: n.textContent, radius: style.borderRadius, w: Math.round(box.width), h: Math.round(box.height), top: Math.round(box.top) };
+}))`))
+console.log('  药丸实测 : ' + JSON.stringify(chips))
+console.log('  ' + (chips.length === 3 && new Set(chips.map((c) => c.top)).size === 1 ? 'PASS' : 'FAIL')
+  + ' 三个选项排在同一行  [' + JSON.stringify(chips.map((c) => c.top)) + ']')
+console.log('  ' + (chips.every((c) => c.radius === '999px') ? 'PASS' : 'FAIL')
+  + ' 选项是胶囊形状  [' + JSON.stringify(chips.map((c) => c.radius)) + ']')
+console.log('  ' + (chips.every((c) => c.w < 90 && c.h < 32) ? 'PASS' : 'FAIL')
+  + ' 选项紧凑（不是正文大小）  [' + JSON.stringify(chips.map((c) => [c.w, c.h])) + ']')
+
+// 截图证据：CSS 回归时最直观的一份。
+await send('Page.enable')
+const shot = await cdpSend('Page.captureScreenshot', { format: 'png' })
+console.log('  截图的原始响应 : ' + JSON.stringify(shot).slice(0, 200))
+if (typeof shot?.result?.data === 'string') {
+  const target = join(DESKTOP, 'shots', 'settings-section.png')
+  mkdirSync(join(DESKTOP, 'shots'), { recursive: true })
+  writeFileSync(target, Buffer.from(shot.result.data, 'base64'))
+  console.log('  截图 : ' + target)
+} else {
+  console.log('  截图 : 失败（' + JSON.stringify(shot?.error ?? shot).slice(0, 120) + '）')
+}
 
 console.log('--- 页面里的异常明细')
 for (const event of events) {

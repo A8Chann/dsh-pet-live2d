@@ -33,9 +33,13 @@ export const SUITE = {
  * 命中、DOM 数量、状态机终态），对帧率不敏感；而没在表里的那些会用固定 sleep 去等缓动，
  * 机器一吃力就读到半途的值。
  *
- * 这份名单**是用失败换来的**，别凭感觉往里加：6 并发那一轮实测红了 6 条，其中
- * `cdp-interact`（摸尾巴那条几何断言）与 `cdp-react-defaults` 就是这样被挪出来的；
- * 剩下 4 条（motion / idle-return / head / bubble）本来就是"等缓动"型的。
+ * 这份名单**是用失败换来的**，别凭感觉往里加：
+ *
+ *   * 6 并发那一轮红了 6 条 → `cdp-interact`、`cdp-react-defaults` 挪进独占；
+ *   * 后来 `cdp-host-events` 在 3/4 并发下**快速失败**（6.9s，断言级、不是超时）→ 也挪走。
+ *     它要驱动活动中枢（`/__nudge` / `/__emit`）再读相位，对时序比别的敏感。
+ *
+ * 往这里加之前，先在 `--jobs 3` 与 `--jobs 4` 下各跑几遍（实测，不是推理）。
  */
 export const PARALLEL_SAFE = new Set([
   'test-host-sync.mjs',
@@ -44,7 +48,6 @@ export const PARALLEL_SAFE = new Set([
   'cdp-dpr.mjs',
   'cdp-merge.mjs',
   'cdp-handoff2.mjs',
-  'cdp-host-events.mjs',
   'cdp-passthrough.mjs',
   'cdp-phase.mjs',
   'cdp-exp.mjs',

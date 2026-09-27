@@ -1373,6 +1373,13 @@ function layerRoute(display) {
         try {
           for await (const chunk of request) body += chunk
           const parsed = JSON.parse(body === '' ? '{}' : body)
+          // `{action:"download-desktop"}`：把平台子包拉下来。**先回话、后台下** ——
+          // 让这个请求等 5MB 下完的话，页面每秒的轮询会被堵住，观感是"卡住了"。
+          if (parsed.action === 'download-desktop') {
+            const started = display.startDownload()
+            sendJson(response, 200, { ok: true, download: started, ...display.reconcile(), binary: display.binaryInfo() })
+            return
+          }
           display.setMode(parsed.mode)
         } catch {
           sendJson(response, 400, { ok: false, error: 'bad-body' })
@@ -1391,6 +1398,8 @@ function layerRoute(display) {
       sendJson(response, 200, {
         ok: true,
         ...status,
+        // 下载进度：设置页靠每秒的轮询把它显示出来。
+        download: display.downloadState(),
         // 二进制在不在 —— 设置页那一行要如实告诉用户"下一句该干什么"。
         binary: display.binaryInfo(),
       })

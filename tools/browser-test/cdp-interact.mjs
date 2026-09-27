@@ -11,7 +11,7 @@ import { spawn } from 'node:child_process'
 import { rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { browserPath, PROFILES, BASE } from './paths.mjs'
-import { waitReady, openPanel, pageErrors } from './ready.mjs'
+import { waitReady, openPanel, pageErrors, killBrowser } from './ready.mjs'
 import { waitForBoot } from './wait-for.mjs'
 
 const EDGE = browserPath()
@@ -423,6 +423,6 @@ check('页面里没有未捕获异常', errors.length === 0, JSON.stringify(erro
 const bad = results.filter((r) => !r.ok)
 console.log((bad.length === 0 ? 'OK' : 'FAILED') + '  ' + (results.length - bad.length) + '/' + results.length + ' checks passed')
 ws.close()
-edge.kill()
+killBrowser(edge)
 await sleep(300)
 process.exit(bad.length === 0 ? 0 : 1)

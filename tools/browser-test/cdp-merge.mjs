@@ -19,7 +19,7 @@ import { spawn } from 'node:child_process'
 import { rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { browserPath, PROFILES, BASE } from './paths.mjs'
-import { waitReady, openPanel } from './ready.mjs'
+import { waitReady, openPanel, killBrowser } from './ready.mjs'
 import { waitForBoot } from './wait-for.mjs'
 
 const EDGE = browserPath()
@@ -195,6 +195,6 @@ check('clearing turns them all back off', WATCH.every((n) => at(back, n) === 0),
 
 const bad = results.filter(r => !r.ok)
 console.log((bad.length === 0 ? 'OK' : 'FAILED') + '  ' + (results.length - bad.length) + '/' + results.length + ' checks passed')
-ws.close(); edge.kill()
+ws.close(); killBrowser(edge)
 await sleep(300)
 process.exit(bad.length === 0 ? 0 : 1)

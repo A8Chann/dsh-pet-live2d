@@ -16,7 +16,7 @@
 import { spawn } from 'node:child_process'
 import { rmSync } from 'node:fs'
 import { browserPath, PROFILES, BASE } from './paths.mjs'
-import { waitReady, openPanel, panelFooter } from './ready.mjs'
+import { waitReady, openPanel, panelFooter, killBrowser } from './ready.mjs'
 import { join } from 'node:path'
 import { waitForBoot } from './wait-for.mjs'
 
@@ -314,6 +314,6 @@ check('重载之后装扮真的画出来了', (await drawn('ParamCheek71')) === 
 const bad = results.filter((r) => !r.ok)
 console.log((bad.length === 0 ? 'OK' : 'FAILED') + '  ' + (results.length - bad.length) + '/' + results.length + ' checks passed')
 ws.close()
-edge.kill()
+killBrowser(edge)
 await sleep(300)
 process.exit(bad.length === 0 ? 0 : 1)

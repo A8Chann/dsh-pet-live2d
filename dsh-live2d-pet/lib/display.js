@@ -20,6 +20,8 @@ import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
+import { downloadDesktopBinary } from './desktop.js'
+
 /** 心跳有效期：桌面端每 1 秒刷一次（见它的 display_loop），这里给六倍余量。 */
 export const HEARTBEAT_TTL_MS = 6000
 
@@ -70,10 +72,15 @@ export function computeOwner(mode, heartbeatOk) {
 }
 
 /**
- * 进程还活着吗。
+ * 进程还活着吗（**只用于诊断**）。
  *
- * 心跳是主判据（跨平台、不用引依赖），但**同机还有更硬的证据**：pid 在不在。
- * 两个一起看 —— 心跳刚过期但进程还在（比如它卡了一下）时，不要急着重开一个窗口。
+ * ⚠️ **不要拿它当"在不在跑"的判据。** Windows 与类 Unix 都会**重用 pid**：桌面端被
+ * 任务管理器杀掉（没走退出清理，心跳文件里还留着那个 pid）之后，那个号可能已经被别的
+ * 进程拿走，`process.kill(pid, 0)` 于是说"活着"—— 然后页面里那只就永远让位，
+ * 用户看到"没反应"。实测踩过一次：杀掉桌面端后 owner 仍报 desktop。
+ *
+ * 判据只用**心跳**：它每秒刷新，6 秒不刷新就是没了（进程被杀 / 卡死 / 崩了都覆盖），
+ * 而且不依赖任何平台细节。
  */
 function pidAlive(pid) {
   if (typeof pid !== 'number' || pid <= 0) return false
@@ -120,16 +127,18 @@ export function createDisplayLayer(options) {
 
   const preference = () => readPreference(home)
 
-  const running = () => {
-    const current = preference()
-    return heartbeatFresh(current) || pidAlive(current.desktopPid)
-  }
+  /**
+   * 在不在跑 —— **只看心跳**（见 `pidAlive` 上的说明：pid 会被重用，不能当判据）。
+   *
+   * 心跳每秒刷新一次，6 秒不刷新就当作没了：进程被杀、卡死、崩了三种情况都覆盖到。
+   */
+  const running = () => heartbeatFresh(preference())
 
   /** 状态：设置页与 `/owner` 都读它。 */
   function status() {
     const current = preference()
     const mode = normaliseMode(current.mode)
-    const alive = heartbeatFresh(current) || pidAlive(current.desktopPid)
+    const alive = heartbeatFresh(current)
     return {
       mode,
       owner: computeOwner(mode, alive),
@@ -138,6 +147,8 @@ export function createDisplayLayer(options) {
       desktopSpawnedByPlugin: childPid !== 0,
       heartbeatAt: typeof current.at === 'number' ? current.at : 0,
       ttlMs: HEARTBEAT_TTL_MS,
+      // 诊断用：仅当心跳说"没了"而那个 pid 号还占着时，它才有信息量（pid 重用）。
+      pidStillTaken: !alive && pidAlive(current.desktopPid),
     }
   }
 
@@ -217,6 +228,34 @@ export function createDisplayLayer(options) {
     return reconcile()
   }
 
+  /**
+   * 惰性下载：**先回话、后台下**。
+   *
+   * 不能让 HTTP 请求等下完那 5MB —— 那个请求会挂在那儿，而页面每秒轮询一次 `/layer`，
+   * 用户的观感就是"卡住了，还是没反应"。所以立刻回 `{started:true}`，进度写进
+   * `downloadState` 由每秒的轮询带回去；下完**不需要重启**（解析器会看 `%DSH_HOME%\bin\`）。
+   */
+  let downloadState = { state: 'idle', at: 0 }
+  function startDownload() {
+    if (downloadState.state === 'downloading') return { started: false, reason: 'already-running' }
+    downloadState = { state: 'downloading', at: Date.now() }
+    note('开始下载桌面端二进制')
+    downloadDesktopBinary({ home, log })
+      .then((result) => {
+        downloadState = result.ok === true
+          ? { state: 'done', at: Date.now(), path: result.path, bytes: result.bytes }
+          : { state: 'failed', at: Date.now(), reason: result.reason, detail: result.detail ?? null }
+        note('下载结束：' + JSON.stringify(downloadState))
+        // 下完就按当前 mode 摆正一次：mode 已经是 desktop 的话这里就把它拉起来了，
+        // 用户不用再点第二次。
+        if (result.ok === true) reconcile()
+      })
+      .catch((error) => {
+        downloadState = { state: 'failed', at: Date.now(), reason: 'exception', detail: String(error && error.message) }
+      })
+    return { started: true }
+  }
+
   function dispose() {
     // 插件停掉（DSH 退出 / 插件卸载）时，**不**杀掉用户自己在跑的桌面端；
     // 只收掉我们拉起来的那个 —— 那本来就是"插件的延伸"。
@@ -230,6 +269,8 @@ export function createDisplayLayer(options) {
     setDshUrl,
     start,
     stop,
+    startDownload,
+    downloadState: () => downloadState,
     dispose,
     preferencePath: () => preferencePath(home),
   }
@@ -238,10 +279,13 @@ export function createDisplayLayer(options) {
 /** 桌面上还有没有别的实例在跑（诊断用）。 */
 export function desktopProcessState(home) {
   const current = readPreference(home)
+  const fresh = heartbeatFresh(current)
   return {
     pid: typeof current.desktopPid === 'number' ? current.desktopPid : 0,
-    alive: pidAlive(current.desktopPid),
-    heartbeatFresh: heartbeatFresh(current),
+    // `running` 才是判据；`alive` 只是"那个 pid 号现在还占着"（可能已经是别人的进程）。
+    running: fresh,
+    pidStillTaken: pidAlive(current.desktopPid),
+    heartbeatFresh: fresh,
     file: existsSync(preferencePath(home)),
   }
 }

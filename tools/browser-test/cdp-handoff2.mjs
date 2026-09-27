@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { rmSync } from 'node:fs'
 import { browserPath, PROFILES, BASE } from './paths.mjs'
-import { waitReady } from './ready.mjs'
+import { waitReady, killBrowser } from './ready.mjs'
 import { join } from 'node:path'
 import { waitForBoot } from './wait-for.mjs'
 const EDGE = browserPath()
@@ -44,4 +44,4 @@ await sleep(1500); await step('nudge tool +2s')
 await fetch(BASE + '/__nudge?phase=idle')
 await sleep(1500); await step('nudge idle')
 console.log(JSON.stringify({ steps }, null, 1))
-ws.close(); edge.kill(); process.exit(0)
+ws.close(); killBrowser(edge); process.exit(0)

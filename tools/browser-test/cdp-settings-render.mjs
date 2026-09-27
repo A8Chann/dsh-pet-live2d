@@ -13,10 +13,23 @@
 import { mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { BASE, browserPath, HERE, PROFILES } from './paths.mjs'
+import { killBrowser } from './ready.mjs'
 
 const PORT = Number(process.env.PET_PORT ?? 8793)
 const PROFILE = join(PROFILES, '_cdp-settings-render')
-const CDP_PORT = 9333
+/**
+ * CDP 端口**必须跟着分配到的 slot 走**，不能写死。
+ *
+ * 写死一个常量（原来就是 9333）时，并发跑两条以上会抢同一个调试端口 —— 后起的
+ * `--remote-debugging-port` 绑不上，driver 连不上自己的浏览器，于是**几秒内快速失败**
+ * （实测：并发时 cdp-mask / cdp-phase / cdp-dpr 三条都在 4 秒左右红，独占重跑就绿）。
+ * 那看起来像"负载抖动"，其实是端口冲突 —— 会让人往错误的方向调（比如一直收并发数）。
+ *
+ * `run-suite.mjs` 给每条 driver 一个固定的 `PET_PORT`（8793 + slot），所以
+ * `PET_PORT - 8793` 就是 slot，偏移到一段不会撞的端口区间即可。
+ */
+const SLOT = Math.max(0, PORT - 8793)
+const CDP_PORT = 9433 + SLOT
 
 rmSync(PROFILE, { recursive: true, force: true })
 mkdirSync(PROFILE, { recursive: true })
@@ -134,10 +147,24 @@ if (!applied) {
   // 顺带把显示层状态读口确认一遍（它是新加的，且设置页要用它）。
   const layerState = await evaluate('String(document.querySelector("#dsh-settings-probe [data-layer-status]")?.textContent ?? "(没有)")')
   check('显示层状态行渲染出来了', typeof layerState === 'string' && layerState !== '(没有)', String(layerState).slice(0, 120))
+
+  // **缺二进制时必须有"能点的下一步"**。
+  //
+  // 这条是用户报出来的：他在设置里点了「桌面」，**什么都没发生**。原因是 exe 还没构建，
+  // 插件拉起失败 —— 但它只在状态行留了半句话（"桌面端二进制不在"），没有动作可做，
+  // 点之前点之后长得一样。所以断言"按钮在、且带下载标记"，而不是只断言卡片渲染出来了。
+  const needsBinary = String(layerState).includes('二进制不在')
+  if (needsBinary) {
+    const download = await evaluate('String(document.querySelector("#dsh-settings-probe [data-layer-download]")?.textContent ?? "(没有)")')
+    check('缺二进制时给出「下载桌面端」按钮（否则用户只能盯着看）',
+      typeof download === 'string' && download.includes('下载'), String(download))
+  } else {
+    console.log('  （这台机器上二进制已在，跳过"下载按钮"那条）')
+  }
 }
 
 socket.close()
-browser.kill()
+killBrowser(browser)
 
 const failed = results.filter((r) => !r.ok)
 console.log('---')

@@ -49,14 +49,15 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
    *
    * 现在两个渲染者都从这里读：`Pet` 负责轮询（它本来就常驻），设置页只读 + 订阅。
    */
-  const LAYER_INITIAL = { mode: "auto", owner: "inline", desktopRunning: false, binary: null, at: 0 };
+  const LAYER_INITIAL = { mode: "auto", owner: "inline", desktopRunning: false, binary: null, download: null, at: 0 };
   const layerStore = { value: LAYER_INITIAL, listeners: new Set() };
   const setLayerState = (next) => {
     const merged = Object.assign({}, layerStore.value, next);
     if (merged.mode === layerStore.value.mode
       && merged.owner === layerStore.value.owner
       && merged.desktopRunning === layerStore.value.desktopRunning
-      && merged.binary === layerStore.value.binary) return;
+      && merged.binary === layerStore.value.binary
+      && merged.download === layerStore.value.download) return;
     layerStore.value = merged;
     for (const listener of layerStore.listeners) {
       try { listener(merged); } catch { /* 一个订阅者坏了不该拖垮别的 */ }
@@ -6260,6 +6261,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
             owner: payload?.owner === "desktop" ? "desktop" : "inline",
             desktopRunning: payload?.desktopRunning === true,
             binary: payload?.binary ?? null,
+            download: payload?.download ?? null,
             at: Date.now(),
           });
         } catch {
@@ -7239,9 +7241,22 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         body: JSON.stringify({ mode }),
       }).then((response) => response.json()).then((payload) => {
         setBusy(false);
-        setNote(payload?.ok === true
-          ? (payload.desktopRunning === true ? "桌面端在跑。" : "桌面端没在跑。")
-          : "切换失败：" + (payload?.error ?? "未知"));
+        // **选「桌面」但没成，必须说清楚为什么** —— 否则症状就是"点了没反应"。
+        // 两种最常见：二进制不在（还没装 / 还没构建）、拉起来了但没起来。
+        //
+        // 这条是补的：第一版只把 `desktopRunning` 翻成一句陈述句（"桌面端没在跑。"），
+        // 用户点完看到的字和点之前几乎一样，于是合理地报"啥变化都没有"。
+        if (payload?.ok !== true) {
+          setNote("切换失败：" + (payload?.error ?? "未知"));
+          return;
+        }
+        if (payload.mode === "desktop" && payload.desktopRunning !== true) {
+          setNote(payload.binary?.found === true
+            ? "桌面端拉起来了，但它没在 6 秒内报活 —— 看看是不是被系统拦住了（未签名的 exe 会被 SmartScreen 拦）"
+            : "桌面端二进制不在" + (payload.binary?.hint === undefined ? "" : "：" + payload.binary.hint));
+          return;
+        }
+        setNote(payload.desktopRunning === true ? "桌面端已在跑。" : "已切回页面内。");
       }).catch((error) => {
         setBusy(false);
         setNote("切换失败：" + String(error && error.message));
@@ -7249,6 +7264,26 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     };
     const binary = current.binary ?? {};
     const supported = binary.supported !== false;
+    const download = current.download ?? { state: "idle" };
+    const missing = supported && binary.found !== true;
+    /** 惰性下载：二进制不在时那个按钮做的事（先回话、后台下，进度靠每秒轮询带回来）。 */
+    const fetchBinary = () => {
+      setNote("正在下载桌面端（约 5MB）…");
+      fetch(API + "/layer", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "download-desktop" }),
+      }).then((response) => response.json()).then((payload) => {
+        setNote(payload?.download?.started === true ? "下载已开始…" : "下载没能开始：" + (payload?.download?.reason ?? "未知"));
+      }).catch((error) => setNote("下载请求失败：" + String(error && error.message)));
+    };
+    const downloadLine = download.state === "downloading"
+      ? "正在下载…"
+      : download.state === "done"
+        ? "下载完成，已就绪"
+        : download.state === "failed"
+          ? "下载失败（" + String(download.reason ?? "未知") + (download.detail === null || download.detail === undefined ? "" : "：" + download.detail) + "）"
+          : null;
     return h("div", { "data-setting": "layer" },
       // 三个选项是**药丸按钮**：形状与反应候选那排 chips 共用同一条规则，所以外面要套一层
       // `[data-reaction-set]`（设置页作用域的 chips 样式挂在它下面）。少这层壳的表现是
@@ -7265,14 +7300,25 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
             onClick: () => choose(mode),
           }, label)))),
       // 状态行：**只在这里**说一次"二进制在不在"，不要和选项混在一段里。
+      //
+      // 缺二进制时给一个**能点的下一步**：只说"不在"，用户除了盯着看没有别的动作可做 ——
+      // 这正是"点了桌面没反应"那次投诉的另一半。
       h("div", { "data-note-inline": "", "data-layer-status": "" },
         [supported ? null : "本平台还没有桌面版构建",
-          supported && binary.found !== true ? "桌面端二进制不在" : null,
+          missing ? "桌面端二进制不在" : null,
           supported && binary.found === true
             ? "桌面端：" + (current.desktopRunning ? "运行中（已接管）" : "没在跑") + "（" + String(binary.source ?? "") + "）"
             : null,
+          downloadLine,
           note === "" ? null : note,
         ].filter((line) => line !== null).join(" · ")),
+      missing ? h("div", { "data-layer-actions": "" },
+        h("button", {
+          type: "button",
+          disabled: busy || download.state === "downloading",
+          "data-layer-download": "",
+          onClick: fetchBinary,
+        }, download.state === "downloading" ? "下载中…" : "下载桌面端（约 5MB）")) : null,
     );
   }
 

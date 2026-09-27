@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process'
 import { rmSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { browserPath, PROFILES, BASE, SHOTS } from './paths.mjs'
-import { waitReady, openPanel, closePanel } from './ready.mjs'
+import { waitReady, openPanel, closePanel, killBrowser } from './ready.mjs'
 import { join } from 'node:path'
 import { waitForBoot } from './wait-for.mjs'
 
@@ -221,4 +221,4 @@ out.fidgetReleased = out.afterFidget === 'idle'
 
 out.logs = logs.slice(0, 5)
 console.log(JSON.stringify(out, null, 1))
-ws.close(); edge.kill(); process.exit(0)
+ws.close(); killBrowser(edge); process.exit(0)

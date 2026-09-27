@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process'
 import { writeFileSync, rmSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { browserPath, PROFILES, SHOTS, BASE } from './paths.mjs'
-import { waitReady, openPanel, panelFooter } from './ready.mjs'
+import { waitReady, openPanel, panelFooter, killBrowser } from './ready.mjs'
 import { join } from 'node:path'
 import { waitForBoot } from './wait-for.mjs'
 
@@ -82,4 +82,4 @@ await shot('final')
 
 out.logs = logs.slice(0, 6)
 console.log(JSON.stringify(out, null, 1))
-ws.close(); edge.kill(); process.exit(0)
+ws.close(); killBrowser(edge); process.exit(0)

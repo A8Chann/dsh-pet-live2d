@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { rmSync, writeFileSync } from 'node:fs'
 import { browserPath, PROFILES, BASE } from './paths.mjs'
-import { waitReady, openPanel } from './ready.mjs'
+import { waitReady, openPanel, killBrowser } from './ready.mjs'
 import { join } from 'node:path'
 import { waitForBoot } from './wait-for.mjs'
 const EDGE = browserPath()
@@ -148,6 +148,6 @@ await sleep(600)
 const bad = results.filter((r) => !r.ok)
 console.log((bad.length === 0 ? 'OK' : 'FAILED') + '  ' + (results.length - bad.length) + '/' + results.length + ' checks passed')
 ws.close()
-edge.kill()
+killBrowser(edge)
 await sleep(300)
 process.exit(bad.length === 0 ? 0 : 1)

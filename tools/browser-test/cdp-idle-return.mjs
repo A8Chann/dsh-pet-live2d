@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process'
 import { rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { browserPath, PROFILES, BASE } from './paths.mjs'
-import { waitReady, openPanel, closePanel } from './ready.mjs'
+import { waitReady, openPanel, closePanel, killBrowser } from './ready.mjs'
 import { waitForBoot } from './wait-for.mjs'
 
 const EDGE = browserPath()
@@ -159,7 +159,7 @@ stopKeepAlive2()
 const bad = results.filter(r => !r.ok)
 console.log((bad.length === 0 ? 'OK' : 'FAILED') + '  ' + (results.length - bad.length) + '/' + results.length + ' checks passed')
 ws.close()
-edge.kill()
+killBrowser(edge)
 // Give the socket a moment to finish closing. Calling process.exit() while it
 // is mid-close trips a libuv assertion on Windows, and the suite keys off the
 // exit code, so that teardown noise would be reported as a test failure.

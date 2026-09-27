@@ -17,7 +17,7 @@ import { spawn } from 'node:child_process'
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { browserPath, PROFILES, HERE, PLUGIN } from './paths.mjs'
-import { waitReady, openPanel, pageErrors } from './ready.mjs'
+import { waitReady, openPanel, pageErrors, killBrowser } from './ready.mjs'
 import { waitForBoot } from './wait-for.mjs'
 
 /** 用户那份 Cubism Core（插件不内置它，本机没有就只能退回官方 CDN）。 */
@@ -70,7 +70,7 @@ const edge = spawn(EDGE, ['--headless=new', '--remote-debugging-port=' + PORT, '
 let ws = null
 const killAll = () => {
   try { ws?.close() } catch { /* already gone */ }
-  try { edge.kill() } catch { /* already gone */ }
+  try { killBrowser(edge) } catch { /* already gone */ }
   try { server.kill() } catch { /* already gone */ }
 }
 try {

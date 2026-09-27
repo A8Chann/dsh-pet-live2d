@@ -55,9 +55,12 @@ step('3/3 对拍 + 壳全链 + 网页端回归', () => {
     execFileSync('node', [join(DESKTOP, 'tools', 'probe-catalog.mjs')], { stdio: 'inherit', env })
     execFileSync('node', [join(DESKTOP, 'tools', 'desktop-driver.mjs'), '--page', 'pet'], { stdio: 'inherit', env })
   } finally {
+    // `exit 0` 不能省：没有任何进程可杀时，这条管道的退出码是 1（`Get-Process` 找不到
+    // 匹配项会把错误状态带下去），而 `execFileSync` 见到非 0 就抛 —— 于是**已经成功的
+    // 构建**会在收尾这一步报成失败，还顺手把 `run-suite` 那段跳掉。踩过一次。
     execFileSync('powershell.exe', [
       '-NoProfile', '-Command',
-      "Get-Process 'DSH桌宠','dsh-pet-live2d-desktop' -ErrorAction SilentlyContinue | Stop-Process -Force",
+      "Get-Process 'DSH桌宠','dsh-pet-live2d-desktop' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; exit 0",
     ], { stdio: 'inherit' })
   }
   execFileSync('node', ['run-suite.mjs', '--jobs', '1'], {
