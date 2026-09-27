@@ -17,10 +17,14 @@
 // "穿透判定表达式"。运行期只走 HTTP。
 import { createServer } from 'node:http'
 import { readFileSync, existsSync } from 'node:fs'
-import { join, normalize, resolve } from 'node:path'
+import { extname, join, normalize, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { DESKTOP, PLUGIN, RUN } from './paths.mjs'
+import { EMBED, PAGE_DIR as EMBED_PAGE_DIR, PLUGIN, PUBLISHED, RUN, ensureEmbed } from './paths.mjs'
 import { createDshLink } from './dsh-link.mjs'
+
+// published 模式：先把编译期嵌进来的资源解包出来（宠物要交给宿主半区按文件系统扫描）。
+const unpack = await ensureEmbed()
+if (unpack.extracted) console.log('[sidecar] 已解包内嵌资源：' + unpack.files + ' 个文件 → ' + EMBED)
 
 const argv = process.argv.slice(2)
 const argOf = (flag, fallback) => {
@@ -32,8 +36,11 @@ const argOf = (flag, fallback) => {
 const WANT_PORT = Number(argOf('--port', process.env.PET_DESKTOP_PORT ?? '0'))
 /** `spike` 用极简页面（只验壳能力），`pet` 挂真的 lib/client.js。 */
 const PAGE = argOf('--page', process.env.PET_DESKTOP_PAGE ?? 'pet')
-/** 静态页面目录：开发期用仓库里的副本，打包后换成随包的 dist。 */
-const PAGE_DIR = resolve(argOf('--page-dir', join(DESKTOP, 'sidecar', 'page')))
+/**
+ * 静态页面目录。开发期用仓库里那份（改页面不用重新构建）；published 模式用嵌进来的
+ * ——exe 里没有"源代码目录"这回事。
+ */
+const PAGE_DIR = resolve(argOf('--page-dir', EMBED_PAGE_DIR))
 /**
  * 要挂的 DSH。默认 `http://127.0.0.1:3080`（`dsh web` 的默认地址）；传 `none` 就纯本地独立。
  * 连不上不是错误：宠物照样站着、照样自己摸鱼，只是不跟着会话换相位。
@@ -43,11 +50,25 @@ const DSH_BASE = argOf('--dsh', process.env.PET_DESKTOP_DSH ?? 'http://127.0.0.1
 /** 桌面端自己的接口前缀（和插件无关，只给壳与页面用）。 */
 const DESKTOP_API = '/__desktop'
 
+/**
+ * 内嵌的 Cubism Core（Live2D 株式会社的专有运行时）。
+ *
+ * 插件正常是"第一次用到时去官方 CDN 取一份并缓存"；单文件 exe 不该要求第一次能上网，
+ * 所以构建时把本机缓存的那份一起嵌进来，catalog 里的 `coreUrl` 改指这里。本机没有
+ * 缓存时这个文件不存在，就照旧走 CDN —— 与网页端行为一致。
+ */
+const CORE_JS = join(EMBED, 'live2dcubismcore.min.js')
+const HAS_CORE = existsSync(CORE_JS)
+
 // ---------------------------------------------------------------- 插件路由
 //
-// 直接 import 工作区里的插件源码，不 import npm 装下来的副本：桌面端与插件必须
-// 同源。否则会出现"改了插件、桌面端还在跑旧逻辑"，这种两边不一致最难查。
+// 直接 import 插件宿主半区的源码：桌面端与插件必须同源，否则会出现"改了插件、桌面端
+// 还在跑旧逻辑"。开发期它是工作区里的真包（改了立刻生效），published 模式是编译期
+// 嵌进来、运行时解包出来的那份副本 —— 两者布局一致，路径都由 paths.mjs 决定。
 const host = await import(pathToFileURL(join(PLUGIN, 'lib', 'index.js')).href)
+/** 页面里那两个脚本也从同一个来源取（published 模式是解包出来的副本）。 */
+const CLIENT_JS = join(EMBED, 'client.js')
+const VENDOR_JS = join(EMBED, 'vendor.js')
 const { buildRoutes, ActivityHub, attachActivityEvents } = host
 
 // 事件总线：桌面端没有 DSH 的 ctx（它在另一个进程里），所以给一个只会抛的桩。插件的每个
@@ -85,21 +106,31 @@ const MIME = {
   '.woff2': 'font/woff2',
 }
 
-function sendFile(response, file) {
+/**
+ * 发一个静态文件。
+ *
+ * `root` 必须由**调用方**给：这里同时服务页面目录（`page/`）与 embed 根目录下的
+ * 兄弟文件（`client.js` / `vendor.js` / React UMD）。早先版本内部写死用页面目录当根，
+ * 于是那几个兄弟文件全部静默 403 —— 页面白屏，日志里一个字都没有。
+ */
+function sendFile(response, root, file) {
   const full = resolve(file)
-  if (!full.startsWith(PAGE_DIR)) {
+  const base = resolve(root)
+  if (full !== base && !full.startsWith(base + sep)) {
+    console.log('[sidecar] 越界拒绝：' + full + '（根 ' + base + '）')
     response.writeHead(403)
     response.end()
     return
   }
   if (!existsSync(full)) {
+    console.log('[sidecar] 404 ' + full)
     response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
     response.end('missing: ' + full)
     return
   }
   const body = readFileSync(full)
   response.writeHead(200, {
-    'content-type': MIME[full.slice(full.lastIndexOf('.'))] ?? 'application/octet-stream',
+    'content-type': MIME[extname(full).toLowerCase()] ?? 'application/octet-stream',
     'content-length': String(body.byteLength),
     // 桌面端没有构建步骤，页面改完就该立刻生效——别让缓存把它藏起来。
     'cache-control': 'no-store',
@@ -322,6 +353,20 @@ const server = createServer((request, response) => {
     return
   }
 
+  // 内嵌的 Cubism Core：路径与插件运行时路由给 catalog 里那个 `coreUrl` 前缀一致，
+  // 所以页面会来这里取（放在插件路由之前，先匹配到就先答）。
+  if (HAS_CORE && pathname.startsWith('/api/live2d-pet/runtime/live2dcubismcore')) {
+    sendFile(response, EMBED, CORE_JS)
+    return
+  }
+  // vendor 分包的**两个**地址都要答：页面自己直接引 `/vendor.js`，而插件浏览器半区还会
+  // 按 catalog 里的 `vendorUrl`（= `/api/live2d-pet/runtime/live2d-vendor.js`）再注入一次
+  // ——那条路早先是 404，页面底部就出现「加载失败 script failed: …live2d-vendor.js」。
+  if (pathname === '/vendor.js' || pathname === '/api/live2d-pet/runtime/live2d-vendor.js') {
+    sendFile(response, EMBED, VENDOR_JS)
+    return
+  }
+
   for (const route of prefixes) {
     if (pathname === route.path || pathname.startsWith(route.path + '/')) {
       route.handler(request, response)
@@ -335,24 +380,24 @@ const server = createServer((request, response) => {
   }
 
   if (pathname === '/' || pathname === '/index.html') {
-    sendFile(response, join(PAGE_DIR, PAGE === 'spike' ? 'spike.html' : 'index.html'))
+    sendFile(response, PAGE_DIR, join(PAGE_DIR, PAGE === 'spike' ? 'spike.html' : 'index.html'))
     return
   }
-  // 页面的静态资源，或者 vendor 目录里那份 React UMD。
-  const pagePrefixes = [
-    ['/page/', join(PAGE_DIR, normalize(decodeURIComponent(pathname.slice('/page/'.length))))],
-    ['/react/', join(PAGE_DIR, 'react', normalize(decodeURIComponent(pathname.slice('/react/'.length))))],
-  ]
-  for (const [prefix, file] of pagePrefixes) {
-    if (pathname.startsWith(prefix)) {
-      sendFile(response, file)
-      return
-    }
+  // 页面的静态资源（`/page/*`）。React UMD 与插件浏览器半区在**单文件 exe** 里没有
+  // "旁边的目录"，所以它们都在 embed 里（编译期嵌进去、运行时解包出来的那份）。
+  if (pathname.startsWith('/page/')) {
+    sendFile(response, PAGE_DIR, join(PAGE_DIR, normalize(decodeURIComponent(pathname.slice('/page/'.length)))))
+    return
+  }
+  // React UMD：页面引的是固定名，具体发生产版还是开发版由 embed 里有什么决定
+  // （`tools/prep-embed.mjs` 铺的时候就挑了）。
+  if (pathname === '/react/react.js' || pathname === '/react/react-dom.js') {
+    sendFile(response, EMBED, join(EMBED, pathname.slice('/react/'.length)))
+    return
   }
   // 和真实的 DSH 一样按**包名**寻址，页面里的 script 标签就不必为桌面端改一份。
   if (pathname === '/plugins/dsh-pet-live2d/client.js') {
-    response.writeHead(200, { 'content-type': 'application/javascript; charset=utf-8', 'cache-control': 'no-store' })
-    response.end(readFileSync(join(PLUGIN, 'lib', 'client.js')))
+    sendFile(response, EMBED, CLIENT_JS)
     return
   }
 
@@ -370,6 +415,9 @@ server.listen(WANT_PORT, '127.0.0.1', () => {
     port,
     page: PAGE,
     pid: process.pid,
+    published: PUBLISHED,
+    embed: EMBED,
+    plugin: PLUGIN,
     probeUrl: base + DESKTOP_API + '/probe',
     pingUrl: base + DESKTOP_API + '/ping',
     shellUrl: base + DESKTOP_API + '/shell',

@@ -18,6 +18,7 @@
 // 成立：换 Electron 时页面和 sidecar 原样搬走，壳只要能发 HTTP、写一个 JSON 就行。
 mod pet_window;
 mod sidecar;
+mod tray;
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -25,6 +26,34 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
 
 use sidecar::Sidecar;
+
+/**
+ * 运行期目录：内嵌资源的解包处、壳的状态文件、sidecar 的缓存都在这里。
+ *
+ * **便携优先**：exe 旁边可写就用 `.\DSH桌宠-data\`（U 盘、绿色版直接带着走）；
+ * 不可写（放在 Program Files、只读盘）才退回 `%LOCALAPPDATA%\<identifier>\runtime\`。
+ * 判据是**真的写一次试试**，不是猜路径权限。
+ */
+pub fn resolve_runtime_dir(app: &AppHandle) -> std::path::PathBuf {
+    let probe = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("DSH桌宠-data")));
+    if let Some(dir) = probe {
+        if std::fs::create_dir_all(&dir).is_ok() {
+            let test = dir.join(".writable");
+            if std::fs::write(&test, b"1").is_ok() {
+                let _ = std::fs::remove_file(&test);
+                return dir;
+            }
+        }
+    }
+    let fallback = app
+        .path()
+        .app_local_data_dir()
+        .unwrap_or_else(|_| std::env::temp_dir().join("DSH桌宠"));
+    let _ = std::fs::create_dir_all(fallback.join("runtime"));
+    fallback.join("runtime")
+}
 
 /// 壳的运行状态：**唯一用途是给 driver 与排查看的读口**，不参与任何决策。
 #[derive(Default)]
@@ -280,9 +309,17 @@ pub fn run() {
         }))
         .setup(move |app| {
             let handle = app.handle().clone();
-            let sidecar = Sidecar::launch()?;
+            let runtime = resolve_runtime_dir(&handle);
+            eprintln!("[shell] 运行期目录：{}", runtime.display());
+            let sidecar = Sidecar::launch(&runtime)?;
+            eprintln!(
+                "[shell] sidecar 就绪：{}（{}，pid {}）",
+                sidecar.url,
+                if sidecar.published { "内嵌独立二进制" } else { "node 开发模式" },
+                sidecar.pid
+            );
             let url = sidecar.url.clone();
-            let state_path = sidecar.state_path.clone();
+            let state_path = runtime.join("shell-state.json");
             {
                 let state = app.state::<Mutex<ShellState>>();
                 let locked = state.lock();
@@ -292,6 +329,7 @@ pub fn run() {
                 }
             }
             pet_window::create_pet_window(&handle, &url, sidecar)?;
+            tray::setup(app)?;
             spawn_hover_loop(handle, state_path);
             Ok(())
         })

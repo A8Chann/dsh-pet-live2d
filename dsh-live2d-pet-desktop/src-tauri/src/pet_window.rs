@@ -63,3 +63,30 @@ pub fn create_pet_window(
     app.manage(std::sync::Mutex::new(sidecar));
     Ok(())
 }
+
+/// 把宠物藏起来（托盘菜单用）。窗口还在、sidecar 还在，只是不显示——藏起来不占桌面。
+pub fn hide_pet(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(PET_WINDOW) {
+        let _ = window.hide();
+    }
+}
+
+/// 显示宠物，并交还焦点（托盘左键、双击、菜单"显示"都走这里）。
+pub fn show_pet(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(PET_WINDOW) {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
+/// 她还在不在桌面上。
+///
+/// 已经写好但**还没接**：托盘那两项"显示/隐藏"目前不会按状态灰掉（M1 的收尾项）。
+/// 留着是因为接它只是两行 —— 菜单项要按状态变，就得先有这个问题可问。
+#[allow(dead_code)]
+pub fn is_visible(app: &AppHandle) -> bool {
+    app.get_webview_window(PET_WINDOW)
+        .and_then(|window| window.is_visible().ok())
+        .unwrap_or(false)
+}

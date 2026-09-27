@@ -120,11 +120,41 @@ async function makeEval(client) {
  * 整个判定链根本不会动。
  */
 function setCursor(x, y) {
-  execFileSync('powershell.exe', [
-    '-NoProfile', '-NonInteractive', '-Command',
-    'Add-Type -Namespace W -Name C -MemberDefinition \'[DllImport("user32.dll")]public static extern bool SetCursorPos(int x,int y);\';' +
-    '[void][W.C]::SetCursorPos(' + Math.round(x) + ',' + Math.round(y) + ')',
-  ], { stdio: 'ignore' })
+  try {
+    execFileSync('powershell.exe', [
+      '-NoProfile', '-NonInteractive', '-Command',
+      'Add-Type -Namespace W -Name C -MemberDefinition \'[DllImport("user32.dll")]public static extern bool SetCursorPos(int x,int y);\';' +
+      '[void][W.C]::SetCursorPos(' + Math.round(x) + ',' + Math.round(y) + ')',
+    ], { stdio: 'ignore' })
+  } catch (error) {
+    // 挪不动不该让驱动崩：下面靠判定结果判断，重试会再挪一次。
+    console.log('（SetCursorPos 失败：' + String(error && error.message).slice(0, 80) + '）')
+  }
+}
+
+/**
+ * 挪光标到目标点，然后**轮询期望的判定结果**。
+ *
+ * 为什么要重试：这台机器上可能同时跑着别的桌面应用（实测前台是 DSH Desktop），它们
+ * 会动光标——第一次挪过去可能立刻被别的东西带偏。所以判据不是"壳读到的坐标等于目标"
+ * （那会把外部干扰当成回归），而是"判定理由变成了我要的那个"；挪不成就再挪一次。
+ *
+ * 轮询的是**期望值**，不是"读数稳定"——低帧率下"连续两次相同"照样成立。
+ */
+async function pointAt(x, y, expected, { attempts = 10, timeoutPerAttempt = 1200, label = '' } = {}) {
+  let last = null
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    setCursor(x, y)
+    const deadline = Date.now() + timeoutPerAttempt
+    while (Date.now() < deadline) {
+      last = await refreshShell(400)
+      if (expected(last)) return last
+      await sleep(80)
+    }
+  }
+  console.log('（' + (label || '挪光标') + '：挪了 ' + attempts + ' 次仍未得到期望判定，最后一次 reason=' + (last?.lastReason ?? '?')
+    + ' local=' + JSON.stringify(last?.cursorLocal ?? null) + '）')
+  return last
 }
 
 // ----------------------------------------------------------------------- 主流程
@@ -206,10 +236,14 @@ check('穿透轮询在跑', state.probes > 0, 'probes=' + state.probes + ' error
 const origin = state.windowOrigin ?? [0, 0]
 const scale = state.scale || 1
 const emptyPoint = { x: 150, y: 320 }
-setCursor(origin[0] + emptyPoint.x * scale, origin[1] + emptyPoint.y * scale)
-const overEmpty = await until('空白处判定', () => refreshShell(500), (s) => Array.isArray(s.cursorLocal) && Math.abs(s.cursorLocal[0] - emptyPoint.x) < 8, 10000)
-check('空白处判定为"穿透"', overEmpty.interactive === false, 'reason=' + overEmpty.lastReason + ' local=' + JSON.stringify(overEmpty.cursorLocal))
-check('空白处窗口忽略光标事件', overEmpty.ignored === true, 'ignored=' + overEmpty.ignored)
+const overEmpty = await pointAt(
+  origin[0] + emptyPoint.x * scale,
+  origin[1] + emptyPoint.y * scale,
+  (s) => s.interactive === false && s.lastReason === 'desktop',
+  { label: '空白处' },
+)
+check('空白处判定为"穿透"', overEmpty?.interactive === false, 'reason=' + overEmpty?.lastReason + ' local=' + JSON.stringify(overEmpty?.cursorLocal))
+check('空白处窗口忽略光标事件', overEmpty?.ignored === true, 'ignored=' + overEmpty?.ignored)
 
 // 5. 实心处 → 应该吃事件
 //
@@ -235,14 +269,15 @@ if (box !== null) {
   check(SPIKE ? '页面上找得到气球上的点' : '页面上找得到"她"身上的点（等命中遮罩就绪）', target !== null, JSON.stringify(target))
 }
 if (target !== null) {
-  setCursor(origin[0] + target.x * scale, origin[1] + target.y * scale)
-  const overPet = await until('实心处判定', () => refreshShell(500), (s) => Array.isArray(s.cursorLocal) && s.interactive === true, 8000).catch(() => null)
-  if (overPet === null) {
-    check('实心处判定为"吃事件"', false, 'target=' + JSON.stringify(target) + ' 实测 local=' + JSON.stringify(shellState?.cursorLocal) + ' reason=' + shellState?.lastReason + ' probes=' + shellState?.probes)
-  } else {
-    check('实心处判定为"吃事件"', overPet.interactive === true, 'reason=' + overPet.lastReason)
-    check('实心处窗口吃光标事件', overPet.ignored === false, 'ignored=' + overPet.ignored)
-  }
+  const overPet = await pointAt(
+    origin[0] + target.x * scale,
+    origin[1] + target.y * scale,
+    (s) => s.interactive === true,
+    { label: '实心处' },
+  )
+  check(SPIKE ? '气球处判定为"吃事件"' : '实心处判定为"吃事件"', overPet?.interactive === true,
+    'reason=' + overPet?.lastReason + ' target=' + JSON.stringify(target) + ' local=' + JSON.stringify(overPet?.cursorLocal))
+  check('实心处窗口吃光标事件', overPet?.ignored === false, 'ignored=' + overPet?.ignored)
 }
 
 // 6. 判定函数本身：两个位置给的理由必须不同

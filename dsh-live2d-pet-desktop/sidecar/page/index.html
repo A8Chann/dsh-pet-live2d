@@ -70,10 +70,14 @@
     window.addEventListener('unhandledrejection', (e) => window.__errors.push('rejection: ' + ((e.reason && e.reason.message) || e.reason)));
   </script>
 
-  <!-- React UMD 由 sidecar 从 dsh-live2d-pet-desktop/node_modules 取（见 /react/* 路由）。
-       刻意与 DSH 客户端用同一份 UMD 产物，不另起一套 bundle。 -->
-  <script src="/react/react.development.js"></script>
-  <script src="/react/react-dom.development.js"></script>
+  <!-- React UMD 从 sidecar 的 embed 里取（单文件 exe 里没有"旁边的目录"，这些是编译期
+       嵌进去的）。React 与 DSH 客户端同一个版本，优先生产版。
+
+       **vendor 分包（pixi + Live2D 引擎）故意不在这里引**：插件浏览器半区是懒加载它的
+       ——先 cubism core、再 vendor，顺序由插件自己保证。页面提前引，vendor 就会在 core
+       之前执行并抛「Could not find Cubism runtime」，控制台里留一条假错误。 -->
+  <script src="/react/react.js"></script>
+  <script src="/react/react-dom.js"></script>
   <script src="/page/runtime.js"></script>
   <script src="/page/desktop.js"></script>
 

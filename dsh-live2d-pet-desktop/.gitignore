@@ -1,13 +1,24 @@
-# 桌面端的运行期产物，不进仓库
+# ---- 运行期产物（不进仓库）----
 node_modules/
 .run/
-# React UMD 由 tools/vendor-react.mjs 从 node_modules 铺过来
+dist/
+
+# ---- 构建产物：都是生成的，别提交 ----
+# React UMD（tools/vendor-react.mjs 从 node_modules 铺过来）
 sidecar/page/react/
-# Rust
+# 要嵌进 exe 的那份资源（tools/prep-embed.mjs 现铺；内容就是插件 + 页面的副本）
+sidecar/embed/
+# 资源清单（由 prep-embed 生成，壳与 sidecar 都按它来）
+sidecar/embed-manifest.mjs
+# sidecar 独立二进制（tools/build-sidecar.mjs 用 deno compile 产出，86MB）
+src-tauri/binaries/
+
+# ---- Rust ----
 src-tauri/target/
 src-tauri/gen/
-# 打包产物
-dist/
-# 截屏证据（pet-on-desktop.png 是文档用的那一张）
+
+# ---- 截图证据 ----
+# 只留文档里用到的那两张；临时对比、调试截图不进仓库。
 shots/*
 !shots/pet-on-desktop.png
+!shots/settings-panel.png

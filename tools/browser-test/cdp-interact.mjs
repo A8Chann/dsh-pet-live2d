@@ -355,27 +355,41 @@ check('开得回来', (await setFlag('bubbleEnabled', true)) === true)
 await sleep(400)
 
 // --- (4) 转圈转晕 -----------------------------------------------------------
-// 先把时间窗调大：合成的画圈是**逐次 CDP 往返**（231 次约 1.5-2 秒），默认窗口
-// 1600ms 会在转完之前到期、每轮清零。真实用户转两圈约 1 秒，所以默认值没问题 ——
-// 需要迁就的是测试。顺带这条断言也就验证了"窗口可配"。
-check('时间窗可配（调大到 6000ms）',
-  (await setInput('#dsh-settings-probe [data-input="spinWindowMs"]', '6000')) === true)
+// 时间窗必须**宽到与机器速度无关**：合成的画圈是逐次 CDP 往返（几百次），窗口一到期
+// 累计就被整轮作废。原来这里设的是 6000ms —— 那已经是这个字段的**上限**
+// （`spinWindowMs` 的 max，见 TUNING_FIELDS），机器吃力时画完 3.2 圈要 6 秒以上，
+// 于是只剩最后小半圈被累计、`total` 停在 0.59 弧度，三条断言一起假红（单跑就绿）。
+//
+// 所以这里**不假装能设更大**：断言改成"设置真的生效了"，值就是上限本身；要迁就的是
+// 画圈要比 6 秒快（下面那条 elapsed 断言会把这一点明确报出来，而不是留一堆看不懂的红）。
+const SPIN_WINDOW_MS = 6000
+check('时间窗可配（拉到上限 6000ms）',
+  (await setInput('#dsh-settings-probe [data-input="spinWindowMs"]', String(SPIN_WINDOW_MS))) === true)
 await sleep(400)
 check('窗口设置真的生效了',
-  (await ev('window.__dshLive2dPet.spinDebug().windowMs')) === 6000,
+  (await ev('window.__dshLive2dPet.spinDebug().windowMs')) === SPIN_WINDOW_MS,
   'windowMs=' + await ev('window.__dshLive2dPet.spinDebug().windowMs'))
 const spinSetup = await json(`(() => {
   const r = document.querySelector('[data-dsh-live2d-pet]').getBoundingClientRect()
   return JSON.stringify({ cx: r.x + r.width / 2, cy: r.y + r.height / 2, radius: r.width * 0.45 })
 })()`)
-const steps = 96
+// 步数=每圈 32 步（每步 ~11°，比"抖动"大得多，判定按 `atan2` 的增量累计，够用）。
+// 早先是每圈 96 步 = 308 次 CDP 往返，实测要 7 秒 —— 比 6 秒的窗口还长，累计必被作废。
+// 每次往返约 23ms 是这里唯一真正的时间开销，所以**减少步数**是唯一有效的办法。
+const steps = 32
 const turns = 3.2
+// 画圈本身要**比时间窗快**，否则窗口中途到期、累计被整轮作废（见上面的说明）。
+// 所以顺手量一下耗时并断言：机器吃力时这条会直接报出来，而不是让下面三条一起红。
+const spinStart = Date.now()
 for (let i = 0; i <= steps * turns; i++) {
   const angle = (i / steps) * Math.PI * 2
   const x = Math.round((spinSetup?.cx ?? 0) + Math.cos(angle) * (spinSetup?.radius ?? 100))
   const y = Math.round((spinSetup?.cy ?? 0) + Math.sin(angle) * (spinSetup?.radius ?? 100))
   await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, button: 'none', buttons: 0 })
 }
+const spinElapsed = Date.now() - spinStart
+check('合成画圈跑得比时间窗快（否则累计会被整轮作废）', spinElapsed < SPIN_WINDOW_MS * 0.8,
+  '画了 ' + Math.ceil(steps * turns) + ' 步用了 ' + spinElapsed + 'ms，窗口 ' + SPIN_WINDOW_MS + 'ms')
 const spinLine = await ev('JSON.stringify(window.__dshLive2dPet.effectiveLines().spin)')
 const spun = await until(async () => {
   const text = await bubble()

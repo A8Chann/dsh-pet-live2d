@@ -36,6 +36,69 @@ HTTP：壳 POST `/__desktop/probe` 问判定，页面 GET 插件自己的 `/api/
 （不含任务栏，否则宠物会被任务栏盖住点不到），位置取工作区左上角。
 窗口的扩展样式是 `0xC0138`：`WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_APPWINDOW`。
 
+## 单文件便携 exe（M4 已打通）
+
+**发出去的是一个文件**：`dist/DSH桌宠.exe`（~55MB，不用安装，双击就跑）。四样东西
+在里面：壳（Tauri/WebView2）、**sidecar 的独立二进制**、**sidecar 的资源**（插件宿主
+半区 + 随包宠物 + React + Cubism Core + 页面）、图标。
+
+### 为什么用 deno compile 而不是把宿主半区翻成 Rust
+
+`lib/index.js` 里的宠物发现、`pet.json` 归一化、模型引用闭包、随包宠物按内容指纹同步，
+是修过好几个 bug、有回归测试的逻辑；**翻一遍就是第二份实现**，而且两边会慢慢分叉。
+`deno compile` 把它连同 Node 兼容层一起编成一个 exe —— **JS 一行不改**，宠物行为与
+网页端天然一致。实测现有 sidecar 源码在 deno 2.9.7 下**直接跑通**（catalog 与 node 版
+逐字段相同，`node:http` / `node:fs` / `node:crypto` 的 `createHash` 都在）。
+
+三个坑：
+
+1. **`deno compile` 没有 `--strip`**（试过，报 unexpected argument）。更意外的是
+   **`llvm-strip --strip-all` 也压不动它**：86.3MB 进、86.3MB 出（装了 `llvm-tools`
+   再用 `rust-strip` 走了一遍，结果一样）。所以那 86MB **不是符号，是 V8 运行时本体**
+   —— 想变小只能不装 JS 运行时（把宿主半区翻成 Rust，约 10MB），代价是第二份实现。
+   实测产物：sidecar 86.3MB + 资源 5.6MB → **成品 exe 95.5MB**。
+2. **`--include <目录>` 必须显式给**：资源是运行期用拼出来的路径读的，静态分析看不见。
+   不给的症状是"开发时好好的、打包后 404 / Module not found"。
+3. 独立二进制里**不要把 `import.meta.url` 那套当判据**。试过 `Deno.mainModule` 与
+   "dev 的 embed 目录在不在"，两个都不可靠 —— 编译产物里的**虚拟文件系统也能
+   `existsSync`**，于是误判成开发期，然后去读一个不存在的仓库路径
+   （症状：`Module not found: .../dsh-live2d-pet/lib/index.js`）。改成**壳显式告知**：
+   `PET_DESKTOP_EMBED` 在 = published。
+
+### 壳与 sidecar 的分工（解包这件事只能壳做）
+
+壳先把资源解包到运行期目录、把 `PET_DESKTOP_EMBED` 指对，**才能**拉起 sidecar——
+sidecar 用 `pluginRoot()` 推 `pets/` 目录（它只认文件系统），所以插件那份副本必须真的
+在磁盘上，且布局与真包一致。
+
+运行期目录**便携优先**：exe 旁边可写就用 `.\DSH桌宠-data\`（U 盘、绿色版带着走），
+不可写才退到 `%LOCALAPPDATA%\<identifier>\runtime\`。判据是**真的写一次试试**，不是猜
+路径权限。解包有 `.unpacked` / `.stamp` 标记（内容是"文件数|sidecar 大小"），换一版
+exe 才重解。
+
+### 资源清单要有两份（一份给壳、一份给 sidecar）
+
+`tools/prep-embed.mjs` 生成 `sidecar/embed-manifest.mjs`（JS，sidecar 解包时按它读）；
+`src-tauri/build.rs` 再把同一份清单翻译成 Rust（`embed_files.rs`，`include_bytes!` 要的是
+**字面量路径**，没法在运行期拼）。两边不一致时的症状是"打包后少了几个文件"，所以
+build.rs 会比对清单条数与实际嵌入条数并 `cargo:warning` 报出来。
+
+### 资源体积（实测）
+
+| 项 | 大小 |
+|---|---|
+| sidecar 独立二进制（strip 也没用，见上） | 86.3 MB |
+| embed 资源（78 个文件） | 5.57 MB |
+| ├ 插件宿主半区 + 随包宠物 | 4.12 MB |
+| ├ vendor 分包（pixi + 引擎） | 783 KB |
+| ├ Cubism Core（本机缓存那份，内嵌后离线可用） | 202 KB |
+| ├ React UMD（**生产版**：139KB；开发版 1.16MB） | 139 KB |
+| └ 页面 | 12 KB |
+| **成品 `dist/DSH桌宠.exe`** | **95.5 MB** |
+
+React 用生产版：单文件 exe 里体积要算，而桌宠出问题读的是我们自己的 `data-*` 读口与
+驱动，不需要 React 的警告。
+
 ## Windows 上最硬的一条：穿透的坐标只能由壳给
 
 `set_ignore_cursor_events(true)` 之后，Windows 把命中测试交给下层窗口，**页面收不到
@@ -91,6 +154,9 @@ HTTP 问 sidecar。两边接不上，所以中间这一步由页面自己发起�
    **默认关着**（发布版不该在本机留一个谁都能接管的端口）。
 2. `PowerShell Add-Type` + `SetCursorPos` **真的挪系统光标**。不挪光标就是假验证——
    判定链根本不会动。
+   ⚠️ **挪完要轮询"期望的判定结果"，并且挪不成就重挪**，判据**不要**写成"壳读到的坐标
+   等于目标"：这台机器上同时跑着别的桌面应用（实测前台是 DSH Desktop），它会动光标，
+   把外部干扰当回归就白查一轮。
 3. 读**窗口的扩展样式**：`WS_EX_TRANSPARENT`(0x20) 是操作系统做命中测试时看的那一位，
    壳里的 `ignored` 只是我们的**意图**。实测（气球页）：
 
@@ -108,6 +174,33 @@ HTTP 问 sidecar。两边接不上，所以中间这一步由页面自己发起�
 
 轮询要轮询**期望值**（等 `interactive === true`），不要轮询"稳定"（主仓库
 `docs-and-workflow` skill 里为此假红过）。
+
+## 驱动要"模拟真实操作"，不要自己造事件
+
+设置菜单的驱动（`tools/probe-settings.mjs`）踩到的：checkbox 上 `box.checked = x` +
+派发 `change` 事件，**React 根本不认**——DOM 的 `checked` 变了、插件里的开关没动、
+`localStorage` 也没写。React 对 checkbox 的 `onChange` 其实是挂在 **click** 上的。
+改成 `box.click()` 立刻通过。
+
+同一类教训在转圈那三条断言上（`tools/browser-test/cdp-interact.mjs`）：合成的画圈窗口
+原来调成 6000ms，机器吃力时画完 3.2 圈要 6 秒以上，累计被**整轮作废**，`total` 停在
+0.59 弧度，三条一起假红而单跑就绿。修法是**把窗口调到与机器速度无关**（60 秒）——
+这个窗口只用来证明"窗口可配"，真实触发判定不靠它。
+
+## 设置菜单：桌面端把设置正文接进右键面板
+
+桌面端**没有 DSH 的客户端壳**，所以 `ctx.slots`（设置页那一节）挂不上 —— 设置正文在
+网页端有家，在桌面端没有。做法是**在右键面板加第三个页签**（桌面端专属）：
+
+- 守卫是页面运行时留下的标记 `window.__petDesktop`（`desktopNow()`），
+  **网页端行为一个字不变**（那边仍然没有这个页签）；
+- 页签激活时面板加宽一档（270 → 342px，`[data-panel][data-wide]`），因为设置正文是表格；
+- 设置正文外面套一层 `data-settings`，把已有的设置样式作用域带进来（那套样式本来就为
+  窄容器收过一列）；
+- 托盘 →「设置…」用窗口事件 `pet://settings` 打开它，"归位"用 `pet://reset`。
+
+注意这块**改的是插件的浏览器半区**（`dsh-live2d-pet/lib/client.js`），所以网页端的
+19 个 driver 是它的回归网 —— 改完必须跑一遍 `run-suite.mjs`。
 
 ## 页面侧的垫片（照抄 tools/browser-test 那套）
 
