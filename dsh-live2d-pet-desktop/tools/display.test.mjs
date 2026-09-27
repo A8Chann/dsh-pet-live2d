@@ -72,32 +72,33 @@ test('偏好文件就是 %DSH_HOME%\\pet-desktop.json（两端同一个位置）
   rmSync(home, { recursive: true, force: true })
 })
 
-test('进程状态读口如实反映心跳与 pid', () => {
+test('进程状态读口如实反映心跳（running 才是判据）', () => {
   const home = tempHome('state')
   const cold = desktopProcessState(home)
   assert.equal(cold.file, false, '没写过就是没有')
   assert.equal(cold.heartbeatFresh, false)
-  // 拿当前进程当"桌面端"：它一定活着。
+  assert.equal(cold.running, false)
+  // 拿当前进程当"桌面端"：它一定活着，心跳也新鲜。
   writePreference(home, { desktopPid: process.pid, at: Date.now() })
   const warm = desktopProcessState(home)
   assert.equal(warm.heartbeatFresh, true)
-  assert.equal(warm.alive, true)
-  // 一个几乎不可能存在的 pid。
+  assert.equal(warm.running, true)
+  // 心跳过期 → 就是不在跑（哪怕那个 pid 号还占着）。
   writePreference(home, { desktopPid: 999_999, at: 0 })
   const stale = desktopProcessState(home)
   assert.equal(stale.heartbeatFresh, false)
-  assert.equal(stale.alive, false)
+  assert.equal(stale.running, false)
   rmSync(home, { recursive: true, force: true })
 })
 
-test('不存在的 pid 不算活着（pidAlive 的 ESRCH 分支）', () => {
-  const home = tempHome('dead-pid')
-  writePreference(home, { desktopPid: 999_999, at: Date.now() })
-  // 心跳新鲜但 pid 已经没了 —— `running()` 走的是"心跳 or pid"，
-  // 这条只钉 pidAlive 本身：它必须说 false（否则会一直以为桌面端还在）。
+test('判据只看心跳 —— pid 号被重用也不会误判成"还在跑"', () => {
+  const home = tempHome('pid-reuse')
+  // 心跳过期，但 pid 指向**当前这个活着的进程**（模拟"桌面端被杀之后号被别的进程拿走"）。
+  writePreference(home, { desktopPid: process.pid, at: Date.now() - HEARTBEAT_TTL_MS - 1000 })
   const state = desktopProcessState(home)
-  assert.equal(state.heartbeatFresh, true, '心跳字段本身是新鲜的')
-  assert.equal(state.alive, false, '但进程已经没了')
+  assert.equal(state.heartbeatFresh, false, '心跳已经过期')
+  assert.equal(state.pidStillTaken, true, '那个 pid 号确实还占着（可能是别人的进程）')
+  assert.equal(state.running, false, '**结论必须是不在跑** —— 拿 pid 当判据就会在这里说"活着"')
   rmSync(home, { recursive: true, force: true })
 })
 
