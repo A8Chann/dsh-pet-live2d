@@ -19,6 +19,11 @@ pub fn names() -> Vec<&'static str> {
     table::EMBED.iter().map(|(key, _)| *key).collect()
 }
 
+/// 名字与内容（解包、同步随包宠物时用）。
+pub fn entries() -> impl Iterator<Item = (&'static str, &'static [u8])> {
+    table::EMBED.iter().map(|(key, bytes)| (*key, *bytes))
+}
+
 /// 名字与大小（排查时一眼看出哪份资源没进来）。
 pub fn listing() -> Vec<(&'static str, usize)> {
     table::EMBED.iter().map(|(key, bytes)| (*key, bytes.len())).collect()
@@ -33,29 +38,9 @@ pub fn totals() -> (usize, usize) {
         })
 }
 
-/// 解包：把 `plugin/` 前缀下的资源写到 `target`（宿主半区要按文件系统扫宠物目录）。
-///
-/// 页面与客户端**不解包** —— 服务器直接从内存发出去，少一次磁盘往返，也少一处能被改坏
-/// 的副本。
-pub fn extract_plugin(target: &std::path::Path) -> std::io::Result<usize> {
-    let mut written = 0;
-    for (name, bytes) in table::EMBED {
-        let Some(relative) = name.strip_prefix("plugin/") else {
-            continue;
-        };
-        let dest = target.join(relative.replace('/', std::path::MAIN_SEPARATOR_STR));
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&dest, bytes)?;
-        written += 1;
-    }
-    Ok(written)
-}
-
 /// 解包是否已经做过（用"随包宠物目录里有没有 pet.json"判断，比写标记文件更直观）。
 pub fn plugin_extracted(target: &std::path::Path) -> bool {
-    table::EMBED.iter().any(|(name, _)| {
+    entries().any(|(name, _)| {
         name.starts_with("plugin/pets/") && name.ends_with("/pet.json") && {
             let relative = name.trim_start_matches("plugin/");
             target

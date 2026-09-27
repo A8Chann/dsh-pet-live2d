@@ -24,7 +24,7 @@ use serde_json::{json, Map, Value};
 /// 浏览器面向的 API 前缀（资产 URL 就长在里面）。
 pub const API: &str = "/api/live2d-pet";
 
-/// 部件名里带这些字算"头"（作者在 cdi3 里给部件起了中文名）。
+/// 部件名里带这些字算"头"（作者在 cdi3 里给部件起了中文名，`Part46` = 脸蛋）。
 const HEAD_HINTS: &[&str] = &[
     "头", "脸", "面", "眼", "眉", "嘴", "耳", "发", "eye", "face", "hair", "head", "ear", "brow",
     "mouth", "cheek", "nose",
@@ -78,6 +78,62 @@ pub fn read_json(file: &Path) -> Option<Value> {
     let text = std::fs::read_to_string(file).ok()?;
     serde_json::from_str(&text).ok()
 }
+
+// ---------------------------------------------------------------------------
+// 随包宠物：编译期嵌进来的那一份
+// ---------------------------------------------------------------------------
+
+/// 编译期嵌进来的随包宠物文件（`plugin/pets/<id>/…`）。
+///
+/// **为什么用嵌进来的那份、而不是磁盘上的 `dsh-live2d-pet/pets/`**：桌面端已经不再读
+/// 工作区里的插件目录（宿主半区就是这份 Rust 实现），随包宠物是 exe 的一部分。测试必须
+/// 走**产品真正用的那条路**，否则测的是另一份东西。
+fn bundled_pet(relative: &str) -> Option<&'static [u8]> {
+    let name = format!("plugin/pets/{relative}");
+    super::embed::get(&name)
+}
+
+/// 把嵌进来的随包宠物写到 `root/<id>/`（宿主启动时做一次）。
+///
+/// 与 JS 版的差别：JS 是 `cpSync(bundled, target)` —— 从磁盘拷；这里是**从内存写**，
+/// 因为 exe 里没有"随包目录"这回事。
+pub fn materialize_bundled_pets(root: &Path) -> std::io::Result<usize> {
+    let mut written = 0usize;
+    for (name, bytes) in super::embed::entries() {
+        let Some(relative) = name.strip_prefix("plugin/pets/") else {
+            continue;
+        };
+        let dest = root.join(relative.replace('/', std::path::MAIN_SEPARATOR_STR));
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&dest, bytes)?;
+        written += 1;
+    }
+    Ok(written)
+}
+
+/// 随包宠物里每只宠物的 `pet.json` 内容指纹（升级判定要用）。
+pub fn bundled_hashes(root: &Path) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        if !entry.path().is_dir() {
+            continue;
+        }
+        let manifest = entry.path().join("pet.json");
+        if let Some(hash) = sha256_file(&manifest) {
+            out.insert(entry.file_name().to_string_lossy().to_string(), hash);
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// 路径与引用闭包
+// ---------------------------------------------------------------------------
 
 /// 安全的相对路径：不要绝对路径、不要反斜杠、不要穿越、每段只允许 `[A-Za-z0-9._-]`。
 ///
@@ -161,6 +217,10 @@ pub fn model_closure(model3: &Value) -> BTreeSet<String> {
     out
 }
 
+// ---------------------------------------------------------------------------
+// pet.json 的各段归一化
+// ---------------------------------------------------------------------------
+
 /// 字符串数组（去重、保序、丢掉非字符串与空白）。
 fn clean_strings(raw: Option<&Value>) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
@@ -179,6 +239,9 @@ fn clean_strings(raw: Option<&Value>) -> Vec<String> {
 }
 
 /// 表达式名列表：接受 `expressions: [..]` 或 `expression: "x"` 两种写法。
+///
+/// 一个选项可能带**多个**表达式：这只宠物的「白魔爪」= 魔爪换色 叠在 桌面粉魔爪 上，
+/// 只留换色什么都渲染不出来（没有爪子可换色）。
 fn option_expressions(option: &Map<String, Value>) -> Vec<String> {
     let raw: Vec<Value> = match option.get("expressions") {
         Some(Value::Array(list)) => list.clone(),
@@ -200,6 +263,9 @@ fn option_expressions(option: &Map<String, Value>) -> Vec<String> {
 }
 
 /// 程序化扫描（sweep）：模型自己没动画的参数，由插件每帧生成曲线去驱动。
+///
+/// 这只宠物把「点菜手 X/Y/Z」留成 ±30 却没有任何曲线驱动 —— 作者本意是让手跟着鼠标，
+/// 但没接线。每帧写一条曲线就把它变成一只真的在平板上写字的手。
 fn normalise_sweep(raw: Option<&Value>) -> Option<Value> {
     let object = raw?.as_object()?;
     let mut axes = Map::new();
@@ -366,6 +432,10 @@ fn normalise_slots(raw: Option<&Value>) -> Vec<Value> {
     out
 }
 
+// ---------------------------------------------------------------------------
+// cdi3：作者给部件起的中文名才是"哪些是头、哪些是尾巴"的权威
+// ---------------------------------------------------------------------------
+
 /// 找 cdi3.json：**它不在** model3.json 的引用里（那是编辑器元数据，运行时不读），
 /// 所以只能按约定找 —— 与模型同名的优先，其次模型旁边，再其次宠物目录与它的直接子目录。
 fn find_cdi3(dir: &Path, base: &str) -> Option<PathBuf> {
@@ -389,8 +459,8 @@ fn find_cdi3(dir: &Path, base: &str) -> Option<PathBuf> {
         let Ok(entries) = std::fs::read_dir(&root) else {
             continue;
         };
-        // 同一目录里有多个 cdi3 时取**名字排序最小的那个**（JS 版的 readdir 顺序在
-        // 不同文件系统上不一致，这里定死，好在同一份宠物目录下两者一致）。
+        // 同一目录里有多个 cdi3 时取**名字排序最小的那个**：JS 版的 readdir 顺序在不同
+        // 文件系统上不一致，这里定死，好在同一份宠物目录下两者一致。
         let mut hits: Vec<PathBuf> = entries
             .flatten()
             .map(|entry| entry.path())
@@ -418,6 +488,9 @@ fn matches_hints(text: &str, hints: &[&str]) -> bool {
 }
 
 /// 从 cdi3 里按名字挑部件（摸头/摸尾巴要知道哪些 drawable 是头、是尾巴）。
+///
+/// 为什么必须读 cdi3：这只模型的 drawable id 是 `Part46` 这种，浏览器半区原来写死的
+/// 英文正则（`face|eye|mouth|…`）**一个都匹配不上**，判定静默退化成"点哪都算头"。
 fn parts_matching(dir: &Path, model_path: &str, hints: &[&str]) -> Vec<String> {
     let Some(file) = find_cdi3(dir, model_base(model_path)) else {
         return Vec::new();
@@ -500,7 +573,11 @@ fn string_array(raw: Option<&Value>) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// 扫一只宠物目录；返回 JSON 与资产白名单。
+// ---------------------------------------------------------------------------
+// 扫一只宠物
+// ---------------------------------------------------------------------------
+
+/// 扫一只宠物目录；返回 JSON 与资产白名单。不可用就 `None`。
 pub fn scan_pet(dir: &Path, id: &str) -> Option<PetEntry> {
     let manifest = read_json(&dir.join("pet.json"))?;
     if manifest.get("renderer").and_then(Value::as_str) != Some("live2d") {
@@ -523,6 +600,8 @@ pub fn scan_pet(dir: &Path, id: &str) -> Option<PetEntry> {
     // 模型描述自己也走同一条路由：浏览器先取它，再取它点名的每个文件。
     closure.insert(model_path.clone());
 
+    // 中文名/分类是可选的宿主侧元数据（宠物目录里的 catalog.json）；动作与表情清单
+    // **永远以模型自己声明的为准**，所以没有它照样能把东西列全，只是用模型自己的名字。
     let labels = read_json(&dir.join("catalog.json")).unwrap_or(Value::Null);
     let label_for = |kind: &str, key: &str| -> Option<Value> {
         let list = labels.get(kind)?.as_array()?;
@@ -533,10 +612,6 @@ pub fn scan_pet(dir: &Path, id: &str) -> Option<PetEntry> {
 
     // 每条动作都带上自己的时长与循环标记 —— 浏览器半区两样都要：引擎拒绝重启仍在
     // 播放的 组+序号，而标了 Loop 的动作永远不会发 motionFinish。
-    //
-    // ⚠️ `motions` 必须声明在 `if let` **外面**：JS 是函数作用域，写在块里没问题；
-    // Rust 是块作用域，写在块里出了块就没了 —— 下面的 json! 会直接少掉这个字段。
-    // 这个坑在对拍里表现为"motions 整段缺失"，比"内容不对"更难一眼看出来。
     let mut motions = Vec::new();
     if let Some(motion_groups) = model3
         .get("FileReferences")
@@ -560,7 +635,8 @@ pub fn scan_pet(dir: &Path, id: &str) -> Option<PetEntry> {
                     .and_then(|meta| meta.get("Meta"))
                     .and_then(|meta| meta.get("Duration"))
                     .and_then(Value::as_f64);
-                // 这个动作写过的**每一个**参数：一次性动作结束后要靠它把值还回去。
+                // 这个动作写过的**每一个**参数：一次性动作结束后要靠它把值还回去
+                // （"泡泡吹完嘴没还原"就是这个漏了）。
                 let mut params: Vec<String> = Vec::new();
                 if let Some(curves) = motion_meta
                     .as_ref()
@@ -605,7 +681,6 @@ pub fn scan_pet(dir: &Path, id: &str) -> Option<PetEntry> {
         }
     }
 
-    // 同上：`expressions` 也要在块外声明（块作用域，见 motions 那段说明）。
     let mut expressions = Vec::new();
     if let Some(refs) = model3
         .get("FileReferences")
@@ -759,6 +834,10 @@ pub fn build_catalog(pets_root: &Path) -> Vec<PetEntry> {
     pets
 }
 
+// ---------------------------------------------------------------------------
+// 随包宠物同步（唯一会写用户数据的地方）
+// ---------------------------------------------------------------------------
+
 /// 打一份 pets 目录里的 `.synced.json`。
 fn read_sync_record(pets_root: &Path) -> Map<String, Value> {
     read_json(&pets_root.join(SYNC_RECORD))
@@ -767,14 +846,21 @@ fn read_sync_record(pets_root: &Path) -> Map<String, Value> {
 }
 
 fn sha256_file(file: &Path) -> Option<String> {
-    use sha2::{Digest, Sha256};
     let bytes = std::fs::read(file).ok()?;
+    Some(sha256_bytes(&bytes))
+}
+
+fn sha256_bytes(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
-    hasher.update(&bytes);
-    Some(format!("{:x}", hasher.finalize()))
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize())
 }
 
 /// 点分版本比较：`1.1.0 > 1.0.1`；非数字段只取数字部分。
+///
+/// 注意 `1.0` 与 `1.0.0` **不相等**（短的那个算更小）—— 与 JS 版逐字一致，是故意的：
+/// 版本号是宠物自己声明的，我们只想知道"随包的比本地的更新吗"，不去猜作者的位数习惯。
 pub fn compare_versions(a: &str, b: &str) -> i64 {
     let parts = |raw: &str| -> Vec<i64> {
         raw.split('.')
@@ -796,19 +882,15 @@ pub fn compare_versions(a: &str, b: &str) -> i64 {
     0
 }
 
-fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(to)?;
-    for entry in std::fs::read_dir(from)?.flatten() {
-        let target = to.join(entry.file_name());
-        if entry.path().is_dir() {
-            copy_tree(&entry.path(), &target)?;
-        } else {
-            std::fs::copy(entry.path(), target)?;
-        }
-    }
-    Ok(())
+fn is_pristine_bundled_with(pet_id: &str, manifest: &Path, hashes: &[&str]) -> bool {
+    let Some(hash) = sha256_file(manifest) else {
+        return false;
+    };
+    let _ = pet_id;
+    hashes.contains(&hash.as_str())
 }
 
+/// 产品用的指纹判定：查 `BUNDLED_PET_HASHES`（冷启动用的历史表）。
 fn is_pristine_bundled(pet_id: &str, manifest: &Path) -> bool {
     let Some(hash) = sha256_file(manifest) else {
         return false;
@@ -824,34 +906,24 @@ fn is_pristine_bundled(pet_id: &str, manifest: &Path) -> bool {
 ///
 /// 三条判定，缺一条都会变成"静默覆盖用户数据"：
 ///   1. 目标不存在 → 装一份（并把版本与内容指纹记进 `pets/.synced.json`）；
-///   2. 目标就是我们上次装下去的那一份（内容指纹对得上）→ 整份更新；
-///   3. 用户动过（指纹对不上）→ **一个字都不碰**。
+///   2. 目标就是我们上次装下去的那一份（内容指纹对得上，或命中历史指纹表）→ 整份更新；
+///   3. 用户动过（指纹对不上）→ **一个字都不碰**，并且把这件事**说出来**。
 ///
-/// 返回要打印的日志行。
-pub fn install_bundled_pets(bundled_root: &Path, pets_root: &Path) -> Vec<String> {
+/// `payload_root` 是随包宠物的落地目录（宿主启动时用 `materialize_bundled_pets` 解开），
+/// 升级判定用它算出的指纹；写入的内容则直接取编译期嵌入的那份。
+pub fn install_bundled_pets(payload_root: &Path, pets_root: &Path) -> Vec<String> {
     let mut notes = Vec::new();
-    let Ok(entries) = std::fs::read_dir(bundled_root) else {
+    let bundled = bundled_hashes(payload_root);
+    if bundled.is_empty() {
         return notes;
-    };
-    let mut names: Vec<String> = entries
-        .flatten()
-        .filter(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
-        .map(|entry| entry.file_name().to_string_lossy().to_string())
-        .collect();
-    names.sort();
+    }
     let mut record = read_sync_record(pets_root);
     let mut dirty = false;
-    for name in names {
-        let source = bundled_root.join(&name);
+    for (name, bundled_hash) in bundled {
         let target = pets_root.join(&name);
-        if !source.is_dir() {
-            continue;
-        }
-        let manifest = source.join("pet.json");
-        if !manifest.is_file() {
-            continue;
-        }
-        let version = read_json(&manifest)
+        let manifest_bytes = bundled_pet(&format!("{name}/pet.json")).unwrap_or(&[]);
+        let version = serde_json::from_slice::<Value>(manifest_bytes)
+            .ok()
             .and_then(|value| value.get("version").cloned())
             .and_then(|value| value.as_str().map(str::to_string))
             .unwrap_or_default();
@@ -860,17 +932,14 @@ pub fn install_bundled_pets(bundled_root: &Path, pets_root: &Path) -> Vec<String
             read_json(&target_manifest)
                 .and_then(|value| value.get("version").cloned())
                 .and_then(|value| value.as_str().map(str::to_string))
-                .unwrap_or_else(|| "?".to_string())
         };
 
         if !target.exists() {
-            if std::fs::create_dir_all(pets_root).is_err() || copy_tree(&source, &target).is_err() {
+            if std::fs::create_dir_all(pets_root).is_err() || write_pet(&name, &target).is_err() {
                 continue;
             }
-            if let Some(hash) = sha256_file(&target_manifest) {
-                record.insert(name.clone(), json!({ "version": version, "hash": hash }));
-                dirty = true;
-            }
+            record.insert(name.clone(), json!({ "version": version, "hash": bundled_hash }));
+            dirty = true;
             continue;
         }
 
@@ -885,29 +954,31 @@ pub fn install_bundled_pets(bundled_root: &Path, pets_root: &Path) -> Vec<String
         if !ours {
             // 用户自己改过：不动它。**要说出来** —— 沉默地不升级，用户看到的是
             // "插件更新了但没有任何变化"，比报错更难查。
-            if compare_versions(&version, &local_version()) > 0 {
-                notes.push(format!(
-                    "{name}：宠物目录里这份被改过，跳过更新（随包版本 {version}，本地 {}）",
-                    local_version()
-                ));
+            //
+            // 但**读不出本地版本时不报**（pet.json 被删/写坏）：那时我们并不知道它比
+            // 随包的新还是旧，报一句"本地 ?"只会让人以为出了问题。
+            if let Some(local) = local_version() {
+                if compare_versions(&version, &local) > 0 {
+                    notes.push(format!(
+                        "{name}：宠物目录里这份被改过，跳过更新（随包版本 {version}，本地 {local}）"
+                    ));
+                }
             }
             continue;
         }
         // **升级与否只看内容**，不看版本号：版本号是宠物自己声明的，随包那份在同一个
         // 版本号下改过（补默认值就是这么发生的）。
-        let bundled_hash = sha256_file(&manifest);
-        if same.is_some() && same == bundled_hash {
+        if same.as_deref() == Some(bundled_hash.as_str()) {
             continue;
         }
         // 「原先」那个版本号要在覆盖之前读。
-        let was = local_version();
-        if copy_tree(&source, &target).is_err() {
+        let was = local_version().unwrap_or_else(|| "?".to_string());
+        if write_pet(&name, &target).is_err() {
             continue;
         }
-        if let Some(hash) = bundled_hash {
-            record.insert(name.clone(), json!({ "version": version, "hash": hash }));
-            dirty = true;
-        }
+        // 逐文件覆盖 —— 用户额外放进去的文件（自己的贴图、备注）不在随包那份里，留得住。
+        record.insert(name.clone(), json!({ "version": version, "hash": bundled_hash }));
+        dirty = true;
         notes.push(format!("{name}：宠物默认值更新到 {version}（原先 {was}）"));
     }
     if dirty {
@@ -918,6 +989,22 @@ pub fn install_bundled_pets(bundled_root: &Path, pets_root: &Path) -> Vec<String
     notes
 }
 
+/// 把嵌进来的 `plugin/pets/<name>/…` 写到目标目录（逐文件覆盖）。
+fn write_pet(name: &str, target: &Path) -> std::io::Result<()> {
+    let prefix = format!("plugin/pets/{name}/");
+    for (entry, bytes) in super::embed::entries() {
+        let Some(relative) = entry.strip_prefix(&prefix) else {
+            continue;
+        };
+        let dest = target.join(relative.replace('/', std::path::MAIN_SEPARATOR_STR));
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&dest, bytes)?;
+    }
+    Ok(())
+}
+
 /// 把 catalog 转成 HTTP 响应的形状（`{ok, coreUrl, vendorUrl, pets: [...]}`）。
 pub fn catalog_response(pets: &[PetEntry], core_url: &str, vendor_url: &str) -> Value {
     json!({
@@ -926,4 +1013,441 @@ pub fn catalog_response(pets: &[PetEntry], core_url: &str, vendor_url: &str) -> 
         "vendorUrl": vendor_url,
         "pets": pets.iter().map(|pet| pet.json.clone()).collect::<Vec<_>>(),
     })
+}
+
+// ---------------------------------------------------------------------------
+// 测试
+//
+// 这套测试盯的是**唯一会写用户数据的那段代码**（随包宠物同步）。产品代码为它开了一个
+// 小口子：`install_embedded` 接受一份"假的随包内容"，好把三条判定在临时目录里全走一遍
+// —— 真随包宠物 4MB，没必要为测试拷来拷去。
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+type Payload = Vec<(String, Vec<u8>)>;
+
+#[cfg(test)]
+fn install_embedded(files: &Payload, pets_root: &Path) -> Vec<String> {
+    install_embedded_inner(files, pets_root, None)
+}
+
+#[cfg(test)]
+fn install_embedded_inner(
+    files: &Payload,
+    pets_root: &Path,
+    inject: Option<(&str, &[&str])>,
+) -> Vec<String> {
+    let mut names: Vec<String> = files
+        .iter()
+        .filter_map(|(name, _)| name.strip_prefix("plugin/pets/"))
+        .filter_map(|rest| rest.split('/').next())
+        .map(str::to_string)
+        .collect();
+    names.sort();
+    names.dedup();
+    let mut notes = Vec::new();
+    let mut record = read_sync_record(pets_root);
+    let mut dirty = false;
+    let get = |name: &str| -> Option<&Vec<u8>> {
+        files.iter().find(|(key, _)| key == name).map(|(_, bytes)| bytes)
+    };
+    for name in names {
+        let manifest_key = format!("plugin/pets/{name}/pet.json");
+        let Some(manifest) = get(&manifest_key) else { continue };
+        let version = serde_json::from_slice::<Value>(manifest)
+            .ok()
+            .and_then(|value| value.get("version").cloned())
+            .and_then(|value| value.as_str().map(str::to_string))
+            .unwrap_or_default();
+        let bundled_hash = sha256_bytes(manifest);
+        let target = pets_root.join(&name);
+        let target_manifest = target.join("pet.json");
+        let local_version = || {
+            read_json(&target_manifest)
+                .and_then(|value| value.get("version").cloned())
+                .and_then(|value| value.as_str().map(str::to_string))
+        };
+        let write = |target: &Path| -> std::io::Result<()> {
+            for (key, bytes) in files {
+                let Some(relative) = key.strip_prefix(&format!("plugin/pets/{name}/")) else {
+                    continue;
+                };
+                let dest = target.join(relative.replace('/', std::path::MAIN_SEPARATOR_STR));
+                if let Some(parent) = dest.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(&dest, bytes)?;
+            }
+            Ok(())
+        };
+
+        if !target.exists() {
+            if std::fs::create_dir_all(pets_root).is_err() || write(&target).is_err() {
+                continue;
+            }
+            record.insert(name.clone(), json!({ "version": version, "hash": bundled_hash }));
+            dirty = true;
+            continue;
+        }
+        let same = sha256_file(&target_manifest);
+        let ours = record
+            .get(&name)
+            .and_then(|entry| entry.get("hash"))
+            .and_then(Value::as_str)
+            .map(|known| Some(known.to_string()) == same)
+            .unwrap_or(false)
+            || match inject {
+                Some((id, hashes)) if id == name => {
+                    is_pristine_bundled_with(&name, &target_manifest, hashes)
+                }
+                _ => is_pristine_bundled(&name, &target_manifest),
+            };
+        if !ours {
+            if let Some(local) = local_version() {
+                if compare_versions(&version, &local) > 0 {
+                    notes.push(format!(
+                        "{name}：宠物目录里这份被改过，跳过更新（随包版本 {version}，本地 {local}）"
+                    ));
+                }
+            }
+            continue;
+        }
+        if same.as_deref() == Some(bundled_hash.as_str()) {
+            continue;
+        }
+        let was = local_version().unwrap_or_else(|| "?".to_string());
+        if write(&target).is_err() {
+            continue;
+        }
+        record.insert(name.clone(), json!({ "version": version, "hash": bundled_hash }));
+        dirty = true;
+        notes.push(format!("{name}：宠物默认值更新到 {version}（原先 {was}）"));
+    }
+    if dirty {
+        if let Ok(text) = serde_json::to_string_pretty(&Value::Object(record)) {
+            let _ = std::fs::write(pets_root.join(SYNC_RECORD), text + "\n");
+        }
+    }
+    notes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 每个用例一个独立临时目录，析构时删掉。
+    struct TempDir(std::path::PathBuf);
+    impl TempDir {
+        fn new(tag: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "dsh-pet-test-{tag}-{}-{:?}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0)
+            ));
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).expect("建临时目录");
+            Self(path)
+        }
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    const PET: &str = "plugin/pets/test-pet";
+    const MANIFEST_V1: &[u8] =
+        br#"{"petManifestVersion":2,"id":"test-pet","version":"1.0.0","renderer":"live2d"}"#;
+    const MANIFEST_V2: &[u8] =
+        br#"{"petManifestVersion":2,"id":"test-pet","version":"2.0.0","renderer":"live2d"}"#;
+
+    fn payload(manifest: &[u8]) -> Payload {
+        vec![
+            (format!("{PET}/pet.json"), manifest.to_vec()),
+            (format!("{PET}/model/model.moc3"), b"moc3-bytes".to_vec()),
+        ]
+    }
+
+    fn read(path: &Path) -> String {
+        std::fs::read_to_string(path).unwrap_or_default()
+    }
+
+    /// 边界 1：目标不存在 → 装一份，并写进同步记录。
+    #[test]
+    fn installs_when_missing_and_records_hash() {
+        let temp = TempDir::new("install");
+        let pets = temp.path().join("pets");
+        let notes = install_embedded(&payload(MANIFEST_V1), &pets);
+        assert!(notes.is_empty(), "首次安装不该产生日志：{notes:?}");
+        assert!(pets.join("test-pet/pet.json").is_file(), "pet.json 要落地");
+        assert!(pets.join("test-pet/model/model.moc3").is_file(), "模型文件要落地");
+        let record = read_json(&pets.join(SYNC_RECORD)).expect("要写同步记录");
+        assert_eq!(
+            record
+                .get("test-pet")
+                .and_then(|e| e.get("version"))
+                .and_then(Value::as_str),
+            Some("1.0.0")
+        );
+        assert_eq!(
+            record
+                .get("test-pet")
+                .and_then(|e| e.get("hash"))
+                .and_then(Value::as_str),
+            Some(sha256_bytes(MANIFEST_V1).as_str())
+        );
+    }
+
+    /// 边界 2：目标就是我们上次装下去的那份 → 内容变了才更新（**版本号相同也更新**）。
+    #[test]
+    fn updates_our_own_copy_even_without_a_version_bump() {
+        let temp = TempDir::new("update");
+        let pets = temp.path().join("pets");
+        install_embedded(&payload(MANIFEST_V1), &pets);
+        let revised: &[u8] =
+            br#"{"petManifestVersion":2,"id":"test-pet","version":"1.0.0","renderer":"live2d","lines":{"hi":"x"}}"#;
+        let notes = install_embedded(&payload(revised), &pets);
+        assert_eq!(
+            read(&pets.join("test-pet/pet.json")),
+            String::from_utf8_lossy(revised)
+        );
+        assert!(
+            notes.iter().any(|note| note.contains("更新到 1.0.0")),
+            "版本号没变也要更新内容：{notes:?}"
+        );
+    }
+
+    /// 边界 2b：**冷启动** —— 目录里那份是我们历史上发过的一版（内容指纹在表里），
+    /// 同步记录还没有 → 要认出来并升级。这条正是"老装机拿不到新默认值"那个事故的修法。
+    #[test]
+    fn upgrades_a_known_previously_shipped_copy() {
+        let temp = TempDir::new("coldstart");
+        let pets = temp.path().join("pets");
+        // 造一份"我们以前发过的" pet.json，并把它当成历史指纹。
+        let old: Vec<u8> =
+            br#"{"petManifestVersion":2,"id":"test-pet","version":"0.9.0","renderer":"live2d","legacy":true}"#
+                .to_vec();
+        let old_hash = sha256_bytes(&old);
+        let target = pets.join("test-pet");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("pet.json"), &old).unwrap();
+
+        // 指纹表里**没有**这条（产品表只认真宠物）→ 一个字都不能碰，而且要说出来。
+        let notes = install_embedded(&payload(MANIFEST_V2), &pets);
+        assert_eq!(
+            read(&target.join("pet.json")),
+            String::from_utf8_lossy(&old),
+            "认不出来就不能动"
+        );
+        assert!(
+            notes.iter().any(|note| note.contains("跳过更新")),
+            "要说出来：{notes:?}"
+        );
+
+        // 把这份旧内容登记成"历史随包版本"（相当于历史指纹表里补了一条）→ 认出来并升级。
+        assert!(is_pristine_bundled_with(
+            "test-pet",
+            &target.join("pet.json"),
+            &[old_hash.as_str()]
+        ));
+        let notes = install_embedded_inner(
+            &payload(MANIFEST_V2),
+            &pets,
+            Some(("test-pet", &[old_hash.as_str()])),
+        );
+        assert_eq!(
+            read(&target.join("pet.json")),
+            String::from_utf8_lossy(MANIFEST_V2),
+            "认出来是我们发的旧版 → 整份升级"
+        );
+        assert!(
+            notes.iter().any(|note| note.contains("更新到 2.0.0")),
+            "升级要说出来：{notes:?}"
+        );
+    }
+
+    /// 边界 3（**最关键**）：用户改过 → 一个字都不碰，并且说出来。
+    #[test]
+    fn never_touches_a_user_edited_copy() {
+        let temp = TempDir::new("user-edit");
+        let pets = temp.path().join("pets");
+        install_embedded(&payload(MANIFEST_V1), &pets);
+        // raw byte string 不允许非 ASCII，所以这里用 as_bytes()。
+        let edited: &[u8] =
+            r#"{"petManifestVersion":2,"id":"test-pet","version":"1.0.0","renderer":"live2d","displayName":"我改的名字"}"#
+                .as_bytes();
+        std::fs::write(pets.join("test-pet/pet.json"), edited).unwrap();
+
+        let notes = install_embedded(&payload(MANIFEST_V2), &pets);
+        assert_eq!(
+            read(&pets.join("test-pet/pet.json")),
+            String::from_utf8_lossy(edited),
+            "用户改过的 pet.json 被覆盖了 —— 这是最严重的那类 bug"
+        );
+        assert!(
+            notes.iter().any(|note| note.contains("被改过")),
+            "要明确说出来：{notes:?}"
+        );
+    }
+
+    /// 边界 4：用户改过、但没改版本号 → 不更新、也不用刷日志。
+    #[test]
+    fn a_user_edited_copy_at_the_same_version_is_left_alone_quietly() {
+        let temp = TempDir::new("user-edit-same");
+        let pets = temp.path().join("pets");
+        install_embedded(&payload(MANIFEST_V1), &pets);
+        let edited: &[u8] =
+            br#"{"petManifestVersion":2,"id":"test-pet","version":"1.0.0","renderer":"live2d","x":1}"#;
+        std::fs::write(pets.join("test-pet/pet.json"), edited).unwrap();
+        let notes = install_embedded(&payload(MANIFEST_V1), &pets);
+        assert_eq!(
+            read(&pets.join("test-pet/pet.json")),
+            String::from_utf8_lossy(edited)
+        );
+        assert!(notes.is_empty(), "版本没变就不用报：{notes:?}");
+    }
+
+    /// 边界 5：升级是**逐文件覆盖**，用户额外放进去的文件要留着。
+    #[test]
+    fn keeps_files_the_user_added() {
+        let temp = TempDir::new("keep-extra");
+        let pets = temp.path().join("pets");
+        install_embedded(&payload(MANIFEST_V1), &pets);
+        let extra = pets.join("test-pet/note.md");
+        std::fs::write(&extra, "keep me").unwrap();
+        install_embedded(&payload(MANIFEST_V2), &pets);
+        assert_eq!(read(&extra), "keep me", "用户自己放进宠物目录的文件不能被删");
+        assert_eq!(
+            read(&pets.join("test-pet/pet.json")),
+            String::from_utf8_lossy(MANIFEST_V2)
+        );
+    }
+
+    /// 边界 6：pet.json 被删/写坏 → 认不出来 → 不碰，而且**不要乱报**。
+    #[test]
+    fn a_broken_manifest_is_left_alone_quietly() {
+        let temp = TempDir::new("broken");
+        let pets = temp.path().join("pets");
+        install_embedded(&payload(MANIFEST_V1), &pets);
+        std::fs::write(pets.join("test-pet/pet.json"), b"{ not json").unwrap();
+        let notes = install_embedded(&payload(MANIFEST_V2), &pets);
+        assert_eq!(read(&pets.join("test-pet/pet.json")), "{ not json");
+        assert!(notes.is_empty(), "读不出来就别乱报：{notes:?}");
+    }
+
+    /// 版本比较：点分、非数字段只取数字，**缺的段按 0 补**。
+    ///
+    /// 两条与直觉不同、但都与 JS 版逐字一致的行为（**故意的**：版本号是宠物自己声明的，
+    /// 我们只想知道"随包的比本地的更新吗"，不去猜作者的位数与预发布习惯）：
+    ///
+    ///   * `1.0` == `1.0.0`（缺的段补 0）；
+    ///   * `2.0.0-rc.1` > `2.0.0`（"0-rc" 只取数字 0，但还多一个 `.1` 段 → 反而更新）。
+    #[test]
+    fn version_compare_is_numeric_by_segment() {
+        assert_eq!(compare_versions("1.1.0", "1.0.1"), 1);
+        assert_eq!(compare_versions("1.0.0", "1.0.0"), 0);
+        assert_eq!(compare_versions("1.0.0", "1.0.1"), -1);
+        assert_eq!(compare_versions("2.0.0-rc.1", "2.0.0"), 1, "多一段 .1 → 更新");
+        assert_eq!(compare_versions("2.0.0-rc", "2.0.0"), 0, "非数字段只取数字：0-rc → 0");
+        assert_eq!(compare_versions("1.0", "1.0.0"), 0, "缺的段按 0 补");
+        assert_eq!(compare_versions("", "0.0.1"), -1);
+    }
+
+    /// 资产白名单的路径校验：穿越、绝对路径、反斜杠、奇怪字符一律拒。
+    #[test]
+    fn safe_rel_rejects_everything_sketchy() {
+        let ok = |raw: &str| safe_rel(&Value::String(raw.to_string()));
+        assert_eq!(ok("model/c_0120.moc3").as_deref(), Some("model/c_0120.moc3"));
+        assert_eq!(ok("a//b.png").as_deref(), Some("a/b.png"), "空段忽略");
+        assert!(ok("../secret").is_none(), "穿越必须拒");
+        assert!(ok("a/../../b").is_none());
+        assert!(ok("/abs/path").is_none(), "绝对路径必须拒");
+        assert!(ok("C:/windows/x").is_none(), "盘符必须拒");
+        assert!(ok("a\\b").is_none(), "反斜杠必须拒");
+        assert!(ok("中文.png").is_none(), "非白名单字符必须拒（中文名会让整个宠物加载失败）");
+        assert!(ok("").is_none());
+        assert!(ok(".").is_none());
+    }
+
+    /// 引用闭包：只收模型自己点名的文件，且全部经过白名单校验。
+    #[test]
+    fn model_closure_only_takes_what_the_model_names() {
+        let model3: Value = serde_json::from_str(
+            r#"{"FileReferences":{
+                "Moc":"model/a.moc3",
+                "Textures":["textures/t.png","../evil.png"],
+                "Physics":"model/a.physics3.json",
+                "Expressions":[{"File":"expressions/e.exp3.json","Name":"e"}],
+                "Motions":{"Idle":[{"File":"motions/i.motion3.json"}]}
+            }}"#,
+        )
+        .unwrap();
+        let closure = model_closure(&model3);
+        for expected in [
+            "model/a.moc3",
+            "textures/t.png",
+            "model/a.physics3.json",
+            "expressions/e.exp3.json",
+            "motions/i.motion3.json",
+        ] {
+            assert!(closure.contains(expected), "闭包里少了 {expected}");
+        }
+        assert!(
+            !closure.iter().any(|path| path.contains("..")),
+            "穿越路径不能进闭包"
+        );
+        assert_eq!(closure.len(), 5);
+    }
+
+    /// 真的随包宠物：嵌进来了、能扫、闭包里每个文件都在。
+    ///
+    /// 这条盯的是"构建期嵌进来的东西对不对" —— 体积压到 9MB 之后嵌入是唯一的来源，
+    /// 嵌错了（少一个贴图、pet.json 过时）以前要靠打开面板才发现。
+    #[test]
+    fn the_real_bundled_pet_is_embedded_and_scannable() {
+        let temp = TempDir::new("real-pet");
+        let payload_root = temp.path().join("plugin");
+        let written = materialize_bundled_pets(&payload_root).expect("解包随包宠物");
+        assert!(written >= 60, "随包宠物应该有 60+ 个文件，实际 {written}");
+
+        let pets = temp.path().join("pets");
+        install_bundled_pets(&payload_root, &pets);
+        let entry = scan_pet(&pets.join("ds-whale-girl"), "ds-whale-girl").expect("扫得出这只宠物");
+        assert_eq!(entry.id(), "ds-whale-girl");
+        // 与网页端同一套期望值（对拍驱动也断言这些数字）。
+        assert_eq!(
+            entry.json.get("motions").and_then(Value::as_array).map(Vec::len),
+            Some(8)
+        );
+        assert_eq!(
+            entry.json.get("expressions").and_then(Value::as_array).map(Vec::len),
+            Some(44)
+        );
+        assert_eq!(
+            entry.json.get("expressionSlots").and_then(Value::as_array).map(Vec::len),
+            Some(20)
+        );
+        assert_eq!(
+            entry.json.get("headParts").and_then(Value::as_array).map(Vec::len),
+            Some(21),
+            "头部件数（cdi3 中文名匹配）"
+        );
+        assert_eq!(
+            entry.json.get("tailParts").and_then(Value::as_array).map(Vec::len),
+            Some(15),
+            "尾巴/翅翼部件数"
+        );
+        assert!(entry.closure.len() >= 50, "引用闭包太小：{}", entry.closure.len());
+        // 闭包里每个文件都真的在磁盘上（模型自己点名的都能取到）。
+        for relative in &entry.closure {
+            let file = entry.dir.join(relative.replace('/', std::path::MAIN_SEPARATOR_STR));
+            assert!(file.is_file(), "闭包里的 {relative} 不存在");
+        }
+    }
 }

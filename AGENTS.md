@@ -1,6 +1,7 @@
 # DSH_Pet_Live2d 项目规则
 
-给 DSH Web GUI 做 Live2D 桌宠插件（`dsh-live2d-pet/`）+ 配套验证工具（`tools/`）。
+给 DSH Web GUI 做 Live2D 桌宠插件（`dsh-live2d-pet/`）+ 配套验证工具（`tools/`），
+外加桌面端（`dsh-live2d-pet-desktop/`：单文件便携 exe，Tauri 壳 + 同进程 Rust 宿主半区）。
 模型是 B站@氵六青 的 DS鲸鱼娘（Cubism 5，1 个 .moc3、8 组动作、44 个表情）。
 
 ## 核心规则
@@ -8,6 +9,11 @@
 - 回复用用户的语言（中文）；代码注释、commit message 也用中文。
 - 验证一律用**确定性信号**（读引擎在帧内写进模型的参数值），不要用截图逐像素/哈希比对；driver 必须以退出码收尾，不允许只打印不断言。
 - 动引擎代码前先确认帧内写入顺序，避免参数"永远关不掉"、动作结束不还原这类不可逆状态。
+- **含中文的文件绝不用 PowerShell 读改写**（`Get-Content` / `Set-Content` / `-replace` 全算）：
+  它按 ANSI/GBK 读、按 UTF-8 写，**会把中文注释与中文字符串数据一起毁掉**，而且毁完还能编译
+  通过（字符串变成 `\u{fffd}` 才报错，早一步只是显示成乱码）。改文件只用 write/edit 工具；
+  真被毁了用 `dsh-live2d-pet-desktop/tools/repair-encoding.mjs` 试着逆转，逆转不了就重写。
+  （2026-09 为改一个测试断言踩过：一次往返毁掉 `catalog.rs` 117 行，最后整文件重写。）
 
 ## 文档分工（别把 README 写成开发日志）
 
@@ -29,3 +35,13 @@
 - 用 CDP 驱动浏览器、做点击穿透、等待模型加载、做 A/B 变体、驱动设置界面时，调用 skill：browser-cdp
 - 改 lib/client.js 的组件状态、加 useEffect/useCallback、出现"功能没反应但不报错"时，调用 skill：client-state
 - 改插件行为需同步文档，或要跑验证 / 提交前检查 / 发版 / 重启服务时，调用 skill：docs-and-workflow
+- 改 `dsh-live2d-pet-desktop/`（壳 / Rust 宿主半区 / 单文件打包 / 托盘 / 透明与穿透）时，调用 skill：desktop-shell
+
+## 桌面端的一条硬纪律
+
+宿主半区**有两份实现**（网页端 `dsh-live2d-pet/lib/index.js`，桌面端
+`dsh-live2d-pet-desktop/src-tauri/src/host/`）。改 `pet.json` 的字段语义、加新字段、
+改资产路由形状时，**必须两边一起改**，然后跑 `dsh-live2d-pet-desktop/tools/probe-catalog.mjs`
+（它拿两份真实宿主逐字段对拍）。这条是纪律，不是建议 —— 两边分叉的症状是"网页端正常、
+桌面端少一段"，很难往实现差异上想。
+

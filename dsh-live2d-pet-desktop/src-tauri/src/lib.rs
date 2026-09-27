@@ -184,13 +184,17 @@ pub fn run() {
             eprintln!("[shell] 运行期目录：{}", runtime.display());
             eprintln!("[shell] 宠物目录：{}", pets_root.display());
 
-            // 随包宠物解包到运行期目录（宿主半区按文件系统扫它）。
+            // 随包宠物解包到运行期目录：升级判定要算它们的 `pet.json` 指纹（宿主半区
+            // 扫描用户宠物目录前会用它决定"要不要装/要不要更新"）。
             let plugin_root = runtime.join("plugin");
             if !host::embed::plugin_extracted(&plugin_root) {
                 std::fs::create_dir_all(&plugin_root)?;
-                match host::embed::extract_plugin(&plugin_root) {
-                    Ok(count) => eprintln!("[shell] 已解包随包插件：{count} 个文件 → {}", plugin_root.display()),
-                    Err(error) => eprintln!("[shell] 解包随包插件失败：{error}"),
+                match host::catalog::materialize_bundled_pets(&plugin_root) {
+                    Ok(count) => eprintln!(
+                        "[shell] 已解包随包宠物：{count} 个文件 → {}",
+                        plugin_root.display()
+                    ),
+                    Err(error) => eprintln!("[shell] 解包随包宠物失败：{error}"),
                 }
             }
             let (files, bytes) = host::embed::totals();
