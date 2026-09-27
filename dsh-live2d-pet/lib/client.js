@@ -41,6 +41,15 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   const LAYER_POLL_MS = 1000;
 
   /**
+   * 这一份客户端跑在**哪里**。
+   *
+   * 桌面壳（`sidecar/page/runtime.js`）会建 `window.__petDesktop`，DSH 页面里没有。
+   * 让位判据必须知道这件事 —— 否则"owner === desktop"会被两边同时当成"该我显示"或
+   * "该我让位"（实测踩过：桌面端那只把自己藏了，用户看到"桌面上什么都没有"）。
+   */
+  const isDesktopShell = typeof window.__petDesktop === "object" && window.__petDesktop !== null;
+
+  /**
    * 显示层状态的**模块级 store**。
    *
    * 为什么不能放在 `Pet` 组件的 ref 里：设置页那一节（`PetSettingsBody`）渲染在**宠物组件
@@ -63,7 +72,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       try { listener(merged); } catch { /* 一个订阅者坏了不该拖垮别的 */ }
     }
   };
-  /** 订阅显示层状态（返回取消订阅）。 */
+  /** 订阅显示层状态（返回当前值）。 */
   function useLayerState() {
     const [value, setValue] = useState(layerStore.value);
     useEffect(() => {
@@ -74,6 +83,42 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       return () => { layerStore.listeners.delete(listener); };
     }, []);
     return value;
+  }
+
+  /**
+   * **谁在轮询**：一个模块级单例，**不跟着任何组件走**。
+   *
+   * 原来轮询写在 `Pet` 的 effect 里 —— 那有个要命的缺口：**用户在设置里选了"桌面"之后，
+   * 页面里那只会让位（`visibility: hidden`），而设置页那一行要显示的正是"桌面端在跑"**。
+   * 可设置页只订阅、不轮询，所以它等到的是"页面那只还活着时的最后一次结果"，文本就停在
+   * "二进制不在"不动；只有重新打开设置页（重新挂载、读到 store 的当前值）才对。
+   *
+   * 换句话说：这个功能的观测者不能是它要观测的那个东西。轮询挪到模块级，页面里那只在不在
+   * 都照轮（它本来就是每秒一次 GET，代价可以忽略）。
+   */
+  let layerPollStarted = false;
+  let layerPollTimer = 0;
+  function ensureLayerPolling() {
+    if (layerPollStarted) return;
+    layerPollStarted = true;
+    const poll = async () => {
+      try {
+        const response = await fetch(API + "/layer", { cache: "no-store" });
+        const payload = await response.json();
+        setLayerState({
+          mode: typeof payload?.mode === "string" ? payload.mode : "auto",
+          owner: payload?.owner === "desktop" ? "desktop" : "inline",
+          desktopRunning: payload?.desktopRunning === true,
+          binary: payload?.binary ?? null,
+          download: payload?.download ?? null,
+          at: Date.now(),
+        });
+      } catch {
+        /* DSH 那边的路由还没挂上、或页面刚起来：下一轮再问 */
+      }
+      layerPollTimer = window.setTimeout(poll, LAYER_POLL_MS);
+    };
+    poll();
   }
 
   // -------------------------------------------------- motion controller
@@ -4621,11 +4666,12 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     /**
      * 显示层状态：**订阅模块级的 store**（不是本地 ref）。
      *
-     * `Pet` 是轮询的驱动者（下面那个 effect），设置页只是订阅者 —— 两个渲染者共用一个
-     * 真值，不会再出现"设置页读不到"的那种引用错误。
+     * 轮询由模块级单例负责（`ensureLayerPolling`）—— 它**必须**不依赖这个组件：
+     * 用户在设置里选了"桌面"之后，页面里这只就让位了，而这个组件一旦不渲染，
+     * 由它驱动的轮询也就停了，设置页那一行便永远停在旧文本上（实测：要重开设置页才更新）。
      */
     const layer = useLayerState();
-    const layerPollTimer = useRef(0);
+    useEffect(() => { ensureLayerPolling(); }, []);
     // 设置值在模块作用域的 store 里（DSH 设置页和这里的面板共用一份）。
     // 订阅它既为重渲染，也为下面那个「相位映射随设置重算」的 effect 提供依赖。
     const settingsRev = useSettings();
@@ -6243,37 +6289,19 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
      * 显示层：这只宠物现在归谁管。
      *
      * 宠物有两条呈现路径 —— **页面内**（就是这里）与**桌面上**（一个原生窗口进程）。
-     * 两边都可能活着，所以按 `mode` + 桌面端心跳算出一个 owner；不是 owner 就**让位**。
+     * 两边都可能活着，所以按 `mode` + 桌面端心跳算出一个 owner；**owner 不是我就让位**
+     * （判据见 `rootStyle` 调用处：两边跑的是同一段客户端代码，"我是谁"要自己判断）。
      *
      * 让位用的是 `visibility: hidden` + `pointer-events: none`，**不是 `display: none`**：
      * 后者会让元素尺寸变 0（`getBoundingClientRect()` 全零），而命中遮罩、自适应缩放都
      * 靠尺寸算 —— 藏起来再显示回来时判定就歪了。`visibility` 保留布局，一藏一显不留后遗症。
+     *
+     * **轮询不在这里**：它由模块级单例 `ensureLayerPolling()` 负责。写在这个组件的 effect
+     * 里曾经导致一个很隐蔽的 bug —— 选了"桌面"之后这个组件让位/不渲染，轮询随之停掉，
+     * 于是设置页那一行永远停在旧文本（要重开设置页才更新）。观测者不能是要观测的那个东西。
      */
     useEffect(() => {
-      let cancelled = false;
-      const poll = async () => {
-        if (cancelled) return;
-        try {
-          const response = await fetch(API + "/layer", { cache: "no-store" });
-          const payload = await response.json();
-          setLayerState({
-            mode: typeof payload?.mode === "string" ? payload.mode : "auto",
-            owner: payload?.owner === "desktop" ? "desktop" : "inline",
-            desktopRunning: payload?.desktopRunning === true,
-            binary: payload?.binary ?? null,
-            download: payload?.download ?? null,
-            at: Date.now(),
-          });
-        } catch {
-          /* DSH 那边的路由还没挂上、或页面刚起来：下一轮再问 */
-        }
-        if (!cancelled) layerPollTimer.current = window.setTimeout(poll, LAYER_POLL_MS);
-      };
-      poll();
-      return () => {
-        cancelled = true;
-        window.clearTimeout(layerPollTimer.current);
-      };
+      ensureLayerPolling();
     }, []);
 
     const onContextMenu = useCallback((event) => {
@@ -6586,7 +6614,14 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     return h("div", {
       [PET_ATTR]: "",
       ref: rootRef,
-      style: rootStyle(size, pos, layer.owner === "desktop"),
+      // **让位判据**：owner 不是我，就把自己藏起来。
+      //
+      // 客户端半区在**两边**都跑（DSH 页面里一份、桌面端窗口里一份），所以"我是谁"要自己
+      // 判断：桌面壳会建 `window.__petDesktop`（页面侧没有这个）。
+      //   * 页面里：所有权在桌面端 → 让位（否则会看见两只）
+      //   * 桌面端：所有权在页面内（用户选了"页面内"）→ 让位
+      // 这两个方向必须都判，否则会出现"两只"或"一只都没有"。
+      style: rootStyle(size, pos, isDesktopShell ? layer.owner !== "desktop" : layer.owner !== "inline"),
       // Observability: the committed action of the motion state machine
       // ('idle' while resting) and the current gaze target, so the pet's
       // behaviour is inspectable without reaching into engine internals.
@@ -6596,6 +6631,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       // 显示层：owner=desktop 时这一份已经让位（藏在桌面端那只后面）。
       "data-layer": layer.owner,
       "data-layer-mode": layer.mode,
+      // 这一份是"页面里"还是"桌面窗口里" —— 让位判据与诊断都靠它。
+      "data-renderer": isDesktopShell ? "desktop" : "page",
       // 宿主主题：面板与气泡的配色 token 按它切（见 CSS 里的 --pp-*）。
       "data-theme": theme,
     },
@@ -6639,11 +6676,17 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
 
   /** Positioning lives on the pet's own root div, so it works whether it is
    * reached through the React container or not. */
-  function rootStyle(size, pos, yieldToDesktop) {
+  function rootStyle(size, pos, yieldToOther) {
     const style = { width: size, height: size, right: pos.right, bottom: pos.bottom };
-    if (yieldToDesktop === true) {
-      // 让位给桌面上那只：**不用 display:none**（尺寸会变 0，命中遮罩与自适应缩放都靠它
-      // 算，藏一次再显示判定就歪了）。visibility 保留布局，pointer-events 顺带让点击穿过去。
+    if (yieldToOther === true) {
+      // 让位给**另一份**实现：**不用 display:none**（尺寸会变 0，命中遮罩与自适应缩放都
+      // 靠它算，藏一次再显示判定就歪了）。visibility 保留布局，pointer-events 顺带让点击穿过去。
+      //
+      // ⚠️ 判据是"owner **不是**我"，不是"owner 是桌面端"。
+      // 客户端半区在**两边**都跑：页面里一份、桌面端的窗口里一份，而两边跑的是同一段
+      // 客户端代码。所以"owner === desktop"在**桌面端那一份里**也为真 —— 写成那样会把
+      // 唯一该显示的那只藏起来（实测：窗口可见、canvas 也在画、就是 `visibility: hidden`，
+      // 用户看到的是"桌面上什么都没有"）。
       style.visibility = "hidden";
       style.pointerEvents = "none";
     }
