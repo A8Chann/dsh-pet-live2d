@@ -9,6 +9,10 @@ src-tauri/gen/
 # 诊断用的小工具（`src-tauri/src/bin/`）按需创建，不进仓库
 src-tauri/src/bin/
 
+# ---- npm 平台子包 ----
+# 清单与 README 进仓库；exe 是构建产物（9MB，由 tools/npm-prepare-subpackage.mjs 铺）
+npm/desktop-win32-x64/bin/*.exe
+
 # ---- 截图证据 ----
 # 只留文档里用到的那两张；临时对比、调试截图不进仓库。
 shots/*
