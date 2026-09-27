@@ -51,6 +51,46 @@ whenToUse: >
   它盯的就是三条边界：装新的、更新我们的、**别碰用户改过的**。
 - 想让本机重新吃一遍随包版本：删掉 `%DSH_HOME%\pets\<id>\` 再重启 `dsh web`。
 
+## 发版（本项目的实际流程，2.3.3 走通了一遍）
+
+按顺序，每步都有"怎么知道它成了"：
+
+1. `node run-suite.mjs --jobs 1`（**串行**，见下面"并发下的已知不稳定"）→ 19/19；
+2. `dsh-live2d-pet/package.json` 抬版本 + CHANGELOG 加一节（用户可见的变化）；
+3. `git add -A && git commit -F <草稿> && git tag v<版本>`；
+4. push（见下面"推 GitHub"）；
+5. `& tools/npm-publish.ps1`（token 从 `%USERPROFILE%\.dsh\npm-token.txt` 读）；
+6. `node tools/verify-npm-package.mjs <版本>` → 两份 README 都 OK；
+7. GitHub Release（v2.1.0 起每个版本都有）：正文取 CHANGELOG 那一节的原文。
+   本机有 `tools/make-release.mjs`（**故意不进仓库**，和别的带 token 的脚本一样）：
+   `node tools/make-release.mjs <版本> [--dry-run]`，token 从 `~/.dsh/github-token.txt` 读。
+
+**别拿 `npm-publish.ps1 -DryRun` 判断发布能不能成**：它内部 `npm publish ... | Out-String`，
+npm 的 `notice` 走 stderr，PowerShell 会把它当 NativeCommandError，`$LASTEXITCODE` 读到的是
+**1**，于是脚本报"dry-run failed" —— 而包里其实一切正常（同一条命令手跑 `exit=0`、
+还列出了 77 个文件）。要看打包结果就直接在 `dsh-live2d-pet/` 里跑 `npm publish --dry-run`。
+
+## 推 GitHub（本机没有可用的 git 凭据）
+
+`credential.helper` 在 **system 级**（`C:/Program Files/Git/etc/gitconfig`）写着
+`manager-core`，它给出的凭据是失效的（`remote: Invalid username or token`），
+而 `.dsh` 里那份 `github-token.txt` 是 fine-grained PAT，`gh` 没装。
+所以推送要绕过 git 的 credential 链路：
+
+```
+GIT_CONFIG_SYSTEM=<空配置> GIT_CONFIG_GLOBAL=<临时配置>
+  credential.helper = store --file=<临时凭据文件>
+```
+
+**system 那一份必须一起屏蔽**：只改 global 的话 `manager-core` 仍然排在前面被问到。
+另外这条线路到 GitHub 很慢，推 4 MB 包体会在默认低速阈值下掉线
+（`Failed to connect to github.com port 443 after 21074 ms`），要一起给
+`http.version=HTTP/1.1`、`http.lowSpeedLimit=1000`、`http.lowSpeedTime=900`。
+2026-09 那台机器上 `git push --dry-run` 也会失败（它同样要建连接），别把它当"凭据不对"。
+
+写这类脚本时：token **只从文件读、不打印、不进命令行**（进程列表可见），
+用完删掉临时凭据文件；脚本本身放 `tools/` 但**不进仓库**。
+
 ## 常用命令
 
 - 日常验证：`cd tools/browser-test && npm run dev -- <关键字>`（单个 driver 约 7 秒）

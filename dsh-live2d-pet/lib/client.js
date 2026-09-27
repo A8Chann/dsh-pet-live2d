@@ -287,6 +287,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     /** 由 parts 解出来的 drawable 下标（换模型要重算，缓存起来）。 */
     let headIndices = null;
     let tailIndices = null;
+    /** 尾巴类里**贴图落在尾鳍区域**的那几块（收窄结果，换模型要重算）。 */
+    let tailFinIndices = null;
 
     /**
      * 部件 id → drawable 下标（带所属部件下标）：cdi3 的部件名 → 引擎原始表。
@@ -432,6 +434,170 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         return null;
       }
       return read ? false : null;
+    };
+
+    /**
+     * 一块 drawable 的**纹理坐标**包围盒（归一化 0..1），读不到返回 null。
+     *
+     * 为什么需要它：这只宠物有十几个"尾巴/翅膀"配件，几何同时留在原地 —— 光看几何
+     * 分不出谁是谁。而**贴图是作者自己画的**：鲸鱼尾鳍那块贴图区域只属于尾巴。
+     * 有了 UV 就能回答"这块 drawable 画的是贴图上哪一块"，那是权威依据。
+     *
+     * 字段名各版本不一（`vertexUvs` / `uvs`），所以按候选顺序试。
+     */
+    const readUvs = (index) => {
+      const raw = model?.internalModel?.coreModel?._model;
+      const drawables = raw?.drawables;
+      if (drawables === undefined || drawables === null) return null;
+      let table;
+      for (const key of ["vertexUvs", "uvs", "drawableVertexUvs"]) {
+        const candidate = drawables[key];
+        if (candidate !== undefined && candidate !== null) { table = candidate; break }
+      }
+      if (table === undefined) return null;
+      const entry = table[index];
+      if (entry === undefined || entry === null) return null;
+      const values = Array.from(entry);
+      if (values.length < 2) return null;
+      let minU = Infinity;
+      let minV = Infinity;
+      let maxU = -Infinity;
+      let maxV = -Infinity;
+      for (let i = 0; i + 1 < values.length; i += 2) {
+        const u = values[i];
+        const v = values[i + 1];
+        if (u < minU) minU = u;
+        if (u > maxU) maxU = u;
+        if (v < minV) minV = v;
+        if (v > maxV) maxV = v;
+      }
+      return { minU, minV, maxU, maxV };
+    };
+
+    /**
+     * 尾巴判定**此刻**该用哪几块 drawable（带缓存）。
+     *
+     * 名字里带尾/翅的部件有 15 个 / 16 块，其中 11 块是可换配件的几何、**一直留在原地**、
+     * 横跨从头顶到腰腹的整个角色。全算上的话"算尾巴"的格子占角色 22%，其中 86.6% 同时
+     * 算头 —— 而路由是摸头优先，于是**可见的尾鳍永远轮不到**（用户报的"摸尾巴很难点到"）。
+     *
+     * 收窄依据是**贴图**（作者自己画的）：只留 UV 落在尾鳍区域的那几块（`TAIL_FIN_UV`）。
+     * 保守之处：UV 读不到、或者收完一块不剩，就退回原来那一整份 —— 宁愿判定偏松，
+     * 也不能让"摸尾巴"整个消失。
+     */
+    const tailIndicesNow = () => {
+      if (tailIndices === null) tailIndices = drawableIndicesForParts(tailParts);
+      if (tailFinIndices === null) {
+        const narrowed = (tailIndices ?? []).filter((entry) => uvInsideTailFin(readUvs(entry.index)) === true);
+        tailFinIndices = narrowed.length > 0 ? narrowed : (tailIndices ?? []);
+      }
+      return tailFinIndices;
+    };
+
+    /**
+     * 尾巴类 drawable 此刻的**并集包围盒**（模型空间），读不到返回 null。
+     *
+     * 两处用：① `hitsMask` 把它并进"算不算落在她身上"（尾鳍摆出静态轮廓网格之外时，
+     * 那一瞬间的点击不该落空）；② `[data-hit]` 的 `clip-path` 里拼进去的那块矩形
+     * （跟着摆动重建，见 hitPath）。
+     */
+    const measureTailBox = () => {
+      const list = tailIndicesNow();
+      const im = model?.internalModel;
+      if (list.length === 0 || im === null || im === undefined) return null;
+      const box = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+      for (const entry of list) {
+        let index = entry.index;
+        if (typeof entry.id === "string" && typeof im.getDrawableIndex === "function") {
+          const fresh = im.getDrawableIndex(entry.id);
+          if (fresh >= 0) index = fresh;
+        }
+        let verts;
+        try {
+          verts = im.getDrawableVertices(index);
+        } catch {
+          continue;
+        }
+        if (verts === undefined || verts === null || verts.length < 2) continue;
+        for (let i = 0; i + 1 < verts.length; i += 2) {
+          const vx = verts[i];
+          const vy = verts[i + 1];
+          if (vx < box.minX) box.minX = vx;
+          if (vx > box.maxX) box.maxX = vx;
+          if (vy < box.minY) box.minY = vy;
+          if (vy > box.maxY) box.maxY = vy;
+        }
+      }
+      return box.maxX > box.minX && box.maxY > box.minY ? box : null;
+    };
+
+    /**
+     * 模型空间 → **舞台局部**坐标（CSS px），读不到返回 null。
+     *
+     * 为什么不用引擎的 `toStagePosition()`：这个包装层上没有它（实测直接抛异常，
+     * 外面只看到 null）。改用**两个盒子对齐**：`model.getBounds()` 给的是模型在舞台上的
+     * 轴对齐盒，而模型空间里"整只宠物的盒"由全部 drawable 的顶点算出来。两者一比就是
+     * 缩放 + 平移（模型的旋转是 0，锚点已经烘进 getBounds），所以这条映射在缩放、
+     * 拖动、窗口 resize 之后都成立，也不依赖任何私有字段。
+     */
+    const modelToStage = (x, y) => {
+      const im = model?.internalModel;
+      if (model === null || im === null || im === undefined) return null;
+      if (typeof im.getDrawableIDs !== "function" || typeof im.getDrawableVertices !== "function") return null;
+      let bounds;
+      try {
+        bounds = model.getBounds();
+      } catch {
+        return null;
+      }
+      if (bounds === undefined || bounds === null || !(bounds.width > 0) || !(bounds.height > 0)) return null;
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      try {
+        for (const id of im.getDrawableIDs()) {
+          const index = im.getDrawableIndex(String(id));
+          if (index < 0) continue;
+          const verts = im.getDrawableVertices(index);
+          if (verts === undefined || verts === null) continue;
+          for (let i = 0; i + 1 < verts.length; i += 2) {
+            if (verts[i] < minX) minX = verts[i];
+            if (verts[i] > maxX) maxX = verts[i];
+            if (verts[i + 1] < minY) minY = verts[i + 1];
+            if (verts[i + 1] > maxY) maxY = verts[i + 1];
+          }
+        }
+      } catch {
+        return null;
+      }
+      if (!(maxX > minX) || !(maxY > minY)) return null;
+      return {
+        x: bounds.x + (x - minX) / (maxX - minX) * bounds.width,
+        y: bounds.y + (y - minY) / (maxY - minY) * bounds.height,
+      };
+    };
+
+    /** 静态快照网格的判定（`hitsMask` 与诊断读口共用一份实现，避免两处走岔）。 */
+    const hitsMaskGrid = (x, y, width, height) => {
+      if (hitMask === null) return true;
+      if (width <= 0 || height <= 0) return true;
+      // The grid covers the model's own bounding box, so normalise against
+      // that box rather than the whole stage.
+      const box = hitBox ?? { x: 0, y: 0, width, height };
+      const gx = Math.floor(((x - box.x) / box.width) * hitMask.width);
+      const gy = Math.floor(((y - box.y) / box.height) * hitMask.height);
+      // One cell of tolerance: the model breathes and sways, so requiring an
+      // exact opaque cell would make edge clicks feel unreliable.
+      for (let dy = -1; dy <= 1; dy += 1) {
+        for (let dx = -1; dx <= 1; dx += 1) {
+          const cx = gx + dx;
+          const cy = gy + dy;
+          if (cx < 0 || cy < 0 || cx >= hitMask.width || cy >= hitMask.height) continue;
+          if (hitMask.data[cy * hitMask.width + cx] === 1) return true;
+        }
+      }
+      return false;
     };
 
     /** 点 (x,y) 在 verts 的第 i0/i1/i2 号顶点组成的三角形里吗（同向叉积法）。 */
@@ -582,6 +748,18 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     const expressionFade = new Map();
     /** 上一帧的时间戳（算 dt 用）；0 表示还没有基准。 */
     let expressionFadeAt = 0;
+    /**
+     * 尾巴类 drawable 的**实时并集包围盒**（模型空间）与它的采样时刻。
+     *
+     * 尾鳍一直在摆，而可点击的轮廓遮罩是开机抓一次的静态网格 —— 摆到网格之外的那一瞬，
+     * "点在尾巴上"会被判成"没落在她身上"。所以每帧（节流 100ms）采一次这个盒子，
+     * `hitsMask` 把它一起算进去：**尾巴摆到哪儿都算她**。
+     *
+     * 采样放在 saveParameters 缝里（`update()` 之前）—— 那是这一帧真正要画的姿势，
+     * 帧外读到的是引擎基线，会慢半拍。
+     */
+    let tailBoxLive = null;
+    let tailBoxSampledAt = 0;
     /** The core model whose saveParameters hook is installed. */
     let hookedCore = null;
     /**
@@ -1026,6 +1204,16 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           const probeAt = probeId === null || values === null ? -1 : parameterIndex(core, probeId);
           const pre = probeAt >= 0 ? values[probeAt] : null;
           applyExpressionLayers(core);
+          // 尾巴的实时盒子（节流）：可点区域要跟着摆动的尾鳍走，见 tailBoxLive 的注释。
+          const nowMs = typeof performance !== "undefined" && typeof performance.now === "function"
+            ? performance.now()
+            : Date.now();
+          if (nowMs - tailBoxSampledAt >= TAIL_BOX_SAMPLE_MS) {
+            tailBoxSampledAt = nowMs;
+            // 私有函数，不是公开读口 `tailBoxNow()` —— 后者挂在 api 对象上，
+            // 控制器内部看不到它（这个错误每帧抛一次，外面只表现为"盒子一直是 null"）。
+            tailBoxLive = measureTailBox();
+          }
           // The layers are now in place and update() is next, so this is the
           // pose the frame is about to draw.
           if (values !== null) {
@@ -1525,6 +1713,11 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         headBox = null;
         hitMask = null;
         hitBox = null;
+        tailBoxLive = null;
+        tailBoxSampledAt = 0;
+        tailIndices = null;
+        tailFinIndices = null;
+        headIndices = null;
       },
       playIdle,
       playOnce,
@@ -1849,23 +2042,35 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       hitsMask(x, y, width, height) {
         if (hitMask === null) return true;
         if (width <= 0 || height <= 0) return true;
-        // The grid covers the model's own bounding box, so normalise against
-        // that box rather than the whole stage.
-        const box = hitBox ?? { x: 0, y: 0, width, height };
-        const gx = Math.floor(((x - box.x) / box.width) * hitMask.width);
-        const gy = Math.floor(((y - box.y) / box.height) * hitMask.height);
-        // One cell of tolerance: the model breathes and sways, so requiring an
-        // exact opaque cell would make edge clicks feel unreliable.
-        for (let dy = -1; dy <= 1; dy += 1) {
-          for (let dx = -1; dx <= 1; dx += 1) {
-            const cx = gx + dx;
-            const cy = gy + dy;
-            if (cx < 0 || cy < 0 || cx >= hitMask.width || cy >= hitMask.height) continue;
-            if (hitMask.data[cy * hitMask.width + cx] === 1) return true;
+        // "落点算不算落在她身上"必须与 **DOM 那一层完全一致**，否则两种坏法都会出现：
+        // 事件能进来而判定说不在她身上（点了没反应），或者判定说有而事件进不来（穿透错）。
+        // DOM 的 `clip-path` = 静态快照 + **尾巴当前那块矩形**，所以这里也就这两样：
+        //   ① 尾巴当前盒子（`measureTailBox`，当前姿势）—— 尾鳍摆出快照时靠它接住；
+        //   ② 开机抓的静态轮廓快照（下面那张网格 + 一格容差）。
+        //
+        // **不能**把头/尾的"几何"算进来：几何比像素宽，"只有几何、没有像素"的点会被判定
+        // 说成在她身上，而 DOM 那层并不覆盖它 —— cdp-passthrough 立刻红（character click
+        // 落到 page，实测）。头/尾几何是给**路由**用的（决定演什么），不是给"在不在她身上"。
+        if (model !== null && vendor !== null) {
+          try {
+            const point = model.toModelPosition(new vendor.Point(x, y));
+            const tailNow = measureTailBox();
+            if (tailNow !== null
+              && point.x >= tailNow.minX && point.x <= tailNow.maxX
+              && point.y >= tailNow.minY && point.y <= tailNow.maxY) return true;
+          } catch {
+            /* 换算失败就只按网格 */
           }
         }
-        return false;
+        return hitsMaskGrid(x, y, width, height);
       },
+      /**
+       * Diagnostic: 只按**开机抓的静态快照**那张网格判定（不含几何、不含尾巴实时盒子）。
+       *
+       * "尾鳍摆出快照"这件事没法凭空断言 —— 要证明"这一点在快照外、却在宽限之内"，
+       * 就得能把两层分开读。它只用于测试与排查，不参与行为。
+       */
+      hitsMaskStatic: (x, y, width, height) => hitsMaskGrid(x, y, width, height),
       /** Head-part ids, pushed in by the component once the catalog is ready. */
       setHeadParts(ids) {
         headParts = Array.isArray(ids) ? ids.filter((id) => typeof id === "string") : [];
@@ -1876,7 +2081,24 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       setTailParts(ids) {
         tailParts = Array.isArray(ids) ? ids.filter((id) => typeof id === "string") : [];
         tailIndices = null;
+        tailFinIndices = null;
       },
+      /**
+       * 尾巴类 drawable 此刻的**并集包围盒**（模型空间），读不到返回 null。
+       *
+       * 用途：`hitsMask` 把它并进"算不算落在她身上"。轮廓遮罩是开机抓一次的静态网格，
+       * 而尾鳍一直在摆 —— 摆动幅度大的时候，尾鳍会摆到网格之外，那一瞬间"点在尾巴上"
+       * 会被判成"没落在她身上"，事件落空。并把集盒之后，尾巴摆到哪儿都算她。
+       */
+      tailBoxNow: () => measureTailBox(),
+      /**
+       * 模型空间 → **舞台局部**坐标（CSS px），读不到返回 null。
+       *
+       * 就是 `hitsHead / hitsTail / hitsMask` 里那条映射的逆向（它们用
+       * `model.toModelPosition()`）：用来把"尾巴此刻的包围盒"画到 DOM 上，
+       * 做成那一层跟着摆动走的可点区域。
+       */
+      modelToStage: (x, y) => modelToStage(x, y),
       idleName: () => idleName,
       groups: () => groups,
       /** Declared playback policy for one motion group (diagnostics). */
@@ -1913,22 +2135,119 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           return true;
         }
       },
+      /**
+       * 诊断：把**尾巴类** drawable 的**当前三角面**吐出来（模型空间）。
+       *
+       * 用来看"收窄前那一整份"里每块的几何落在哪儿（收窄结果见 `tailDebug()`）——
+       * 正是靠它量出"16 块里 11 块是配件、横跨整个角色"，才决定按贴图收窄。
+       *
+       * 单位是模型空间（`toModelPosition` 的坐标系）；配合 `fitBox()` 能换算回屏幕。
+       */
+      tailDrawables: () => {
+        const list = drawableIndicesForParts(tailParts);
+        if (list === null) return [];
+        const out = [];
+        for (const entry of list) {
+          let index = entry.index;
+          if (typeof entry.id === "string" && typeof model?.internalModel?.getDrawableIndex === "function") {
+            const fresh = model.internalModel.getDrawableIndex(entry.id);
+            if (fresh >= 0) index = fresh;
+          }
+          const row = { id: entry.id, index };
+          try {
+            const verts = model.internalModel.getDrawableVertices(index);
+            let minX = Infinity;
+            let minY = Infinity;
+            let maxX = -Infinity;
+            let maxY = -Infinity;
+            const triangles = [];
+            for (let i = 0; i + 1 < verts.length; i += 2) {
+              const vx = verts[i];
+              const vy = verts[i + 1];
+              if (vx < minX) minX = vx;
+              if (vx > maxX) maxX = vx;
+              if (vy < minY) minY = vy;
+              if (vy > maxY) maxY = vy;
+            }
+            const idx = model.internalModel.coreModel.getDrawableVertexIndices(index);
+            for (let i = 0; i + 2 < idx.length && triangles.length < 400; i += 3) {
+              triangles.push([
+                verts[idx[i] * 2], verts[idx[i] * 2 + 1],
+                verts[idx[i + 1] * 2], verts[idx[i + 1] * 2 + 1],
+                verts[idx[i + 2] * 2], verts[idx[i + 2] * 2 + 1],
+              ]);
+            }
+            const uvs = readUvs(index);
+            Object.assign(row, {
+              vertices: verts.length / 2,
+              triangles: triangles.length,
+              box: { minX, minY, maxX, maxY },
+              tris: triangles,
+              // 纹理坐标（归一化）：用来回答"这块在贴图的哪一块上" —— 贴图才是
+              // "哪些部件真的是尾巴"的权威（作者自己画的图）。
+              uvBox: uvs === null ? null : uvs,
+            });
+          } catch (error) {
+            row.error = String(error?.message ?? error);
+          }
+          out.push(row);
+        }
+        return out;
+      },
+      /** 诊断：某块 drawable 的**原始 UV 数字**（不做任何换算，看表本身的形状）。 */
+      uvRaw: (index = 0) => {
+        const raw = model?.internalModel?.coreModel?._model;
+        const table = raw?.drawables?.vertexUvs;
+        if (table === undefined) return null;
+        const entry = table[index];
+        return entry === undefined ? null : Array.from(entry).slice(0, 16);
+      },
+      /** 诊断：core 里所有和 UV 有关的表名（不同版本字段名不一样，先看有什么）。 */
+      uvTables: () => {
+        const raw = model?.internalModel?.coreModel?._model;
+        if (raw === undefined) return null;
+        const out = {};
+        for (const scope of ["drawables", "parts"]) {
+          const table = raw[scope];
+          if (table === undefined || table === null) continue;
+          out[scope] = Object.keys(table);
+        }
+        out.drawableKeys = raw.drawables === undefined ? [] : Object.keys(raw.drawables);
+        return out;
+      },
+      /** 诊断：模型自绘包围盒（模型空间）与舞台尺寸，供"模型空间 → 屏幕"换算。 */
+      fitBox: () => {
+        try {
+          const b = model.getBounds();
+          return {
+            model: { x: b.x, y: b.y, width: b.width, height: b.height },
+            scale: typeof model.scale?.x === "number" ? model.scale.x : null,
+            position: { x: model.position?.x ?? null, y: model.position?.y ?? null },
+            anchor: { x: model.anchor?.x ?? null, y: model.anchor?.y ?? null },
+          };
+        } catch {
+          return null;
+        }
+      },
       /** Diagnostic: the measured head box in model space, or null. */
       headBox: () => headBox,
       /**
        * 这一下点在尾巴上吗？
        *
-       * 和摸头同一套判定（模型自己的三角面），只是部件集合换成 cdi3 里命名为
-       * 尾/鳍/翅/翼 的那些。**没有尾巴部件时返回 false**（不是 true）：摸尾巴是个
-       * 新增的互动，测不出来就不该乱触发（摸头那边相反，它要兼容旧模型）。
+       * 和摸头同一套判定（模型自己的三角面），但部件集合不是"名字里带尾/翅的那些"，
+       * 而是**再收窄一次**：只留贴图落在尾鳍区域的那几块（见 `tailIndices()`）。
+       * 原因见那段注释 —— 16 块里 11 块是配件几何、横跨全身，全算上的话"处处是尾巴"，
+       * 而路由摸头优先，可见的尾鳍反而永远轮不到。
+       *
+       * **没有尾巴部件时返回 false**（不是 true）：摸尾巴是个新增互动，测不出来就不该
+       * 乱触发（摸头那边相反，它要兼容没有 cdi3 的旧模型）。
        */
       hitsTail(x, y) {
         if (model === null || vendor === null) return false;
         if (tailParts.length === 0) return false;
         try {
           const point = model.toModelPosition(new vendor.Point(x, y));
-          if (tailIndices === null) tailIndices = drawableIndicesForParts(tailParts);
-          const hit = hitsPartsGeometry(tailIndices, point.x, point.y);
+          const hit = hitsPartsGeometry(tailIndicesNow(), point.x, point.y);
           return hit === true;
         } catch {
           return false;
@@ -1955,6 +2274,35 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       drawableIDs: () => {
         const im = model?.internalModel;
         return typeof im?.getDrawableIDs === "function" ? Array.from(im.getDrawableIDs()).map(String) : [];
+      },
+      /**
+       * 尾巴判定**实际用的**那几块 drawable（收窄的结果，见 `tailIndicesNow`）。
+       */
+      tailIndices: () => tailIndicesNow(),
+      /** Diagnostic: 尾巴判定的收窄结果（收窄前 / 收窄后各是哪些、各自贴在哪块贴图上）。 */
+      tailDebug: () => {
+        if (tailIndices === null) tailIndices = drawableIndicesForParts(tailParts);
+        const kept = tailIndicesNow();
+        const rows = (tailIndices ?? []).map((entry) => {
+          const uv = readUvs(entry.index);
+          return {
+            id: entry.id,
+            part: entry.part,
+            uv,
+            inFin: uvInsideTailFin(uv) === true,
+            kept: kept.some((row) => row.id === entry.id),
+          };
+        });
+        return {
+          parts: tailParts.length,
+          before: (tailIndices ?? []).length,
+          after: kept.length,
+          region: TAIL_FIN_UV,
+          // 实时盒子（hitsMask 会并进"算不算落在她身上"）与它的采样间隔。
+          liveBox: tailBoxLive,
+          sampleMs: TAIL_BOX_SAMPLE_MS,
+          rows,
+        };
       },
       /**
        * Diagnostic: 引擎原始表里 drawable → 父部件 的对应关系。
@@ -2422,6 +2770,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     ROOT_SEL + " [data-hit]{position:absolute;inset:0;cursor:grab;pointer-events:auto}",
     ROOT_SEL + " [data-stage][data-dragging] [data-hit]{cursor:grabbing}",
     ROOT_SEL + " [data-hit][data-off]{display:none}",
+    // 尾巴那一块（那一截矩形由 JS 每 ~120ms 跟着摆动重建，见 hitPath）。
     // Until the silhouette is known the whole box stays live, so the pet is
     // never inert; it degrades to the pre-mask behaviour instead of nothing.
     ROOT_SEL + " [data-stage][data-nomask]{pointer-events:auto;cursor:grab}",
@@ -3804,6 +4153,50 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   const HIT_MASK_ALPHA = 24;
 
   /**
+   * 贴图上**真正属于尾巴**的那一块（归一化 UV）。
+   *
+   * 为什么这是一个常量而不是"名字里带尾/翅的部件"：这只宠物有 **16 块** drawable 命中
+   * `尾|鳍|翅|翼`，但其中 **11 块是可换配件**（狐狸尾 / 猫尾 / 狼尾 / 天使翅膀 /
+   * 恶魔翅膀…），几何**一直留在原地**、横跨从头顶到腰腹的整个角色。把它们全算成尾巴，
+   * 结果是"算尾巴"的格子占角色 **22%**，其中 **86.6% 同时算头** —— 而路由是摸头优先，
+   * 于是用户点在**可见的尾鳍**上拿到的是摸头反应（用户报的"摸尾巴很难点到"）。
+   *
+   * 依据是**贴图**（作者自己画的）：`texture_00.png` 2048² 上，鲸鱼尾鳍只占
+   * `x 3..444, y 953..1397` 这一块，对应下面这个归一化区域。实测落在这里的正好是
+   * `ArtMesh38 / 56 / 58 / 59 / 60` 五块，全部属于部件 `尾巴(蒙皮)`；其余 11 块各自
+   * 落在贴图别处（`ArtMesh75` 落在 600,1592 → 1069,2045 那片大翅膀上）。
+   *
+   * UV 读不到时（别的引擎版本、没有 `vertexUvs` 表）**不做任何收窄** —— 退回旧行为，
+   * 不能让"判定变得精确"变成"判定整个失效"。
+   */
+  const TAIL_FIN_UV = { minU: 0, minV: 0.45, maxU: 0.23, maxV: 0.72 };
+
+  /** 一块 drawable 的 UV 包围盒整体落在这个区域里吗（留一点边距）。 */
+  function uvInsideTailFin(uv) {
+    if (uv === null) return null;
+    const pad = 0.02;
+    return uv.minU >= TAIL_FIN_UV.minU - pad && uv.maxU <= TAIL_FIN_UV.maxU + pad
+      && uv.minV >= TAIL_FIN_UV.minV - pad && uv.maxV <= TAIL_FIN_UV.maxV + pad;
+  }
+
+  /**
+   * 尾鳍实时包围盒的采样间隔（ms）。
+   *
+   * 100ms ≈ 6 帧一次：摆动一个来回大约 30 帧，所以盒子永远落后不超过摆动幅度的几分之一，
+   * 而每帧读几十个顶点是白烧 CPU。采样点在 `saveParameters` 缝里（这一帧真正要画的姿势）。
+   */
+  const TAIL_BOX_SAMPLE_MS = 100;
+
+  /**
+   * 尾巴那一块矩形在包围盒外**再放宽的比例**。
+   *
+   * 它每 120ms 跟着实时盒子重建，而尾鳍一直在摆 —— 采样时刻的位置和用户抬手那一刻
+   * 会差一点。实测（探针 `probe-tail-precise.mjs`）不留余量时会有落点掉在矩形之外、
+   * 事件穿透到页面。放宽按这一块自己的尺寸取比例，所以缩小/放大宠物都合适。
+   */
+  const TAIL_LAYER_PAD = 0.08;
+
+  /**
    * Build a coarse opacity grid of the character as actually rendered.
    *
    * Cubism hit areas cannot be used here: this model declares none (and the
@@ -4049,6 +4442,14 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         windowMs: TUNING.spinWindowMs,
         threshold: TUNING.spinTurns * Math.PI * 2,
       });
+      /**
+       * 诊断：**上一下按住的三个答案**（onModel / onHead / onTail，以及事件被哪一层接住）。
+       *
+       * "点了没反应"要先分清卡在哪一段：事件没进宠物（截不住 / 穿透到页面）、
+       * 路由判成"身体"（只有台词）、还是判定本身说不在她身上。从"她说了什么"倒推
+       * 这三件事是分不出来的 —— 尾巴那一串问题就是这么绕了好几轮的。
+       */
+      api.lastPress = () => lastPressRef.current;
     }, []);
     /**
      * The pins the USER owns (slot choices, flashes) and the pins the SESSION
@@ -4522,6 +4923,70 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       observer.observe(stage);
       return () => observer.disconnect();
     }, []);
+
+    /**
+     * 尾巴那一层可点区域的**动态更新**。
+     *
+     * 尾鳍一直摆，而 `[data-hit]` 的轮廓是开机快照 —— 摆出去就点不到（事件穿透到页面）。
+     * 这里按固定间隔把尾巴此刻的包围盒（模型空间）换算成舞台上的百分比矩形：
+     *
+     *   模型空间 → 舞台：`model.getBounds()` 给的是舞台局部盒，
+     *   尾巴各 drawable 的并集盒 → 按比例映射进那个盒子里（同一套映射，
+     *   不猜 anchor / scale，换缩放、换宠物都成立）。
+     *
+     * 间隔 120ms 是刻意的：尾鳍一个摆动来回约 0.5 秒，取 1/4 个周期足够跟上，
+     * 而每帧 setState 会让整个宠物重渲染 —— 那是白烧。**只在格子真的变了才 setState**，
+     * 静止时一个渲染都不产生。
+     */
+    useEffect(() => {
+      if (!ready) return undefined;
+      let last = "";
+      const tick = () => {
+        const api = motion.current;
+        const stage = stageRef.current;
+        if (api === null || stage === null) return;
+        const box = typeof api.tailBoxNow === "function" ? api.tailBoxNow() : null;
+        if (box === null || typeof api.modelToStage !== "function") {
+          if (last !== "") { last = ""; setTailPath(""); }
+          return;
+        }
+        const rect = stage.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return;
+        // 模型空间 → 舞台：`modelToStage()` 用"模型空间包络盒 ↔ 引擎自绘盒"对齐，
+        // 缩放、拖动、resize 之后都成立（比 `toStagePosition` 稳 —— 那个 API
+        // 在这层包装上直接抛异常）。
+        //
+        // 注意**模型空间 y 向上、舞台 y 向下**：小 y 的顶点画在舞台下方。所以要把
+        // 两个对角都映射完再取 min/max —— 直接拿 minX/minY 当左上角会把这一层画到
+        // 屏幕外（第一版就是这么错的：尾巴层跑到左边去了）。
+        //
+        // 再加一圈**摆动的余量**：这一层每 120ms 更新一次，而尾鳍一直在摆，所以
+        // 采样时刻的位置和用户抬手那一刻的位置差着一个余量；不留的话就会出现
+        // "实测点在这层外面"（第一版 5 轮里有 2 轮是这样）。余量按这一块自己的
+        // 尺寸取比例，缩放之后依然合适。
+        const padX = (box.maxX - box.minX) * TAIL_LAYER_PAD;
+        const padY = (box.maxY - box.minY) * TAIL_LAYER_PAD;
+        const a = api.modelToStage(box.minX - padX, box.minY - padY);
+        const b = api.modelToStage(box.maxX + padX, box.maxY + padY);
+        if (a === null || b === null) return;
+        const left = Math.max(0, Math.min(a.x, b.x));
+        const top = Math.max(0, Math.min(a.y, b.y));
+        const right = Math.min(rect.width, Math.max(a.x, b.x));
+        const bottom = Math.min(rect.height, Math.max(a.y, b.y));
+        const width = right - left;
+        const height = bottom - top;
+        if (!(width > 0) || !(height > 0)) return;
+        // 一条矩形 = 一段 subpath，直接拼在轮廓路径后面（同一个 `clip-path`）。
+        const next = "M" + left.toFixed(1) + " " + top.toFixed(1)
+          + "h" + width.toFixed(1) + "v" + height.toFixed(1) + "h-" + width.toFixed(1) + "Z";
+        if (next === last) return;
+        last = next;
+        setTailPath(next);
+      };
+      tick();
+      const timer = window.setInterval(tick, 120);
+      return () => window.clearInterval(timer);
+    }, [ready]);
 
     // ---- greeting -----------------------------------------------------
     useEffect(() => {
@@ -5553,6 +6018,10 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     // Interaction bookkeeping lives above the effects that read it, so the
     // idle-fidget scheduler can tell "left alone" from "being handled".
     const dragState = useRef(null);
+    // 诊断读口：按住那一刻路由用的三个答案（尾鳍点不到这类问题要能直接看见它们，
+    // 而不是从"她说了什么"倒推）。
+    const lastPressRef = useRef(null);
+
     // Last time the user touched the pet; the idle-fidget timer (#6) measures
     // quiet time from here so a fidget never fires under the user's cursor.
     const lastInteraction = useRef(Date.now());
@@ -5616,6 +6085,17 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
      * hidden and the stage keeps its old full-box behaviour.
      */
     const [maskPath, setMaskPath] = useState("");
+    /**
+     * `[data-hit]` 真正用的路径 = 轮廓快照 + **尾巴那一块矩形**（跟着摆动更新）。
+     *
+     * 为什么要并：轮廓是开机从渲染画布抓一次的静态网格，而尾鳍一直在摆 —— 摆出去的那一
+     * 瞬间，点击落在 `clip-path` 之外、事件直接穿透到页面（实测 `elementFromPoint=HTML`，
+     * 而 `hitsMask` / `hitsTail` 都说是她）。这正是用户报的"尾巴一直在摆动，摸尾巴很难
+     * 点到"。并一条矩形只多 20 来个字符，而且**只有一层 DOM**：再叠一层会和主层抢事件，
+     * 落哪一层取决于 z 序与更新时间，那种不确定性极难查。
+     */
+    const [tailPath, setTailPath] = useState("");
+    const hitPath = tailPath === "" ? maskPath : (maskPath === "" ? tailPath : maskPath + tailPath);
     const pendingPhase = useRef(null);
     // Published by the stream effect so the (earlier-declared) subscription can
     // flush a deferred phase; a ref avoids a declaration-order dependency.
@@ -5717,6 +6197,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         onHead: hitsHead(event.clientX, event.clientY),
         onTail: hitsTail(event.clientX, event.clientY),
       };
+      lastPressRef.current = Object.assign({ at: Date.now(), layer: event.currentTarget?.getAttribute?.("data-tail") !== null ? "tail" : "hit" }, dragState.current);
       setDragging(true);
       try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* not capturable */ }
     }, [hitsModel, hitsHead, hitsTail]);
@@ -5979,10 +6460,16 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       },
         // Only the silhouette is interactive; everything else in the square
         // canvas stays click-through to the page behind (requirement #5).
+        //
+        // **尾巴那一块要并进这条路径**：轮廓是开机抓一次的静态快照，而尾鳍一直在摆，
+        // 摆出快照的那一瞬间点击会穿透到页面（实测：`elementFromPoint=HTML`，而判定说
+        // 是她）。并一条矩形只多 20 来个字符，比"再叠一层 DOM"更不容易和主层抢事件
+        // —— 两层叠着的时候，落哪一层取决于 z 序与更新时机，那种不确定性正是这一串
+        // 问题里最难查的部分。
         h("div", {
           "data-hit": "",
-          ...(maskPath === "" ? { "data-off": "" } : { style: { clipPath: "path('" + maskPath + "')", WebkitClipPath: "path('" + maskPath + "')" } }),
-          ...(maskPath === "" ? {} : { onPointerDown, onContextMenu }),
+          ...(hitPath === "" ? { "data-off": "" } : { style: { clipPath: "path('" + hitPath + "')", WebkitClipPath: "path('" + hitPath + "')" } }),
+          ...(hitPath === "" ? {} : { onPointerDown, onContextMenu }),
         }),
       ),
       // 气泡的偏移量走 CSS 变量（值，不是布局）：位置规则仍然只写在样式表里。

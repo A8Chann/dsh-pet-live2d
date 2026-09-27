@@ -186,6 +186,134 @@ if (tailProbe?.headPoint) {
     'bubble=' + text + ' pat=' + String(patLines) + ' tail=' + String(tailLines))
 }
 
+// --- 尾巴：点**可见的尾鳍**必须给摸尾巴的台词 ----------------------------------
+// 用户报的："尾巴一直在摆动，摸尾巴的事件现在很难点到。" 根因有两层，都得在这里盯住：
+//   ① `hitsTail` 原来把那 16 块"名字里带尾/翅"的几何全算尾巴（其中 11 块是**可换配件**，
+//      几何一直留在原地、横跨全身），于是"算尾巴"的格子占角色 22%、其中 86.6% 同时算头，
+//      而路由是摸头优先 ⇒ 点在可见的尾鳍上拿到的是摸头反应；
+//   ② 可点轮廓是开机抓一次的静态快照，而尾鳍一直在摆 ⇒ 摆出去的那一瞬间事件穿透到页面
+//      （实测 elementFromPoint 返回 HTML，而判定说她是）。
+//
+// 上面那条"存在只命中尾巴的点"**证明不了**这两件事 —— 它当初就是绿的。所以要断行为。
+const tailLines = await ev('JSON.stringify(window.__dshLive2dPet.effectiveLines().tail)')
+const patLines = await ev('JSON.stringify(window.__dshLive2dPet.effectiveLines().pat)')
+const bodyLines = await ev('JSON.stringify(window.__dshLive2dPet.effectiveLines().click)')
+const findTailPoint = () => ev(`(() => {
+  const api = window.__dshLive2dPet;
+  const stage = document.querySelector("[data-dsh-live2d-pet] [data-stage]");
+  const r = stage.getBoundingClientRect();
+  const N = 64;
+  const canvas = stage.querySelector("canvas");
+  const off = document.createElement("canvas");
+  off.width = N; off.height = N;
+  const ctx = off.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(canvas, 0, 0, canvas.width, canvas.height, 0, 0, N, N);
+  const px = ctx.getImageData(0, 0, N, N).data;
+  const cells = [];
+  for (let gy = 0; gy < N; gy += 1) {
+    for (let gx = 0; gx < N; gx += 1) {
+      const lx = r.width * (gx + 0.5) / N, ly = r.height * (gy + 0.5) / N;
+      if (api.hitsTail(lx, ly) !== true) continue;
+      if (api.hitsHead(lx, ly) === true) continue;
+      cells.push({ lx, ly, painted: px[(gy * N + gx) * 4 + 3] > 24 });
+    }
+  }
+  if (cells.length === 0) return JSON.stringify({ point: null, reason: "no-tail-cell" });
+  const outside = cells.filter((c) => api.hitsMaskStatic(c.lx, c.ly, r.width, r.height) === false);
+  const pool = outside.length > 0 ? outside : cells;
+  const cx = pool.reduce((s, c) => s + c.lx, 0) / pool.length;
+  const cy = pool.reduce((s, c) => s + c.ly, 0) / pool.length;
+  let best = pool[0], bestD = Infinity;
+  for (const c of pool) {
+    const d = (c.lx - cx) ** 2 + (c.ly - cy) ** 2;
+    if (d < bestD) { bestD = d; best = c }
+  }
+  return JSON.stringify({
+    point: best, rect: { x: r.x, y: r.y },
+    cells: cells.length, painted: cells.filter((c) => c.painted).length,
+    outsideStatic: outside.length,
+    onModel: api.hitsMask(best.lx, best.ly, r.width, r.height) === true,
+    staticOnly: api.hitsMaskStatic(best.lx, best.ly, r.width, r.height) === true,
+  });
+})()`)
+
+const routing = JSON.parse((await findTailPoint()) ?? '{}')
+check('尾鳍上有一批「只算尾巴、不算头」的点（下面那条断言的输入）',
+  (routing?.cells ?? 0) >= 20 && (routing?.point ?? null) !== null,
+  JSON.stringify({ cells: routing?.cells, painted: routing?.painted, outsideStatic: routing?.outsideStatic }))
+if (routing?.point) {
+  // 顺序很重要：先把上一轮的气泡等掉，**再取点、立刻点**。反过来会让尾鳍在空档里摆走，
+  // 按住时的几何已经不是选中那一个（探针里为此误判过好几轮）。
+  await until(async () => (await bubble()) === null, 8000)
+  const fresh = JSON.parse((await findTailPoint()) ?? '{}')
+  check('取到的点落在开机快照之外、但判定（含尾巴实时盒子）算落在她身上',
+    (fresh?.outsideStatic ?? 0) > 0 && fresh?.onModel === true,
+    JSON.stringify({ cells: fresh?.cells, outsideStatic: fresh?.outsideStatic, onModel: fresh?.onModel, staticOnly: fresh?.staticOnly }))
+  if (fresh?.point) {
+    // 取点和点击**必须在同一次页面求值里**：分两次 CDP 往返的话，尾鳍在中间就摆走了，
+    // 按住时的几何已经不是选中那一个（实测就是"onHead=true onTail=false"这种自相矛盾的读数）。
+    const clicked = JSON.parse(await ev(`(() => {
+      const api = window.__dshLive2dPet;
+      const stage = document.querySelector("[data-dsh-live2d-pet] [data-stage]");
+      const r = stage.getBoundingClientRect();
+      const N = 64;
+      const canvas = stage.querySelector("canvas");
+      const off = document.createElement("canvas");
+      off.width = N; off.height = N;
+      const ctx = off.getContext("2d", { willReadFrequently: true });
+      ctx.drawImage(canvas, 0, 0, canvas.width, canvas.height, 0, 0, N, N);
+      const px = ctx.getImageData(0, 0, N, N).data;
+      const cells = [];
+      for (let gy = 0; gy < N; gy += 1) {
+        for (let gx = 0; gx < N; gx += 1) {
+          const lx = r.width * (gx + 0.5) / N, ly = r.height * (gy + 0.5) / N;
+          if (api.hitsTail(lx, ly) !== true) continue;
+          if (api.hitsHead(lx, ly) === true) continue;
+          if (!(px[(gy * N + gx) * 4 + 3] > 24)) continue;
+          cells.push({ lx, ly });
+        }
+      }
+      if (cells.length === 0) return JSON.stringify({ ok: false, reason: "no-tail-cell" });
+      const cx = cells.reduce((s, c) => s + c.lx, 0) / cells.length;
+      const cy = cells.reduce((s, c) => s + c.ly, 0) / cells.length;
+      let best = cells[0], bestD = Infinity;
+      for (const c of cells) {
+        const d = (c.lx - cx) ** 2 + (c.ly - cy) ** 2;
+        if (d < bestD) { bestD = d; best = c }
+      }
+      const node = document.elementFromPoint(r.x + best.lx, r.y + best.ly);
+      const target = node === null ? "null" : (node.closest("[data-dsh-live2d-pet]") ? "pet" : node.tagName);
+      const before = JSON.parse(JSON.stringify({
+        head: api.hitsHead(best.lx, best.ly) === true,
+        tail: api.hitsTail(best.lx, best.ly) === true,
+        staticMask: api.hitsMaskStatic(best.lx, best.ly, r.width, r.height) === true,
+      }));
+      const opts = { bubbles: true, cancelable: true, clientX: r.x + best.lx, clientY: r.y + best.ly, button: 0, buttons: 1, pointerId: 1, pointerType: "mouse", isPrimary: true };
+      const down = new PointerEvent("pointerdown", opts);
+      const up = new PointerEvent("pointerup", Object.assign({}, opts, { buttons: 0 }));
+      (node && node.closest("[data-dsh-live2d-pet]") ? node : stage).dispatchEvent(down);
+      (node && node.closest("[data-dsh-live2d-pet]") ? node : stage).dispatchEvent(up);
+      return JSON.stringify({ ok: true, target, before, count: cells.length, point: best });
+    })()`) ?? '{}')
+    check('取点与点击之间没有空档（同一次求值），事件落在宠物身上',
+      clicked.ok === true && clicked.target === 'pet' && clicked.before.tail === true && clicked.before.head === false,
+      JSON.stringify(clicked))
+    const saidTail = await until(async () => {
+      const text = await bubble()
+      return text !== null && String(tailLines).includes(text)
+    }, 6000)
+    const text = await bubble()
+    const press = JSON.parse(await ev('JSON.stringify(window.__dshLive2dPet.lastPress ? window.__dshLive2dPet.lastPress() : null)') ?? 'null')
+    check('点可见的尾鳍 → 摸尾巴的台词（用户报的「很难点到」）',
+      saidTail && String(tailLines).includes(text),
+      'bubble=' + text + ' | 按住时 onModel=' + press?.onModel + ' onHead=' + press?.onHead
+      + ' onTail=' + press?.onTail + ' | tail=' + String(tailLines)
+      + ' pat=' + String(patLines) + ' click=' + String(bodyLines))
+  } else {
+    check('点可见的尾鳍 → 摸尾巴的台词（用户报的「很难点到」）', false, '第二轮没取到点: ' + JSON.stringify(fresh))
+  }
+}
+
 // --- (5)(7)(8) 气泡：相位台词 / 偏移 / 总开关 -------------------------------
 await ev('window.__dshLive2dPet.phaseNow("thinking")')
 // 问候气泡也在用同一个位置，所以轮询到**等于 thinking 那句**为止。
