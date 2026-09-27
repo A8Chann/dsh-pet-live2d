@@ -1,9 +1,14 @@
-// 一次性诊断：独立二进制服务的页面里，Cubism Core 那个脚本到底加载成什么样了。
-//   node tools/probe-core.mjs --url http://127.0.0.1:8796
+// 一次性诊断：页面里的 Cubism Core 与 vendor 到底加载成什么样了。
+//
+// 翻成 Rust 宿主之后它主要是历史工具：当年查的是"deno 独立二进制里 core 没被 --include
+// 带上"，那条路已经不要了。留着是因为换页面/换运行时的时候，"这些脚本到底加载成功没有"
+// 仍然是最常问的一句话，而它一次把三处（网络、控制台、页面读口）都答了。
+//
+//   node tools/probe-core.mjs [--url http://127.0.0.1:8823] [--cdp-port 8897]
 import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
-import { DESKTOP } from '../sidecar/paths.mjs'
+import { DESKTOP } from './paths.mjs'
 
 const argv = process.argv.slice(2)
 const argOf = (flag, fallback) => {
@@ -16,7 +21,11 @@ const BROWSERS = [
   'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
   'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
 ]
-const browser = BROWSERS.find((c) => existsSync(c))
+const browser = BROWSERS.find((candidate) => existsSync(candidate))
+if (browser === undefined) {
+  console.error('找不到 Edge')
+  process.exit(2)
+}
 const profile = join(DESKTOP, '.run', 'probe-core-profile')
 rmSync(profile, { recursive: true, force: true })
 mkdirSync(profile, { recursive: true })
@@ -34,6 +43,10 @@ for (let i = 0; i < 60 && ws === undefined; i++) {
     ws = list.find((t) => t.type === 'page')?.webSocketDebuggerUrl
   } catch { /* retry */ }
   if (ws === undefined) await sleep(250)
+}
+if (ws === undefined) {
+  console.error('CDP 端口没就绪')
+  process.exit(2)
 }
 
 const socket = new WebSocket(ws)
@@ -67,29 +80,29 @@ await send('Page.enable')
 await send('Page.reload', { ignoreCache: true })
 await sleep(12000)
 
-console.log('--- 网络请求（只看 runtime / core / vendor / client）')
+console.log('--- 网络请求（只看 runtime / core / vendor / client / react）')
 for (const event of events) {
   if (event.method === 'Network.responseReceived') {
     const url = event.params.response.url
-    if (/runtime|core|vendor|client\.js/.test(url)) {
+    if (/runtime|core|vendor|client\.js|react/.test(url)) {
       console.log('  ' + event.params.response.status + '  ' + url)
     }
   }
   if (event.method === 'Network.loadingFailed') {
-    console.log('  FAILED  ' + event.params.errorText + '  ' + (event.params.requestId ?? ''))
+    console.log('  FAILED  ' + event.params.errorText)
   }
 }
-console.log('--- 控制台/异常')
+console.log('--- 控制台 / 异常')
 for (const event of events) {
-  if (event.method === 'Log.entryAdded') console.log('  LOG[' + event.params.entry.level + '] ' + event.params.entry.text + ' @ ' + (event.params.entry.url ?? ''))
+  if (event.method === 'Log.entryAdded') {
+    console.log('  LOG[' + event.params.entry.level + '] ' + event.params.entry.text + ' @ ' + (event.params.entry.url ?? ''))
+  }
   if (event.method === 'Runtime.exceptionThrown') {
     const d = event.params.exceptionDetails
     console.log('  EXC ' + d.text + ' @ ' + (d.url ?? '') + ':' + (d.lineNumber + 1))
-    if (d.exception?.description) console.log('      ' + String(d.exception.description).split('\n').slice(0, 4).join('\n      '))
-  }
-  if (event.method === 'Runtime.consoleAPICalled') {
-    const args = event.params.args.map((a) => a.value ?? a.description ?? a.type).join(' ')
-    console.log('  CONSOLE[' + event.params.types + '] ' + String(args).slice(0, 240))
+    if (d.exception?.description) {
+      console.log('      ' + String(d.exception.description).split('\n').slice(0, 4).join('\n      '))
+    }
   }
 }
 console.log('--- 页面状态')

@@ -3,22 +3,18 @@ node_modules/
 .run/
 dist/
 
-# ---- 构建产物：都是生成的，别提交 ----
-# React UMD（tools/vendor-react.mjs 从 node_modules 铺过来）
-sidecar/page/react/
-# 要嵌进 exe 的那份资源（tools/prep-embed.mjs 现铺；内容就是插件 + 页面的副本）
-sidecar/embed/
-# 资源清单（由 prep-embed 生成，壳与 sidecar 都按它来）
-sidecar/embed-manifest.mjs
-# sidecar 独立二进制（tools/build-sidecar.mjs 用 deno compile 产出，86MB）
-src-tauri/binaries/
-
 # ---- Rust ----
 src-tauri/target/
 src-tauri/gen/
+# 诊断用的小工具（`src-tauri/src/bin/`）按需创建，不进仓库
+src-tauri/src/bin/
 
 # ---- 截图证据 ----
 # 只留文档里用到的那两张；临时对比、调试截图不进仓库。
 shots/*
 !shots/pet-on-desktop.png
 !shots/settings-panel.png
+
+# 说明：以前这里还忽略过 "构建产物"（sidecar/embed、embed-manifest、src-tauri/binaries）——
+# 那是 deno sidecar 那条路留下的，宿主半区翻成 Rust 之后资源由 build.rs 在编译期嵌入，
+# 这三个路径都不存在了。

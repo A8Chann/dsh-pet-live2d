@@ -83,8 +83,7 @@ fn reset_position(app: &AppHandle) {
  * "设置…"：她自己的右键面板就是设置入口，这里只是替用户点开它。
  *
  * 桌面端没有 DSH 的设置页宿主（`ctx.slots` 那一节），所以插件的设置界面被接进了
- * **右键面板的第三个页签**（见 `sidecar/page/runtime.js` 与 `lib/client.js` 里
- * `DESKTOP` 守卫那一段）。托盘这一项负责把它打开，省得用户先猜"设置在哪"。
+ * **右键面板的第三个页签**（见 `sidecar/page/runtime.js` 与 `lib/client.js` 里 * `DESKTOP` 守卫那一段）。托盘这一项负责把它打开，省得用户先猜"设置在哪"。
  */
 fn open_settings(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(pet_window::PET_WINDOW) {
@@ -94,12 +93,10 @@ fn open_settings(app: &AppHandle) {
     }
 }
 
-/// 退出：先把 sidecar 收掉再退（它的 Drop 里会 taskkill 整棵进程树）。
+/// 退出。
+///
+/// 翻成同进程宿主之后**没有子进程要收尸了**（以前要先 taskkill 掉 Node sidecar 整棵
+/// 进程树）。这正是这次架构替换白拿的好处之一：少一个能变成孤儿的进程。
 fn quit<R: Runtime>(app: &AppHandle<R>) {
-    if let Some(sidecar) = app.try_state::<std::sync::Mutex<crate::sidecar::Sidecar>>() {
-        if let Ok(mut guard) = sidecar.lock() {
-            guard.stop();
-        }
-    }
     app.exit(0);
 }

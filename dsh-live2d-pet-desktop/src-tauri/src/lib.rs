@@ -1,39 +1,38 @@
-// 桌面端外壳（Tauri）的入口库。
+// 桌面端外壳（Tauri）的入口。
 //
-// 分工（M0 的核心结论）：
+// **一次架构替换**：原来"壳 + Node sidecar（deno compile 出来的独立二进制）"那套，
+// sidecar 被换成了同进程里的 Rust 宿主半区（`src/host/`）。动机只有一个字：体积 ——
+// deno 那条路实测 exe 95MB（其中 86MB 是 V8 运行时，`deno compile` 没有 `--strip`、
+// `llvm-strip` 也压不动），翻成 Rust 之后回到十几 MB。
 //
-//   * **壳**只管窗口：透明、置顶、不进任务栏、以及"光标下面是桌面还是她"这一件事。
-//   * **sidecar**（node 进程）管宠物：把插件宿主半区的真路由表挂在回环端口上，
-//     `lib/index.js` 一行都没改。
-//   * **页面**管渲染与判定：跑的就是 `lib/client.js`，不认 Tauri、也不认 DSH。
+// 现在的分工：
 //
-// 三方之间**没有 IPC**，只有两条 HTTP 与一个状态文件：
+//   * **壳**：窗口（透明、置顶、不进任务栏）、穿透轮询、托盘；
+//   * **host**：宠物目录扫描 → catalog、资产路由（引用闭包白名单）、相位流（SSE）、
+//     页面分发，全部在同一个进程里，回环端口只给 WebView 用；
+//   * **页面**：跑的还是 `lib/client.js`，一行没改 —— 它认的是
+//     `/api/live2d-pet/*` 与 `/__desktop/*` 这两组路径，谁在背后答它并不关心。
 //
-//     壳 --(POST /__desktop/probe)--> sidecar --> 页面判定 --> 壳据此切窗口忽略状态
-//     壳 --(写 .run/shell-state.json)--> sidecar 读出来挂成 GET /__desktop/shell
-//
-// 为什么不用 Tauri 的 IPC：页面是从 loopback 上加载的，Tauri 对**远程源**默认拒绝自定义
-// 命令（实测 `shell_state not allowed. Plugin not found`），要走通得开远程 IPC 权限——
-// 那正好和我们想要的"发布版别留后门"相反。走文件既不需要权限，又让"换壳"这件事继续
-// 成立：换 Electron 时页面和 sidecar 原样搬走，壳只要能发 HTTP、写一个 JSON 就行。
+// 进程内共享状态在 `host::Shared` 里（以前壳要把它写进 shell-state.json 让 sidecar 读，
+// 现在直接读内存）。
+// `pub` 是为了让诊断/对拍用的小工具（`src/bin/diag-catalog.rs`）能直接调宿主半区，
+// 不用起窗口。发布产物不受影响（bin 不进最终 exe）。
+pub mod host;
 mod pet_window;
-mod sidecar;
 mod tray;
 
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use tauri::{AppHandle, Manager};
 
-use sidecar::Sidecar;
+use host::shared::{Point, Shared};
 
-/**
- * 运行期目录：内嵌资源的解包处、壳的状态文件、sidecar 的缓存都在这里。
- *
- * **便携优先**：exe 旁边可写就用 `.\DSH桌宠-data\`（U 盘、绿色版直接带着走）；
- * 不可写（放在 Program Files、只读盘）才退回 `%LOCALAPPDATA%\<identifier>\runtime\`。
- * 判据是**真的写一次试试**，不是猜路径权限。
- */
+/// 运行期目录：随包插件的解包处。
+///
+/// **便携优先**：exe 旁边可写就用 `.\DSH桌宠-data\`（U 盘、绿色版直接带着走）；
+/// 不可写（放在 Program Files、只读盘）才退回 `%LOCALAPPDATA%\<identifier>\runtime\`。
+/// 判据是**真的写一次试试**，不是猜路径权限。
 pub fn resolve_runtime_dir(app: &AppHandle) -> std::path::PathBuf {
     let probe = std::env::current_exe()
         .ok()
@@ -55,91 +54,31 @@ pub fn resolve_runtime_dir(app: &AppHandle) -> std::path::PathBuf {
     fallback.join("runtime")
 }
 
-/// 壳的运行状态：**唯一用途是给 driver 与排查看的读口**，不参与任何决策。
-#[derive(Default)]
-pub struct ShellState {
-    pub sidecar_url: Option<String>,
-    pub window_origin: Option<(f64, f64)>,
-    pub window_size: Option<(u32, u32)>,
-    pub scale: f64,
-    pub cursor: Option<(i32, i32)>,
-    pub local: Option<(i32, i32)>,
-    pub interactive: bool,
-    pub ignored: bool,
-    pub active: bool,
-    pub last_reason: String,
-    pub probes: u64,
-    pub changes: u64,
-    pub probe_errors: u64,
-    pub uptime_ms: u64,
-    /// 只在进程内部用来算 `uptime_ms`，不落进状态文件。
-    #[allow(dead_code)]
-    pub started: Option<Instant>,
+/// 宠物根目录：`%DSH_HOME%\pets`（默认 `~/.dsh/pets`），与网页端插件同一份。
+fn resolve_pets_root() -> std::path::PathBuf {
+    host::http::default_pets_root()
 }
 
-/// 把状态写到 sidecar 能读到的地方。
-///
-/// 手写 JSON 而不是引 serde 派生：字段就这么十几个、全是数字与字符串，省一个依赖。
-/// 写完再原子替换（临时文件 + `fs::rename`），避免 sidecar 读到半截文件。
-pub fn write_state(path: &std::path::Path, state: &ShellState) {
-    let text = |value: &str| {
-        let mut out = String::with_capacity(value.len() + 2);
-        out.push('"');
-        for ch in value.chars() {
-            match ch {
-                '"' => out.push_str("\\\""),
-                '\\' => out.push_str("\\\\"),
-                '\n' => out.push_str("\\n"),
-                '\r' => out.push_str("\\r"),
-                '\t' => out.push_str("\\t"),
-                c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-                c => out.push(c),
-            }
-        }
-        out.push('"');
-        out
-    };
-    let pair = |value: Option<(i32, i32)>| match value {
-        Some((x, y)) => format!("[{x},{y}]"),
-        None => "null".to_string(),
-    };
-    let pair_f = |value: Option<(f64, f64)>| match value {
-        Some((x, y)) => format!("[{x},{y}]"),
-        None => "null".to_string(),
-    };
-    let size = match state.window_size {
-        Some((w, h)) => format!("[{w},{h}]"),
-        None => "null".to_string(),
-    };
-    let body = format!(
-        concat!(
-            "{{\"sidecarUrl\":{},\"windowOrigin\":{},\"windowSize\":{},\"scale\":{},",
-            "\"cursor\":{},\"cursorLocal\":{},\"interactive\":{},\"ignored\":{},",
-            "\"active\":{},\"lastReason\":{},\"probes\":{},\"changes\":{},\"probeErrors\":{},",
-            "\"uptimeMs\":{}}}"
-        ),
-        state.sidecar_url.as_deref().map_or("null".to_string(), text),
-        pair_f(state.window_origin),
-        size,
-        if state.scale > 0.0 { state.scale } else { 1.0 },
-        pair(state.cursor),
-        pair(state.local),
-        state.interactive,
-        state.ignored,
-        state.active,
-        text(&state.last_reason),
-        state.probes,
-        state.changes,
-        state.probe_errors,
-        state.uptime_ms,
-    );
-    let temp = path.with_extension("json.tmp");
-    if std::fs::write(&temp, body).is_ok() {
-        let _ = std::fs::rename(&temp, path);
+/// `--active=false`：关掉穿透轮询，窗口一直吃事件。**A/B 对照用**——
+/// "这层透明玻璃到底挡不挡桌面"这个问题只有对照组才回答得了。
+fn parse_active() -> bool {
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--active=false") {
+        return false;
+    }
+    match std::env::var("PET_DESKTOP_ACTIVE") {
+        Ok(value) => value != "false",
+        Err(_) => true,
     }
 }
 
-/// 光标位置（屏幕物理像素）。非 Windows 上返回 None —— M0 只在 Windows 上验。
+fn parse_arg(flag: &str) -> Option<String> {
+    let args: Vec<String> = std::env::args().collect();
+    let at = args.iter().position(|a| a == flag)?;
+    args.get(at + 1).cloned()
+}
+
+/// 光标位置（屏幕物理像素）。非 Windows 上返回 None —— 只在 Windows 上验过。
 #[cfg(windows)]
 fn cursor_screen_pos() -> Option<(i32, i32)> {
     use windows_sys::Win32::Foundation::POINT;
@@ -158,30 +97,22 @@ fn cursor_screen_pos() -> Option<(i32, i32)> {
     None
 }
 
-/// 穿透轮询：读数 → 问 sidecar（页面判定）→ 变化时切窗口的忽略状态 → 落一份状态给读口。
+/// 穿透轮询：读光标 → 问页面（经 host 的内存任务）→ 切窗口的忽略状态 → 写回状态。
 ///
-/// 为什么轮询而不是听事件：窗口一旦忽略光标事件，页面就收不到鼠标移动（Windows 把命中
-/// 测试交给了下层窗口），所以"该不该忽略"这个判断本身成了鸡生蛋问题。绕开的办法只有
-/// 一个：**自己问操作系统光标在哪**（`GetCursorPos`），这与窗口吃不吃事件无关。
-fn spawn_hover_loop(app: AppHandle, state_path: std::path::PathBuf) {
+/// 为什么轮询而不是听事件：窗口一旦忽略光标事件，Windows 就把命中测试交给下层窗口，
+/// **页面收不到鼠标移动**。所以"该不该忽略"这个判断本身成了鸡生蛋问题 —— 只能自己问
+/// 操作系统光标在哪（`GetCursorPos`），这与窗口吃不吃事件无关。
+fn spawn_hover_loop(app: AppHandle, shared: Arc<Mutex<Shared>>) {
     std::thread::spawn(move || {
         let mut last: Option<bool> = None;
         loop {
             std::thread::sleep(Duration::from_millis(33));
-            let Some(window) = app.get_webview_window("pet") else {
+            let Some(window) = app.get_webview_window(pet_window::PET_WINDOW) else {
                 continue;
             };
-            let base = {
-                let state = app.state::<Mutex<ShellState>>();
-                let locked = state.lock();
-                match locked {
-                    Ok(guard) => guard.sidecar_url.clone(),
-                    Err(_) => None,
-                }
-            };
-            let Some(base) = base else {
+            if !shared.lock().unwrap_or_else(|p| p.into_inner()).active {
                 continue;
-            };
+            }
             let Some((cx, cy)) = cursor_screen_pos() else {
                 continue;
             };
@@ -195,153 +126,96 @@ fn spawn_hover_loop(app: AppHandle, state_path: std::path::PathBuf) {
                 continue;
             };
             let scale = if scale > 0.0 { scale } else { 1.0 };
-            let local_x = ((cx as f64 - ox) / scale).round();
-            let local_y = ((cy as f64 - oy) / scale).round();
+            let local_x = (cx as f64 - ox) / scale;
+            let local_y = (cy as f64 - oy) / scale;
 
-            let mut verdict = None;
-            let mut error = None;
             let inside = local_x >= 0.0 && local_y >= 0.0 && local_x < w as f64 && local_y < h as f64;
-            if inside {
-                let body = serde_json::json!({
-                    "x": local_x,
-                    "y": local_y,
-                    "screenX": cx,
-                    "screenY": cy,
-                    "scale": scale,
-                });
-                match ureq::post(&format!("{base}/__desktop/probe"))
-                    .timeout(Duration::from_millis(400))
-                    .send_json(body)
-                {
-                    Ok(response) => verdict = response.into_json::<serde_json::Value>().ok(),
-                    Err(err) => error = Some(err.to_string()),
+            let (interactive, reason, answered) = if inside {
+                match host::http::probe_now(&shared, Point { x: local_x, y: local_y }) {
+                    Some((interactive, reason)) => (interactive, reason, true),
+                    None => (false, "probe-timeout".to_string(), false),
                 }
-            }
-            let interactive = verdict
-                .as_ref()
-                .and_then(|v| v.get("interactive"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let reason = verdict
-                .as_ref()
-                .and_then(|v| v.get("reason"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
+            } else {
+                (false, "outside".to_string(), true)
+            };
 
             // 桌面 → 忽略光标事件（点下去穿到下层窗口）；她 → 吃事件。
             let ignore = !interactive;
-            let changed = last != Some(interactive);
-            if changed {
+            if last != Some(interactive) {
                 last = Some(interactive);
                 let _ = window.set_ignore_cursor_events(ignore);
             }
 
-            let snapshot = {
-                let state = app.state::<Mutex<ShellState>>();
-                let locked = state.lock();
-                match locked {
-                    Ok(mut s) => {
-                        s.cursor = Some((cx, cy));
-                        s.local = Some((local_x.round() as i32, local_y.round() as i32));
-                        s.window_origin = Some((ox, oy));
-                        s.window_size = Some((w, h));
-                        s.scale = scale;
-                        s.interactive = interactive;
-                        s.ignored = ignore;
-                        s.last_reason = reason;
-                        s.probes += 1;
-                        if error.is_some() {
-                            s.probe_errors += 1;
-                        }
-                        if changed {
-                            s.changes += 1;
-                        }
-                        s.uptime_ms = s.started.map_or(0, |t| t.elapsed().as_millis() as u64);
-                        // 快照：写文件用的字段，与决策无关。
-                        ShellState {
-                            sidecar_url: s.sidecar_url.clone(),
-                            window_origin: s.window_origin,
-                            window_size: s.window_size,
-                            scale: s.scale,
-                            cursor: s.cursor,
-                            local: s.local,
-                            interactive: s.interactive,
-                            ignored: s.ignored,
-                            active: s.active,
-                            last_reason: s.last_reason.clone(),
-                            probes: s.probes,
-                            changes: s.changes,
-                            probe_errors: s.probe_errors,
-                            uptime_ms: s.uptime_ms,
-                            started: None,
-                        }
-                    }
-                    Err(_) => continue,
-                }
-            };
-            write_state(&state_path, &snapshot);
+            let mut guard = shared.lock().unwrap_or_else(|p| p.into_inner());
+            if !answered {
+                guard.probe_errors += 1;
+            }
+            guard.report_hover(
+                (cx, cy),
+                (local_x.round() as i32, local_y.round() as i32),
+                (ox, oy),
+                (w, h),
+                scale,
+                interactive,
+                reason,
+            );
         }
     });
-}
-
-/// `--active=false`：关掉穿透轮询，窗口一直吃事件。**A/B 对照用**——
-/// "这层透明玻璃到底挡不挡桌面"这个问题只有对照组才回答得了。
-fn parse_active() -> bool {
-    let args: Vec<String> = std::env::args().collect();
-    if args.iter().any(|a| a == "--active=false") {
-        return false;
-    }
-    match std::env::var("PET_DESKTOP_ACTIVE") {
-        Ok(value) => value != "false",
-        Err(_) => true,
-    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let active = parse_active();
+    // 页面模式也走环境变量：host 与页面读的是同一个值。
+    if let Some(page) = parse_arg("--page") {
+        std::env::set_var("PET_DESKTOP_PAGE", page);
+    }
+    if let Some(dsh) = parse_arg("--dsh") {
+        std::env::set_var("PET_DESKTOP_DSH", dsh);
+    }
+    let shared = Shared::new(active);
+
     tauri::Builder::default()
-        .manage(Mutex::new(ShellState {
-            started: Some(Instant::now()),
-            active,
-            ..Default::default()
-        }))
+        .manage(shared.clone())
         .setup(move |app| {
             let handle = app.handle().clone();
             let runtime = resolve_runtime_dir(&handle);
+            let pets_root = resolve_pets_root();
             eprintln!("[shell] 运行期目录：{}", runtime.display());
-            let sidecar = Sidecar::launch(&runtime)?;
-            eprintln!(
-                "[shell] sidecar 就绪：{}（{}，pid {}）",
-                sidecar.url,
-                if sidecar.published { "内嵌独立二进制" } else { "node 开发模式" },
-                sidecar.pid
-            );
-            let url = sidecar.url.clone();
-            let state_path = runtime.join("shell-state.json");
-            {
-                let state = app.state::<Mutex<ShellState>>();
-                let locked = state.lock();
-                if let Ok(mut guard) = locked {
-                    guard.sidecar_url = Some(url.clone());
-                    guard.active = active;
+            eprintln!("[shell] 宠物目录：{}", pets_root.display());
+
+            // 随包宠物解包到运行期目录（宿主半区按文件系统扫它）。
+            let plugin_root = runtime.join("plugin");
+            if !host::embed::plugin_extracted(&plugin_root) {
+                std::fs::create_dir_all(&plugin_root)?;
+                match host::embed::extract_plugin(&plugin_root) {
+                    Ok(count) => eprintln!("[shell] 已解包随包插件：{count} 个文件 → {}", plugin_root.display()),
+                    Err(error) => eprintln!("[shell] 解包随包插件失败：{error}"),
                 }
             }
-            pet_window::create_pet_window(&handle, &url, sidecar)?;
+            let (files, bytes) = host::embed::totals();
+            eprintln!(
+                "[shell] 内嵌资源：{files} 个文件（{:.2} MB）",
+                bytes as f64 / 1024.0 / 1024.0
+            );
+
+            let host = host::serve(shared.clone(), pets_root, plugin_root)?;
+            eprintln!("[shell] 宿主已就绪：{}", host.url);
+            pet_window::create_pet_window(&handle, &host::page_url(&host))?;
             tray::setup(app)?;
-            spawn_hover_loop(handle, state_path);
+            spawn_hover_loop(handle.clone(), shared.clone());
+
+            // 相位桥：订阅运行中 DSH 的相位流。DSH 没开就只是 idle，宠物照样自己摸鱼。
+            let dsh_base = std::env::var("PET_DESKTOP_DSH").unwrap_or_else(|_| "http://127.0.0.1:3080".to_string());
+            if dsh_base != "none" {
+                host::dsh_link::spawn(dsh_base, shared.clone());
+            } else {
+                let mut guard = shared.lock().unwrap_or_else(|p| p.into_inner());
+                guard.dsh = serde_json::json!({ "connected": false, "disabled": true });
+            }
             Ok(())
         })
         .build(tauri::generate_context!())
         .expect("Tauri 应用初始化失败")
-        .run(|app, event| {
-            if let tauri::RunEvent::Exit = event {
-                if let Some(sidecar) = app.try_state::<Mutex<Sidecar>>() {
-                    if let Ok(mut guard) = sidecar.lock() {
-                        guard.stop();
-                    }
-                }
-            }
-        });
+        .run(|_app, _event| {});
 }

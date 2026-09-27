@@ -8,18 +8,16 @@
 // 代价是**穿透判定必须对**：判错了就是一层挡住整个桌面的透明玻璃。所以窗口初始就是
 // "忽略光标事件"，由穿透轮询把它打开（见 lib.rs 的 spawn_hover_loop）——失败时默认
 // 是"不挡桌面"，而不是"挡住桌面"。
-use tauri::{AppHandle, Manager, WebviewWindowBuilder};
 use tauri::utils::config::Color;
-
-use crate::sidecar::Sidecar;
+use tauri::{AppHandle, Manager, WebviewWindowBuilder};
 
 pub const PET_WINDOW: &str = "pet";
 
-pub fn create_pet_window(
-    app: &AppHandle,
-    url: &str,
-    sidecar: Sidecar,
-) -> Result<(), Box<dyn std::error::Error>> {
+/// 建桌宠窗口。
+///
+/// 翻成同进程宿主之后这个函数不再接管子进程（以前要 `app.manage(sidecar)` 让它的 Drop
+/// 负责收尸），只负责窗口。
+pub fn create_pet_window(app: &AppHandle, url: &str) -> Result<(), Box<dyn std::error::Error>> {
     // 工作区（不含任务栏）：宠物在任务栏底下就没法点了。
     let area = app
         .primary_monitor()
@@ -58,13 +56,10 @@ pub fn create_pet_window(
     let _ = window.set_ignore_cursor_events(true);
     let _ = window.show();
     let _ = window.set_focus();
-
-    // sidecar 跟着窗口一起活：窗口没了，sidecar 也该走（Drop 里收尸）。
-    app.manage(std::sync::Mutex::new(sidecar));
     Ok(())
 }
 
-/// 把宠物藏起来（托盘菜单用）。窗口还在、sidecar 还在，只是不显示——藏起来不占桌面。
+/// 把宠物藏起来（托盘菜单用）。窗口与宿主都还在，只是不显示——藏起来不占桌面。
 pub fn hide_pet(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(PET_WINDOW) {
         let _ = window.hide();

@@ -36,68 +36,79 @@ HTTP：壳 POST `/__desktop/probe` 问判定，页面 GET 插件自己的 `/api/
 （不含任务栏，否则宠物会被任务栏盖住点不到），位置取工作区左上角。
 窗口的扩展样式是 `0xC0138`：`WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_APPWINDOW`。
 
-## 单文件便携 exe（M4 已打通）
+## 单文件便携 exe（M4 已打通，且**宿主半区翻成了 Rust**）
 
-**发出去的是一个文件**：`dist/DSH桌宠.exe`（~55MB，不用安装，双击就跑）。四样东西
-在里面：壳（Tauri/WebView2）、**sidecar 的独立二进制**、**sidecar 的资源**（插件宿主
-半区 + 随包宠物 + React + Cubism Core + 页面）、图标。
+**发出去的是一个文件**：`dist/DSH桌宠.exe`（**9.15 MB**，不用安装，双击就跑）。
 
-### 为什么用 deno compile 而不是把宿主半区翻成 Rust
+### 走过的两条路（体积 vs 实现份数）
 
-`lib/index.js` 里的宠物发现、`pet.json` 归一化、模型引用闭包、随包宠物按内容指纹同步，
-是修过好几个 bug、有回归测试的逻辑；**翻一遍就是第二份实现**，而且两边会慢慢分叉。
-`deno compile` 把它连同 Node 兼容层一起编成一个 exe —— **JS 一行不改**，宠物行为与
-网页端天然一致。实测现有 sidecar 源码在 deno 2.9.7 下**直接跑通**（catalog 与 node 版
-逐字段相同，`node:http` / `node:fs` / `node:crypto` 的 `createHash` 都在）。
+| 路线 | exe | 代价 |
+|---|---|---|
+| Tauri 壳 + **Node sidecar**（deno compile 成独立二进制内嵌） | **95.5 MB** | 体积极差：86MB 是 V8 运行时本体 |
+| Tauri 壳 + **同进程 Rust 宿主半区** | **9.15 MB** | 宿主半区成了**第二份实现**，必须配自动对拍 |
 
-三个坑：
+deno 那条路**跑通了**（catalog 与 node 版逐字段相同、页面 8/8、壳 16/16），但两件事把它
+判了死刑：
 
-1. **`deno compile` 没有 `--strip`**（试过，报 unexpected argument）。更意外的是
-   **`llvm-strip --strip-all` 也压不动它**：86.3MB 进、86.3MB 出（装了 `llvm-tools`
-   再用 `rust-strip` 走了一遍，结果一样）。所以那 86MB **不是符号，是 V8 运行时本体**
-   —— 想变小只能不装 JS 运行时（把宿主半区翻成 Rust，约 10MB），代价是第二份实现。
-   实测产物：sidecar 86.3MB + 资源 5.6MB → **成品 exe 95.5MB**。
-2. **`--include <目录>` 必须显式给**：资源是运行期用拼出来的路径读的，静态分析看不见。
-   不给的症状是"开发时好好的、打包后 404 / Module not found"。
-3. 独立二进制里**不要把 `import.meta.url` 那套当判据**。试过 `Deno.mainModule` 与
-   "dev 的 embed 目录在不在"，两个都不可靠 —— 编译产物里的**虚拟文件系统也能
-   `existsSync`**，于是误判成开发期，然后去读一个不存在的仓库路径
-   （症状：`Module not found: .../dsh-live2d-pet/lib/index.js`）。改成**壳显式告知**：
-   `PET_DESKTOP_EMBED` 在 = published。
+1. **`deno compile` 没有 `--strip`**（试过，报 unexpected argument）；
+2. **`llvm-strip --strip-all` 也压不动它**：86.3MB 进、86.3MB 出（装了 `llvm-tools` 再用
+   `rust-strip` 走一遍，结果一样）。那 86MB **不是符号，是 V8 运行时**。
 
-### 壳与 sidecar 的分工（解包这件事只能壳做）
+所以"必须 10MB"只能翻实现。翻完的实测：**9.15 MB**（含 5.52MB 嵌入资源）。
 
-壳先把资源解包到运行期目录、把 `PET_DESKTOP_EMBED` 指对，**才能**拉起 sidecar——
-sidecar 用 `pluginRoot()` 推 `pets/` 目录（它只认文件系统），所以插件那份副本必须真的
-在磁盘上，且布局与真包一致。
+### 翻实现的关键：先写对拍，再动手
 
-运行期目录**便携优先**：exe 旁边可写就用 `.\DSH桌宠-data\`（U 盘、绿色版带着走），
-不可写才退到 `%LOCALAPPDATA%\<identifier>\runtime\`。判据是**真的写一次试试**，不是猜
-路径权限。解包有 `.unpacked` / `.stamp` 标记（内容是"文件数|sidecar 大小"），换一版
-exe 才重解。
+两份实现一定会分叉，唯一的解药是**一个能自动发现分叉的判据**。`tools/probe-catalog.mjs`
+同时跑两份**真实**宿主：
 
-### 资源清单要有两份（一份给壳、一份给 sidecar）
+* JS 版：node 直接跑 `dsh-live2d-pet/lib/index.js` 的 `buildRoutes()`（网页端在用的那份，
+  一行没改），挂在临时端口上；
+* Rust 版：壳里正在跑的那个宿主（端口从进程上找）。
 
-`tools/prep-embed.mjs` 生成 `sidecar/embed-manifest.mjs`（JS，sidecar 解包时按它读）；
-`src-tauri/build.rs` 再把同一份清单翻译成 Rust（`embed_files.rs`，`include_bytes!` 要的是
-**字面量路径**，没法在运行期拼）。两边不一致时的症状是"打包后少了几个文件"，所以
-build.rs 会比对清单条数与实际嵌入条数并 `cargo:warning` 报出来。
+比三件事：**catalog 的每个字段**（数组按下标比 —— 顺序会影响界面排序与抽签）、
+**闭包里每个资产的每个字节**、**闭包外的路径两边都拒**。浮点给 1e-9 相对容差
+（Node 与 Rust 读同一个十进制小数可能差 1 ULP，如 `0.20000004768371582` vs `…85`），
+其余一律严格。
+
+它抓到的三个真 bug（都是"看着没问题"的那类）：
+
+1. **块作用域**：`let mut motions` 写在了 `if let` **里面** —— JS 是函数作用域，Rust 是块
+   作用域，出块就没了，`json!` 直接少掉整个字段。症状是"动作菜单与装扮整段消失"。
+   这类差异在 C 系语言背景的人手里很容易漏，**对拍一眼就现行**（`"js":[...], "rust":"(缺失)"`）。
+2. **`json!` 静默吞字段**：把 `motions` / `expressions` 写在 `json!` 里时，两个字段**整个
+   消失**（同一个宏里别的字段都在、两个 Vec 明明有内容、`print` 都正常）。改成
+   `value.as_object_mut().insert(...)` 后行为确定 —— 遇到"宏里少了字段"别再猜，直接手工插。
+3. **JSON 对象的键顺序**：serde_json 默认 BTreeMap（字典序），于是
+   `FileReferences.Motions` 变成 BubbleGum / Hammer / Idle…，而 JS 的 `Object.entries()`
+   给的是文件里的声明顺序（Idle 在前）。加 `serde_json = { features = ["preserve_order"] }`
+   才对得上 —— 右键面板「动作」页签的顺序就是这个。
+
+### 同进程带来的简化（相比 sidecar）
+
+- **不需要文件协议**：壳的状态以前要写 `shell-state.json` 让 sidecar 读（跨进程），现在
+  直接读内存里的 `Host::shared`；
+- **不需要收尸**：没有子进程，也就不可能留孤儿（以前退出要 `taskkill /T` 整棵树）；
+- **不需要解包 86MB**：启动快了一大截；
+- 页面**一行没改**：它认的还是 `/api/live2d-pet/*` 与 `/__desktop/*` 两组路径。
+
+### 资源嵌入（build.rs 一次搞定）
+
+`src-tauri/build.rs` 扫描并生成 `OUT_DIR/embed_files.rs`（`include_bytes!` 只吃**字面量
+路径**，清单必须在构建期定下来）：浏览器半区、vendor 分包、页面、React UMD（生产版优先
+139KB）、Cubism Core（本机缓存那份），以及**随包宠物**（65 个文件，运行时解包到 exe 旁边
+的 `DSH桌宠-data/plugin/`，宿主按文件系统扫它）。
 
 ### 资源体积（实测）
 
 | 项 | 大小 |
 |---|---|
-| sidecar 独立二进制（strip 也没用，见上） | 86.3 MB |
-| embed 资源（78 个文件） | 5.57 MB |
-| ├ 插件宿主半区 + 随包宠物 | 4.12 MB |
-| ├ vendor 分包（pixi + 引擎） | 783 KB |
+| 嵌入资源（76 个文件） | 5.52 MB |
+| ├ 随包宠物（65 个文件：moc3 + 贴图 + 动作 + 表情） | 4.06 MB |
+| ├ vendor 分包（pixi + Live2D 引擎） | 783 KB |
 | ├ Cubism Core（本机缓存那份，内嵌后离线可用） | 202 KB |
-| ├ React UMD（**生产版**：139KB；开发版 1.16MB） | 139 KB |
-| └ 页面 | 12 KB |
-| **成品 `dist/DSH桌宠.exe`** | **95.5 MB** |
-
-React 用生产版：单文件 exe 里体积要算，而桌宠出问题读的是我们自己的 `data-*` 读口与
-驱动，不需要 React 的警告。
+| ├ React UMD（**生产版**；开发版 1.16MB） | 139 KB |
+| └ 页面 + 客户端半区 | 360 KB |
+| **成品 `dist/DSH桌宠.exe`** | **9.15 MB** |
 
 ## Windows 上最硬的一条：穿透的坐标只能由壳给
 
@@ -251,7 +262,7 @@ DSH 那边，不是第二份实现）。连不上不是错误：宠物照样站�
 ## 已完成 / 还剩什么
 
 **M0（透明 + 穿透 + 复用插件）**、**M2（跟着 DSH 走）**、**M3（设置菜单进右键面板）**、
-**M4（单文件便携 exe + 托盘）** 都已落地并实测通过。
+**M4（单文件便携 exe + 托盘）** 都已落地并实测通过；宿主半区已翻成 Rust，exe 9.15MB。
 
 还剩：
 
@@ -259,6 +270,7 @@ DSH 那边，不是第二份实现）。连不上不是错误：宠物照样站�
   正确做法是"拖宠物 = 移动窗口"、位置存屏幕坐标。
 - **托盘菜单按状态灰掉**：`pet_window::is_visible` 已经写好，还没接。
 - **开机自启**、多显示器选择。
-- **体积**：95MB 里 86MB 是 V8 运行时（`deno compile` 压不动）。想去掉只能把宿主半区
-  翻成 Rust（约 10MB），但那会带来第二份实现。
+- **宿主半区是两份实现**：Rust 一份、`lib/index.js` 一份（网页端在用）。改宠物契约
+  （`pet.json` 字段语义）必须**两边一起改**，然后跑 `probe-catalog.mjs` —— 这条是纪律，
+  不是建议。
 - **非 Windows**：没验过不吹。
