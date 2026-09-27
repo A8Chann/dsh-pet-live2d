@@ -42,6 +42,7 @@ export const SUITE = {
   'cdp-bubble.mjs': '动作定格能关掉：吹泡泡糖/掏手机 → 无，连测三轮',
   'cdp-interact.mjs': '互动与气泡：摸尾巴/转圈转晕/相位台词/文本·位置·开关可配',
   'cdp-react-defaults.mjs': '互动反应候选的内置默认值：宠物没声明那三组也演得出来',
+  'cdp-settings-render.mjs': '设置正文真的渲染得出来（挂在宠物组件之外的组件不许读到组件内的 ref）',
 }
 
 const argv = process.argv.slice(2)

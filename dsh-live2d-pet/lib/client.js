@@ -40,6 +40,41 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   /** 显示层轮询间隔：桌面端接管/让位要在一秒内被看见。 */
   const LAYER_POLL_MS = 1000;
 
+  /**
+   * 显示层状态的**模块级 store**。
+   *
+   * 为什么不能放在 `Pet` 组件的 ref 里：设置页那一节（`PetSettingsBody`）渲染在**宠物组件
+   * 之外**（它挂在 DSH 设置页上），读组件内的 ref 会直接 `ReferenceError: layerRef is not
+   * defined` —— 整节设置打不开。这个坑真的踩过，而且是"宠物看着正常、只有设置页崩"的形态。
+   *
+   * 现在两个渲染者都从这里读：`Pet` 负责轮询（它本来就常驻），设置页只读 + 订阅。
+   */
+  const LAYER_INITIAL = { mode: "auto", owner: "inline", desktopRunning: false, binary: null, at: 0 };
+  const layerStore = { value: LAYER_INITIAL, listeners: new Set() };
+  const setLayerState = (next) => {
+    const merged = Object.assign({}, layerStore.value, next);
+    if (merged.mode === layerStore.value.mode
+      && merged.owner === layerStore.value.owner
+      && merged.desktopRunning === layerStore.value.desktopRunning
+      && merged.binary === layerStore.value.binary) return;
+    layerStore.value = merged;
+    for (const listener of layerStore.listeners) {
+      try { listener(merged); } catch { /* 一个订阅者坏了不该拖垮别的 */ }
+    }
+  };
+  /** 订阅显示层状态（返回取消订阅）。 */
+  function useLayerState() {
+    const [value, setValue] = useState(layerStore.value);
+    useEffect(() => {
+      const listener = (next) => setValue(next);
+      layerStore.listeners.add(listener);
+      // 订阅之前可能已经变了：补一次当前值。
+      listener(layerStore.value);
+      return () => { layerStore.listeners.delete(listener); };
+    }, []);
+    return value;
+  }
+
   // -------------------------------------------------- motion controller
   //
   // Why this is a state machine rather than "just call model.motion()":
@@ -4583,12 +4618,13 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     }, [panelOpen]);
     const [tab, setTab] = useState("motions");
     /**
-     * 显示层状态（谁在管这只宠物）。初值给 `inline`：页面刚起来时她本来就该在页面里，
-     * 问过宿主之后再按结论让位 —— 反过来（先假设桌面端）会让她闪一下再出现。
+     * 显示层状态：**订阅模块级的 store**（不是本地 ref）。
+     *
+     * `Pet` 是轮询的驱动者（下面那个 effect），设置页只是订阅者 —— 两个渲染者共用一个
+     * 真值，不会再出现"设置页读不到"的那种引用错误。
      */
-    const [layer, setLayer] = useState({ mode: "auto", owner: "inline", desktopRunning: false, binary: null });
-    const layerRef = useRef({ mode: "auto", owner: "inline", desktopRunning: false, binary: null });
-    const layerTimer = useRef(0);
+    const layer = useLayerState();
+    const layerPollTimer = useRef(0);
     // 设置值在模块作用域的 store 里（DSH 设置页和这里的面板共用一份）。
     // 订阅它既为重渲染，也为下面那个「相位映射随设置重算」的 effect 提供依赖。
     const settingsRev = useSettings();
@@ -6219,27 +6255,22 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         try {
           const response = await fetch(API + "/layer", { cache: "no-store" });
           const payload = await response.json();
-          layerRef.current = {
+          setLayerState({
             mode: typeof payload?.mode === "string" ? payload.mode : "auto",
             owner: payload?.owner === "desktop" ? "desktop" : "inline",
             desktopRunning: payload?.desktopRunning === true,
             binary: payload?.binary ?? null,
-          };
-          // 只在**结论变了**的时候 setState，避免每秒白渲染一次。
-          setLayer((current) => (current.owner === layerRef.current.owner
-            && current.mode === layerRef.current.mode
-            && current.desktopRunning === layerRef.current.desktopRunning
-            ? current
-            : layerRef.current));
+            at: Date.now(),
+          });
         } catch {
           /* DSH 那边的路由还没挂上、或页面刚起来：下一轮再问 */
         }
-        if (!cancelled) layerTimer.current = window.setTimeout(poll, LAYER_POLL_MS);
+        if (!cancelled) layerPollTimer.current = window.setTimeout(poll, LAYER_POLL_MS);
       };
       poll();
       return () => {
         cancelled = true;
-        window.clearTimeout(layerTimer.current);
+        window.clearTimeout(layerPollTimer.current);
       };
     }, []);
 
@@ -7190,9 +7221,10 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
    */
   function LayerControls() {
     useSettings();
+    const layer = useLayerState();
     const [busy, setBusy] = useState(false);
     const [note, setNote] = useState("");
-    const current = layerRef.current;
+    const current = layer;
     const options = [
       ["auto", "自动", "桌面端在跑就用桌面，否则留在页面里"],
       ["inline", "页面内", "永远在 DSH 页面里（随 DSH 启停）"],

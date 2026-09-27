@@ -94,9 +94,28 @@ GIT_CONFIG_SYSTEM=<空配置> GIT_CONFIG_GLOBAL=<临时配置>
 ## 常用命令
 
 - 日常验证：`cd tools/browser-test && npm run dev -- <关键字>`（单个 driver 约 7 秒）
-- 提交前：`npm run suite`（18 个 driver/测试并发，约 4 分钟）；机器吃力时 `node run-suite.mjs --jobs 3`
+- 提交前：`npm run suite`（19 个 driver/测试，约 4 分钟）；机器吃力时 `node run-suite.mjs --jobs 3`
 - 改了 `lib/client.js` **或 `lib/index.js`** 都要重启 `dsh web`：客户端 bundle 不做热重载，
   宿主半区是启动时 import 的（`InstallBundledPets` 这类启动代码不会自己重跑）
+
+## 设置正文的渲染有一个专门的 driver（别再省）
+
+`cdp-settings-render.mjs` 是 2026-09 补的，它堵的是一个**真的漏过一次的盲点**：
+
+其它 driver 只验"设置那一节**注册**上了"（`window.__pluginSections['pet-settings']` 存在），
+**没有一个真的调用它的 render**。于是下面这种崩法能一路绿灯：
+
+```
+ReferenceError: layerRef is not defined
+    at LayerControls (client.js)
+```
+
+症状是**"宠物一切正常，只有设置页打不开"** —— 因为设置页那一节渲染在**宠物组件之外**
+（它挂在 DSH 设置页上），读到组件内的 ref / state 就立刻炸。
+
+规矩：**往设置正文里加组件之后必须跑 `cdp-settings-render`**。它真的 render 一次、数卡片、
+数控件、并断言页面里没有未捕获异常。加完顺手验一下"把 bug 放回去它会不会红"
+（这次验过：2/7，异常信息直指那一行）。
 
 ## 并发下的已知不稳定
 
