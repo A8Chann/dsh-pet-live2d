@@ -163,15 +163,40 @@ fn spawn_hover_loop(app: AppHandle, shared: Arc<Mutex<Shared>>) {
     });
 }
 
+/// `--attach <url>`：**挂载模式** —— 窗口从 DSH 取页面、宠物数据与相位，本机不再自己
+/// 扫宠物目录、不再自己发资产。
+///
+/// 这是"改 bug 只改一处"的落点：挂载时宿主半区只剩 `lib/index.js` 一份在干活，我们这边
+/// 的 Rust 宿主一次都不参与。DSH 关掉就退回独立模式（`--attach` 只在启动时判定一次）。
+fn resolve_attach() -> Option<String> {
+    let raw = parse_arg("--attach")
+        .or_else(|| std::env::var("PET_DESKTOP_ATTACH").ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty() && value != "none");
+    raw.map(|value| {
+        if value.starts_with("http://") || value.starts_with("https://") {
+            value
+        } else {
+            format!("http://{value}")
+        }
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let active = parse_active();
+    let attach = resolve_attach();
     // 页面模式也走环境变量：host 与页面读的是同一个值。
     if let Some(page) = parse_arg("--page") {
         std::env::set_var("PET_DESKTOP_PAGE", page);
     }
     if let Some(dsh) = parse_arg("--dsh") {
         std::env::set_var("PET_DESKTOP_DSH", dsh);
+    }
+    // 挂载模式下相位由上游直接推给页面（`/api/live2d-pet/events` 走转发），
+    // 本机那条 DSH 桥就不需要了 —— 让它别去抢同一个上游。
+    if attach.is_some() {
+        std::env::set_var("PET_DESKTOP_DSH", "none");
     }
     let shared = Shared::new(active);
 
@@ -182,12 +207,15 @@ pub fn run() {
             let runtime = resolve_runtime_dir(&handle);
             let pets_root = resolve_pets_root();
             eprintln!("[shell] 运行期目录：{}", runtime.display());
-            eprintln!("[shell] 宠物目录：{}", pets_root.display());
+            match &attach {
+                Some(upstream) => eprintln!("[shell] **挂载模式**：宠物数据与相位都来自 {upstream}"),
+                None => eprintln!("[shell] 独立模式：宠物目录 {}", pets_root.display()),
+            }
 
-            // 随包宠物解包到运行期目录：升级判定要算它们的 `pet.json` 指纹（宿主半区
-            // 扫描用户宠物目录前会用它决定"要不要装/要不要更新"）。
+            // 随包宠物只在独立模式下解包：挂载时宠物由 DSH 那边的插件负责，本机碰它
+            // 没有意义（也不该在挂载时去写用户的宠物目录）。
             let plugin_root = runtime.join("plugin");
-            if !host::embed::plugin_extracted(&plugin_root) {
+            if attach.is_none() && !host::embed::plugin_extracted(&plugin_root) {
                 std::fs::create_dir_all(&plugin_root)?;
                 match host::catalog::materialize_bundled_pets(&plugin_root) {
                     Ok(count) => eprintln!(
@@ -203,14 +231,15 @@ pub fn run() {
                 bytes as f64 / 1024.0 / 1024.0
             );
 
-            let host = host::serve(shared.clone(), pets_root, plugin_root)?;
+            let host = host::serve(shared.clone(), pets_root, plugin_root, attach.clone())?;
             eprintln!("[shell] 宿主已就绪：{}", host.url);
             pet_window::create_pet_window(&handle, &host::page_url(&host))?;
             tray::setup(app)?;
             spawn_hover_loop(handle.clone(), shared.clone());
 
             // 相位桥：订阅运行中 DSH 的相位流。DSH 没开就只是 idle，宠物照样自己摸鱼。
-            let dsh_base = std::env::var("PET_DESKTOP_DSH").unwrap_or_else(|_| "http://127.0.0.1:3080".to_string());
+            let dsh_base =
+                std::env::var("PET_DESKTOP_DSH").unwrap_or_else(|_| "http://127.0.0.1:3080".to_string());
             if dsh_base != "none" {
                 host::dsh_link::spawn(dsh_base, shared.clone());
             } else {

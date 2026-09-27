@@ -57,6 +57,11 @@ pub struct Shared {
     pub dsh: Value,
     /// 端口（页面地址的一部分，诊断用）。
     pub port: u16,
+    /// 挂载模式的上游（`None` = 独立模式：宠物目录与资产都由本机宿主提供）。
+    ///
+    /// 挂载时页面拿到的每个字节都来自 DSH 里的 `lib/index.js` —— 这就是"改 bug 只改
+    /// 一处"的落点。
+    pub attach: Option<String>,
 }
 
 impl Shared {
@@ -81,6 +86,7 @@ impl Shared {
             phase_detail: String::new(),
             dsh: json!({ "connected": false, "disabled": true }),
             port: 0,
+            attach: None,
         }))
     }
 
@@ -152,6 +158,8 @@ impl Shared {
     pub fn shell_json(&self) -> Value {
         json!({
             "sidecarUrl": if self.port == 0 { Value::Null } else { json!(format!("http://127.0.0.1:{}", self.port)) },
+            "attach": self.attach,
+            "mode": if self.attach.is_some() { "attach" } else { "standalone" },
             "windowOrigin": self.window_origin.map(|(x, y)| json!([x, y])).unwrap_or(Value::Null),
             "windowSize": self.window_size.map(|(w, h)| json!([w, h])).unwrap_or(Value::Null),
             "scale": if self.scale > 0.0 { self.scale } else { 1.0 },

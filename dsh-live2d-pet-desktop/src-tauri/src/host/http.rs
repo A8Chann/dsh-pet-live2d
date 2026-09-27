@@ -25,32 +25,45 @@ const MAX_BODY: usize = 64 * 1024;
 const PROBE_WAIT: Duration = Duration::from_millis(2500);
 /// SSE 心跳间隔。
 const SSE_PING: Duration = Duration::from_secs(30);
+/// 转发给上游时，等响应头的上限。
+const UPSTREAM_CONNECT: Duration = Duration::from_secs(10);
 
 pub struct Host {
     pub port: u16,
     pub url: String,
     pub pets_root: std::path::PathBuf,
     pub plugin_root: std::path::PathBuf,
+    /// 挂载模式的上游（DSH 的本机地址）。`Some` 时 `API + "/*"` 全部转发过去，
+    /// 本机不再自己扫宠物、不再自己发资产。
+    pub attach: Option<String>,
 }
 
 /// 启动服务器（回环、随机端口），返回地址。
-pub fn serve(shared: Arc<Mutex<Shared>>, pets_root: std::path::PathBuf, plugin_root: std::path::PathBuf) -> std::io::Result<Host> {
+pub fn serve(
+    shared: Arc<Mutex<Shared>>,
+    pets_root: std::path::PathBuf,
+    plugin_root: std::path::PathBuf,
+    attach: Option<String>,
+) -> std::io::Result<Host> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
     {
         let mut guard = shared.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         guard.port = port;
+        guard.attach = attach.clone();
     }
     let host = Host {
         port,
         url: format!("http://127.0.0.1:{port}"),
         pets_root,
         plugin_root,
+        attach,
     };
     let state = Arc::new(HostState {
         shared: shared.clone(),
         pets_root: host.pets_root.clone(),
         plugin_root: host.plugin_root.clone(),
+        attach: host.attach.clone(),
     });
     std::thread::spawn(move || {
         for stream in listener.incoming() {
@@ -68,6 +81,7 @@ struct HostState {
     shared: Arc<Mutex<Shared>>,
     pets_root: std::path::PathBuf,
     plugin_root: std::path::PathBuf,
+    attach: Option<String>,
 }
 
 /// 每次请求都重扫宠物目录 —— 与 JS 版一致（`buildCatalog()` 每请求重建），
@@ -231,6 +245,36 @@ fn route(
     path: &str,
     body: &str,
 ) -> std::io::Result<bool> {
+    // ---- 挂载模式：插件那一整套原样转发给 DSH ----
+    //
+    // 这就是"改 bug 只改一处"的落点：挂载时本机的宠物扫描、catalog、资产路由**一次都不
+    // 参与**，页面拿到的每个字节都来自 DSH 里的 `lib/index.js`。所以那边修好了，桌面这
+    // 只跟着好，我们这边一行都不用动。
+    //
+    // **连不上上游时故意失败，不退回本机实现**：静默兜底会把"挂载没成功"伪装成"挂载成功"
+    // （页面上照样有宠物，但它其实来自本机扫描）—— 那正是这套架构最不该出现的不确定性。
+    // 真兜底由用户显式选择：不加 `--attach` 就是独立模式。
+    if let Some(upstream) = &state.attach {
+        if path.starts_with(&format!("{API}/")) || path == API {
+            if relay_to_upstream(stream, upstream, method, path, body)? {
+                return Ok(true);
+            }
+            eprintln!("[host] 挂载模式：连不上上游 {upstream}（{path}）");
+            send_json(
+                stream,
+                502,
+                &json!({
+                    "ok": false,
+                    "error": "attach-upstream-unreachable",
+                    "upstream": upstream,
+                    "path": path,
+                    "hint": "挂载模式要求 DSH 在运行；想让她独立站着就别加 --attach",
+                }),
+            )?;
+            return Ok(true);
+        }
+    }
+
     // ---- 插件 API ----
     if path == format!("{API}/catalog") {
         // **先同步随包宠物，再扫目录**：第一次运行时宠物还不存在，顺序反了会返回空列表
@@ -478,6 +522,155 @@ fn serve_events(stream: &mut TcpStream, state: &HostState) -> std::io::Result<bo
             return Ok(false);
         }
     }
+}
+
+/// 把浏览器半区的 API 请求原样转发给 DSH（挂载模式）。
+///
+/// 返回值：`true` = 已经转发（或转发失败但已经回了错，调用方不要再兜底）；
+/// `false` = 压根没连上上游，交给本机实现兜底。
+///
+/// 手写而不是引 HTTP 客户端：这里要转发的是**一条可能是 SSE 的长连接**，用现成库反而
+/// 要处理"流式响应怎么再流出去"。裸 socket 只是双向 `io::copy`。
+///
+/// ⚠️ 两个容易踩的点：
+///   * 上游可能回 `chunked`（DSH 的资产路由就走 `node:http` 的默认分块）—— 那种情况
+///     **不能**把 `content-length` 再抄一遍，得把分块剥掉、只把体透传；
+///   * 转发完必须**关掉**这条连接（我们不知道上游会不会继续写），所以对客户端声明
+///     `connection: close`。
+fn relay_to_upstream(
+    client: &mut TcpStream,
+    upstream: &str,
+    method: &str,
+    path: &str,
+    body: &str,
+) -> std::io::Result<bool> {
+    if method != "GET" && method != "POST" && method != "HEAD" {
+        return Ok(true); // 只转发这几种；其余交给本机实现去回 405/404
+    }
+    let authority = upstream
+        .trim_end_matches('/')
+        .trim_start_matches("http://")
+        .trim_start_matches("https://")
+        .to_string();
+    if upstream.starts_with("https://") {
+        // 上游是本机 DSH，不该是 https；真遇到就明确报错，别静默失败。
+        eprintln!("[host] 挂载模式不支持 https 上游：{upstream}");
+        return Ok(false);
+    }
+    let (host, port) = match authority.split_once(':') {
+        Some((host, port)) => (host.to_string(), port.parse::<u16>().unwrap_or(80)),
+        None => (authority.clone(), 80),
+    };
+
+    let Ok(mut server) = TcpStream::connect((host.as_str(), port)) else {
+        return Ok(false);
+    };
+    server.set_read_timeout(Some(UPSTREAM_CONNECT))?;
+    let request = format!(
+        "{method} {path} HTTP/1.1\r\nhost: {authority}\r\naccept: */*\r\nconnection: close\r\ncontent-length: {}\r\n\r\n{body}",
+        body.as_bytes().len()
+    );
+    server.write_all(request.as_bytes())?;
+    server.flush()?;
+
+    // 读上游的响应头。
+    let mut reader = BufReader::new(server.try_clone()?);
+    let mut status_line = String::new();
+    if reader.read_line(&mut status_line)? == 0 {
+        return Ok(false);
+    }
+    let mut headers: Vec<(String, String)> = Vec::new();
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line)? == 0 {
+            break;
+        }
+        let trimmed = line.trim_end();
+        if trimmed.is_empty() {
+            break;
+        }
+        if let Some((key, value)) = trimmed.split_once(':') {
+            headers.push((key.trim().to_string(), value.trim().to_string()));
+        }
+    }
+
+    let status = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse::<u16>().ok())
+        .unwrap_or(502);
+    let header_of = |name: &str| {
+        headers
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.clone())
+    };
+    let chunked = header_of("transfer-encoding")
+        .map(|value| value.to_lowercase().contains("chunked"))
+        .unwrap_or(false);
+    let content_length = header_of("content-length").and_then(|value| value.parse::<usize>().ok());
+
+    // 回给客户端：只带这几个头，**故意声明 connection: close**。
+    let reason = status_line.split_whitespace().nth(2).unwrap_or("OK");
+    let mut head = format!(
+        "HTTP/1.1 {status} {reason}\r\ncontent-type: {}\r\nconnection: close\r\ncache-control: no-store\r\n\r\n",
+        header_of("content-type").unwrap_or_else(|| "application/octet-stream".to_string())
+    );
+    if !chunked {
+        if let Some(length) = content_length {
+            head = head.replace(
+                "connection: close\r\n",
+                &format!("content-length: {length}\r\nconnection: close\r\n"),
+            );
+        }
+    }
+    client.write_all(head.as_bytes())?;
+    client.flush()?;
+
+    // 体：分块的剥壳，其余原样搬。
+    if chunked {
+        loop {
+            let mut size_line = String::new();
+            if reader.read_line(&mut size_line)? == 0 {
+                break;
+            }
+            let size_text = size_line.trim().split(';').next().unwrap_or("0");
+            let Ok(size) = usize::from_str_radix(size_text, 16) else {
+                break;
+            };
+            if size == 0 {
+                break;
+            }
+            let mut chunk = vec![0u8; size];
+            reader.read_exact(&mut chunk)?;
+            if client.write_all(&chunk).is_err() {
+                break; // 客户端先走了（比如刷新页面）
+            }
+            let _ = client.flush();
+            let mut crlf = [0u8; 2];
+            let _ = reader.read_exact(&mut crlf);
+        }
+    } else if let Some(length) = content_length {
+        let mut remaining = length;
+        let mut buffer = [0u8; 8192];
+        while remaining > 0 {
+            let take = remaining.min(buffer.len());
+            let read = reader.read(&mut buffer[..take])?;
+            if read == 0 {
+                break;
+            }
+            if client.write_all(&buffer[..read]).is_err() {
+                break;
+            }
+            remaining -= read;
+        }
+    } else {
+        // 既没长度也没分块：那就是"读到连接断"，一路搬（SSE 这条路不走这里）。
+        let _ = std::io::copy(&mut reader, client);
+    }
+    let _ = client.flush();
+    // 我们声明了 connection: close，所以这条连接用完就结束。
+    Ok(true)
 }
 
 fn now_ms() -> u64 {

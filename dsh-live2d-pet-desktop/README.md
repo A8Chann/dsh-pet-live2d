@@ -48,6 +48,40 @@ DSH桌宠.exe（一个进程）
 | 宿主半区 | `src/host/`（Rust） | **重写**：见"为什么翻 Rust" |
 | 随包宠物 | `dsh-live2d-pet/pets/` | 编译期嵌进 exe，运行时解包 |
 
+## 两种运行模式：独立 / 挂载
+
+同一个 exe，一个启动参数决定"宠物数据从哪来"：
+
+| 模式 | 怎么起 | 宠物数据 / 相位 | 什么时候用 |
+|---|---|---|---|
+| **独立**（默认） | `DSH桌宠.exe` | 本机 Rust 宿主扫 `%DSH_HOME%\pets`，自己发资产；相位订阅 DSH | **DSH 没开也要她在** —— 这就是这个模式存在的理由 |
+| **挂载** | `DSH桌宠.exe --attach http://127.0.0.1:3080` | 全部转发给 DSH 里的插件；本机**不碰**宠物目录 | 你已经装了网页插件，只想把她挪到桌面上 |
+
+**挂载模式是"改 bug 只改一处"的落点**：这时本机的宠物扫描、catalog、资产路由一次都不
+参与，页面拿到的每个字节都来自 DSH 里的 `lib/index.js` —— 那边修好了，桌面这只跟着好。
+事件走同一条路（`/api/live2d-pet/events` 直接转发），所以挂载时**不需要**本机那条相位桥。
+
+两条边界：
+
+- **挂载模式下 DSH 必须是活的**。连不上上游时它**故意报 502**，不静默退回本机宿主 ——
+  静默兜底会把"挂载没成功"伪装成"挂载成功"（页面上照样有宠物，但它其实来自本机扫描）。
+  真兜底是用户的显式选择：不加 `--attach` 就是独立模式。
+- **一个 exe 只能跑一份**（WebView2 的 user-data-dir 是独占的），别指望同机开两个。
+
+## 和 DSH 网页插件的关系
+
+两边跑的是**同一个 `lib/client.js`**（摸头、摸尾巴、槽位装扮、相位动作、右键面板、
+设置正文全是它），所以**行为类 bug 只改一处、两边一起好**：
+
+| 改动落在哪 | 要改几处 |
+|---|---|
+| 客户端（`lib/client.js`）：渲染、动作状态机、判定、界面 | **一处**（网页端与桌面端共用） |
+| 宿主（catalog / 资产路由 / 宠物扫描）：`lib/index.js` 与 `src-tauri/src/host/` | 两份 —— 但**挂载模式下只有一份在干活**，独立模式下才需要两边同步 |
+| 壳（窗口行为） | 本来就不同，谈不上改两次 |
+
+改了宿主契约（`pet.json` 字段语义、资产 URL 形状）时，跑 `tools/probe-catalog.mjs`
+让两份实现当场对拍。
+
 ### 为什么翻 Rust（以及代价）
 
 原来那套是"Tauri 壳 + Node sidecar"，用 `deno compile` 把 sidecar 编成独立二进制嵌进
@@ -110,7 +144,8 @@ npm run icon -- --source <你的图.png>     # 默认用 src-tauri/icons/icon.pn
 # 起壳（验证驱动都接管壳里的 WebView）
 PET_DESKTOP_CDP=8823 ./dist/DSH桌宠.exe      # PowerShell: $env:PET_DESKTOP_CDP="8823"
 
-node tools/probe-catalog.mjs     # 7/7  对拍：JS 参照 vs Rust，逐字段 + 58 个资产逐字节
+node tools/probe-attach.mjs      # 15/15 挂载模式：逐字节同上游 + 相位转发 + 不兜底（要 DSH 在跑）
+node tools/probe-catalog.mjs     # 7/7  独立模式对拍：JS 参照 vs Rust，逐字段 + 58 个资产逐字节
 node tools/desktop-driver.mjs    # 16/16 壳：透明 + 穿透（读窗口扩展样式）+ 判定链
 node tools/probe-settings.mjs    # 9/9  设置菜单：页签 / 正文 / 真的改得动设置 / 托盘事件
 node tools/page-driver.mjs       # 8/8  页面：插件挂载、canvas、无脚本错误
