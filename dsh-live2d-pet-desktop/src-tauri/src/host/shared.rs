@@ -62,6 +62,13 @@ pub struct Shared {
     /// 挂载时页面拿到的每个字节都来自 DSH 里的 `lib/index.js` —— 这就是"改 bug 只改
     /// 一处"的落点。
     pub attach: Option<String>,
+    /// `%DSH_HOME%`（显示层偏好文件与心跳就放在那里）。
+    pub home: std::path::PathBuf,
+    /// 显示层：谁在管这只宠物（`"desktop"` / `"inline"`），以及用户选的 mode。
+    pub owner: String,
+    pub layer_mode: String,
+    /// 桌面端窗口当前显示着没有（`--dsh inline` 或用户选了页面内时为 false）。
+    pub window_visible: bool,
 }
 
 impl Shared {
@@ -87,6 +94,10 @@ impl Shared {
             dsh: json!({ "connected": false, "disabled": true }),
             port: 0,
             attach: None,
+            home: std::env::temp_dir(),
+            owner: "inline".to_string(),
+            layer_mode: "auto".to_string(),
+            window_visible: true,
         }))
     }
 
@@ -160,6 +171,9 @@ impl Shared {
             "sidecarUrl": if self.port == 0 { Value::Null } else { json!(format!("http://127.0.0.1:{}", self.port)) },
             "attach": self.attach,
             "mode": if self.attach.is_some() { "attach" } else { "standalone" },
+            "owner": self.owner,
+            "layerMode": self.layer_mode,
+            "windowVisible": self.window_visible,
             "windowOrigin": self.window_origin.map(|(x, y)| json!([x, y])).unwrap_or(Value::Null),
             "windowSize": self.window_size.map(|(w, h)| json!([w, h])).unwrap_or(Value::Null),
             "scale": if self.scale > 0.0 { self.scale } else { 1.0 },

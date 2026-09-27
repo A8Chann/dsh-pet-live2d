@@ -10,7 +10,7 @@
 // `probe-settings` 当回归网。
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -44,6 +44,7 @@ pub fn serve(
     pets_root: std::path::PathBuf,
     plugin_root: std::path::PathBuf,
     attach: Option<String>,
+    home: std::path::PathBuf,
 ) -> std::io::Result<Host> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
@@ -51,6 +52,7 @@ pub fn serve(
         let mut guard = shared.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         guard.port = port;
         guard.attach = attach.clone();
+        guard.home = home.clone();
     }
     let host = Host {
         port,
@@ -64,6 +66,8 @@ pub fn serve(
         pets_root: host.pets_root.clone(),
         plugin_root: host.plugin_root.clone(),
         attach: host.attach.clone(),
+        home,
+        desktop_pid: Mutex::new(0),
     });
     std::thread::spawn(move || {
         for stream in listener.incoming() {
@@ -82,6 +86,10 @@ struct HostState {
     pets_root: std::path::PathBuf,
     plugin_root: std::path::PathBuf,
     attach: Option<String>,
+    /// 编译期嵌入的那份资源，会不会被 DSH 那边的插件覆盖 —— 由调用方传进来，见 serve。
+    home: PathBuf,
+    /// 我们自己拉起的桌面端 pid（0 = 没拉）。
+    desktop_pid: Mutex<u32>,
 }
 
 /// 每次请求都重扫宠物目录 —— 与 JS 版一致（`buildCatalog()` 每请求重建），
@@ -345,6 +353,24 @@ fn route(
         let guard = state.shared.lock().unwrap_or_else(|p| p.into_inner());
         let payload = guard.shell_json();
         drop(guard);
+        send_json(stream, 200, &payload)?;
+        return Ok(true);
+    }
+    // 显示层：页面每秒问一次"现在该谁管这只宠物"。
+    //
+    // 页面**只读**这里，判定权在 host（校验 mode、算心跳、必要时拉起/收掉桌面端）——
+    // 页面自己不去碰偏好文件，两个写者会互相擦。
+    if path == "/__desktop/owner" {
+        let payload = super::display::status(&state.home, false);
+        let mut payload = payload;
+        if let Some(map) = payload.as_object_mut() {
+            let spawned = state
+                .desktop_pid
+                .lock()
+                .map(|pid| *pid != 0)
+                .unwrap_or(false);
+            map.insert("desktopSpawnedByPlugin".to_string(), json!(spawned));
+        }
         send_json(stream, 200, &payload)?;
         return Ok(true);
     }

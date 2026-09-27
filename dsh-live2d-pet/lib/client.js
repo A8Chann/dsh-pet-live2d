@@ -37,6 +37,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   const MIN_SIZE = 160;
   const MAX_SIZE = 760;
   const DEFAULT_SIZE = 300;
+  /** 显示层轮询间隔：桌面端接管/让位要在一秒内被看见。 */
+  const LAYER_POLL_MS = 1000;
 
   // -------------------------------------------------- motion controller
   //
@@ -2816,6 +2818,12 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     ROOT_SEL + " [data-panel] [data-tabs] button{flex:1;border:0;background:transparent;color:var(--pp-muted);font:600 11px/2 inherit;border-radius:7px;cursor:pointer}",
     ROOT_SEL + " [data-panel] [data-tabs] button[data-on]{background:var(--pp-accent);color:var(--pp-ink-strong)}",
     ROOT_SEL + " [data-panel] [data-body]{flex:1;overflow:auto;padding:8px}",
+    // 桌面端的「设置」页签把面板加宽一档：设置正文是**表格**（池子、相位、关系），
+    // 270px 里那几列会挤成一团。加宽只发生在这一个页签上，别的页签宽度不变。
+    ROOT_SEL + " [data-panel][data-wide]{width:342px}",
+    // 面板里的设置正文：字体与卡片内边距比设置页收一档，同样的内容不至于翻半天。
+    ROOT_SEL + " [data-panel-settings] [data-card-body]{padding:7px 9px}",
+    ROOT_SEL + " [data-panel-settings] [data-pool-row]{grid-template-columns:minmax(0,1fr) 64px 18px 52px;gap:3px}",
     ROOT_SEL + " [data-panel] [data-group]{margin-bottom:9px}",
     ROOT_SEL + " [data-panel] [data-group]>span{display:block;margin:0 0 4px 2px;color:var(--pp-dim);font-size:10px;letter-spacing:.06em}",
     ROOT_SEL + " [data-panel] [data-chips]{display:flex;flex-wrap:wrap;gap:4px}",
@@ -2855,6 +2863,17 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
    * 规则只写一遍、作用域各来一份，两个地方就不会再走岔。
    */
   const SETTINGS_SCOPES = [SETTINGS_SEL, ROOT_SEL + " [data-settings]"];
+
+  /**
+   * 是不是跑在桌面端（`dsh-live2d-pet-desktop` 的那个壳里）。
+   *
+   * 判据是页面运行时留下的标记，不是 UA、也不是壳直接告诉我们的：桌面端没有 DSH 的
+   * 客户端壳，所以 `ctx.slots` 那一节挂不上，设置正文得有**另一个**入口 —— 也就是
+   * 右键面板的第三个页签。**网页端不认这个标记，行为一个字都不变**（那里设置正文
+   * 的家仍然是 DSH 设置页）。
+   */
+  const desktopNow = () =>
+    typeof window !== "undefined" && window.__petDesktop !== undefined && window.__petDesktop !== null;
   /**
    * 视觉语言：**卡片**。每一组设置是一张卡片（标题条 + 内容区），池子、相位都住在
    * 卡片里，层级靠"卡片 > 行 > 药丸"三层表达，而不是一堆同权重的裸控件。
@@ -4563,6 +4582,13 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       return () => window.cancelAnimationFrame(id);
     }, [panelOpen]);
     const [tab, setTab] = useState("motions");
+    /**
+     * 显示层状态（谁在管这只宠物）。初值给 `inline`：页面刚起来时她本来就该在页面里，
+     * 问过宿主之后再按结论让位 —— 反过来（先假设桌面端）会让她闪一下再出现。
+     */
+    const [layer, setLayer] = useState({ mode: "auto", owner: "inline", desktopRunning: false, binary: null });
+    const layerRef = useRef({ mode: "auto", owner: "inline", desktopRunning: false, binary: null });
+    const layerTimer = useRef(0);
     // 设置值在模块作用域的 store 里（DSH 设置页和这里的面板共用一份）。
     // 订阅它既为重渲染，也为下面那个「相位映射随设置重算」的 effect 提供依赖。
     const settingsRev = useSettings();
@@ -6176,10 +6202,84 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       };
     }, [panelOpen]);
 
+    /**
+     * 显示层：这只宠物现在归谁管。
+     *
+     * 宠物有两条呈现路径 —— **页面内**（就是这里）与**桌面上**（一个原生窗口进程）。
+     * 两边都可能活着，所以按 `mode` + 桌面端心跳算出一个 owner；不是 owner 就**让位**。
+     *
+     * 让位用的是 `visibility: hidden` + `pointer-events: none`，**不是 `display: none`**：
+     * 后者会让元素尺寸变 0（`getBoundingClientRect()` 全零），而命中遮罩、自适应缩放都
+     * 靠尺寸算 —— 藏起来再显示回来时判定就歪了。`visibility` 保留布局，一藏一显不留后遗症。
+     */
+    useEffect(() => {
+      let cancelled = false;
+      const poll = async () => {
+        if (cancelled) return;
+        try {
+          const response = await fetch(API + "/layer", { cache: "no-store" });
+          const payload = await response.json();
+          layerRef.current = {
+            mode: typeof payload?.mode === "string" ? payload.mode : "auto",
+            owner: payload?.owner === "desktop" ? "desktop" : "inline",
+            desktopRunning: payload?.desktopRunning === true,
+            binary: payload?.binary ?? null,
+          };
+          // 只在**结论变了**的时候 setState，避免每秒白渲染一次。
+          setLayer((current) => (current.owner === layerRef.current.owner
+            && current.mode === layerRef.current.mode
+            && current.desktopRunning === layerRef.current.desktopRunning
+            ? current
+            : layerRef.current));
+        } catch {
+          /* DSH 那边的路由还没挂上、或页面刚起来：下一轮再问 */
+        }
+        if (!cancelled) layerTimer.current = window.setTimeout(poll, LAYER_POLL_MS);
+      };
+      poll();
+      return () => {
+        cancelled = true;
+        window.clearTimeout(layerTimer.current);
+      };
+    }, []);
+
     const onContextMenu = useCallback((event) => {
       event.preventDefault();
       setPanelOpen(true);
     }, []);
+
+    /**
+     * 桌面端专属：**托盘菜单**驱动的两个动作。
+     *
+     * 桌宠没有任务栏按钮（壳把窗口设成不进任务栏），托盘是唯一的常驻入口。所以
+     * "设置…"和"归位"这两项由壳发窗口事件过来，这里接住：
+     *
+     *   * `pet://settings` → 打开面板并切到设置页签（等于替用户点开它）；
+     *   * `pet://reset`    → 位置与大小回到默认，并演一下"归位"的反应。
+     *
+     * 网页端没有这两个事件，这个 effect 注册了也永远不会被触发。
+     */
+    useEffect(() => {
+      if (!desktopNow()) return undefined;
+      const onReset = () => {
+        // 默认位置就是首次打开时那套（面板右下角），见 pos 的初始化。
+        setSize(DEFAULT_SIZE);
+        setPos({ right: 24, bottom: 0 });
+        saveStored({ size: DEFAULT_SIZE, right: 24, bottom: 0 });
+        lastInteraction.current = Date.now();
+        say(pick(linesNow().reset));
+      };
+      const onSettings = () => {
+        setTab("settings");
+        setPanelOpen(true);
+      };
+      window.addEventListener("pet://reset", onReset);
+      window.addEventListener("pet://settings", onSettings);
+      return () => {
+        window.removeEventListener("pet://reset", onReset);
+        window.removeEventListener("pet://settings", onSettings);
+      };
+    }, [say]);
 
     const onPointerDown = useCallback((event) => {
       if (event.button !== 0) return;
@@ -6327,6 +6427,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     const panel = panelOpen && pet !== undefined
       ? h("div", {
           "data-panel": "",
+          // 桌面端的设置页签需要更宽（见样式表里那条 [data-wide]）。
+          ...(tab === "settings" ? { "data-wide": "" } : {}),
           // Pin the panel once it is on screen (requirement #11).
           //
           // It is anchored to the pet's box, so resizing the pet moved the panel
@@ -6365,9 +6467,17 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
             // DSH 自己的设置页（那一节由 host 注册，和这里共用同一份 store），右键面板
             // 里再放一份，只是"改池子不用翻设置"。用户要求去掉 —— 面板现在只负责
             // 「点一下换个样子」，改数值去设置页。
+            //
+            // **桌面端是例外**：那边没有 DSH 设置页（`ctx.slots` 挂不上），设置正文
+            // 没有别的家 —— 所以只在桌面端把这一页签加回来。守卫见 desktopNow()。
+            desktopNow() ? h("button", {
+              type: "button",
+              "data-tab-settings": "",
+              ...(tab === "settings" ? { "data-on": "" } : {}),
+              onClick: () => setTab("settings"),
+            }, "设置") : null,
           ),
-          h("div", { "data-body": "" }, tab === "slots"
-            // Dress-up slots: one choice each, and choices in different slots
+          h("div", { "data-body": "" }, tab === "slots"            // Dress-up slots: one choice each, and choices in different slots
             // coexist (glasses AND cat ears AND a dark tablecloth).
             ? (pet.expressionSlots ?? []).map((slot) => {
                 // An option is active when every expression it carries is pinned:
@@ -6417,6 +6527,11 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
                   }, entry.count > 1 ? "第 " + (index + 1) + " 段" : "播放")),
                 ),
               ))
+            : tab === "settings"
+            // 桌面端专属：设置正文（和 DSH 设置页那一节是同一个组件、同一份 store）。
+            // 外面这层 `data-settings` 把作用域带进来 —— 面板只有 270→340px 宽，
+            // 样式表里已经为窄容器收过一档列宽。
+            ? h("div", { "data-settings": "", "data-panel-settings": "" }, h(PetSettingsBody, null))
             : null,
           ),
           h("div", { "data-hintrow": "" }, "在宠物身上点右键打开这里 · Esc 或点空白处关闭"),
@@ -6438,13 +6553,16 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     return h("div", {
       [PET_ATTR]: "",
       ref: rootRef,
-      style: rootStyle(size, pos),
+      style: rootStyle(size, pos, layer.owner === "desktop"),
       // Observability: the committed action of the motion state machine
       // ('idle' while resting) and the current gaze target, so the pet's
       // behaviour is inspectable without reaching into engine internals.
       "data-motion": motionGroup === "" ? "idle" : motionGroup,
       "data-gaze": gaze,
       "data-phase": phase,
+      // 显示层：owner=desktop 时这一份已经让位（藏在桌面端那只后面）。
+      "data-layer": layer.owner,
+      "data-layer-mode": layer.mode,
       // 宿主主题：面板与气泡的配色 token 按它切（见 CSS 里的 --pp-*）。
       "data-theme": theme,
     },
@@ -6488,8 +6606,15 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
 
   /** Positioning lives on the pet's own root div, so it works whether it is
    * reached through the React container or not. */
-  function rootStyle(size, pos) {
-    return { width: size, height: size, right: pos.right, bottom: pos.bottom };
+  function rootStyle(size, pos, yieldToDesktop) {
+    const style = { width: size, height: size, right: pos.right, bottom: pos.bottom };
+    if (yieldToDesktop === true) {
+      // 让位给桌面上那只：**不用 display:none**（尺寸会变 0，命中遮罩与自适应缩放都靠它
+      // 算，藏一次再显示判定就歪了）。visibility 保留布局，pointer-events 顺带让点击穿过去。
+      style.visibility = "hidden";
+      style.pointerEvents = "none";
+    }
+    return style;
   }
 
   // --------------------------------------------------------------- mount
@@ -7053,8 +7178,72 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     );
   }
 
-  function PetSettingsBody() {
+  /**
+   * 显示层：桌宠在**页面内**还是**桌面上**。
+   *
+   * 三个选项就是 `pet-desktop.json` 的 `mode`：`auto` 谁在跑听谁的、`inline` 永远在页面里、
+   * `desktop` 永远在桌面上（没跑就拉起）。改完 POST 给宿主半区 —— 它负责拉起/收掉桌面端
+   * 并写偏好文件；**页面只读不写**，两个写者会互相擦。
+   *
+   * 这一整张卡只在"这个平台有桌面版"时才有意义；没有的话（比如 macOS 还没构建）给一行
+   * 说明而不是三个点了没反应的按钮。
+   */
+  function LayerControls() {
     useSettings();
+    const [busy, setBusy] = useState(false);
+    const [note, setNote] = useState("");
+    const current = layerRef.current;
+    const options = [
+      ["auto", "自动", "桌面端在跑就用桌面，否则留在页面里"],
+      ["inline", "页面内", "永远在 DSH 页面里（随 DSH 启停）"],
+      ["desktop", "桌面", "永远在桌面上；没跑就拉起一个"],
+    ];
+    const choose = (mode) => {
+      setBusy(true);
+      setNote("正在切换…");
+      fetch(API + "/layer", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ mode }),
+      }).then((response) => response.json()).then((payload) => {
+        setBusy(false);
+        setNote(payload?.ok === true
+          ? (payload.desktopRunning === true ? "桌面端在跑。" : "桌面端没在跑。")
+          : "切换失败：" + (payload?.error ?? "未知"));
+      }).catch((error) => {
+        setBusy(false);
+        setNote("切换失败：" + String(error && error.message));
+      });
+    };
+    const binary = current.binary ?? {};
+    const supported = binary.supported !== false;
+    return h("div", { "data-settings": "", "data-setting": "layer" },
+      h("div", { "data-note": "" },
+        "她在**页面内**（随 DSH 启停）还是**桌面上**（一个独立窗口，DSH 关掉也站着）。"
+        + "同一时刻只有一只：不是 owner 的那份会让位。"),
+      h("div", { "data-chips": "", "data-layer-options": "" },
+        ...options.map(([mode, label, hint]) => h("button", {
+          key: mode,
+          type: "button",
+          title: hint,
+          disabled: busy,
+          ...(current.mode === mode ? { "data-on": "" } : {}),
+          "data-layer-mode": mode,
+          onClick: () => choose(mode),
+        }, label))),
+      h("div", { "data-note-inline": "", "data-layer-status": "" }, [
+        supported ? null : "这个平台还没有桌面版构建（" + (binary.hint ?? "") + "）",
+        supported && binary.found !== true ? "桌面端二进制不在：" + (binary.hint ?? "") : null,
+        supported && binary.found === true
+          ? "桌面端：" + (current.desktopRunning ? "运行中（已接管）" : "没在跑")
+            + " · " + String(binary.source ?? "")
+          : null,
+        note === "" ? null : note,
+      ].filter((line) => line !== null).join(" · ")),
+    );
+  }
+
+  function PetSettingsBody() {    useSettings();
     const card = (key, title, hint, body) => h("div", { key, "data-card": key },
       h("div", { "data-card-head": "" },
         h("span", { "data-card-title": "" }, title),
@@ -7065,6 +7254,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     return [
       ...TUNING_GROUPS.filter((group) => !TUNING_GROUPS_INLINE.includes(group.id)).map((group) => card(
         "tune-" + group.id, group.label, group.hint, h(TuningControls, { group: group.id }))),
+      // 显示层放最上面：它是"这只宠物在哪"的问题，比手感/池子更先要回答。
+      card("layer", "显示位置", "页面内 / 桌面上", h(LayerControls, null)),
       card("phases", "会话相位", "每个相位一组池子", h(PhaseControls, null)),
       // 「摸鱼节奏」（多久摸一次）和「摸鱼」（摸鱼做什么）是同一件事的两半，原来
       // 被「会话相位」隔成两张卡，调摸鱼要上下跳。合成一张：节奏在上、池子在下。

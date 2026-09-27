@@ -182,6 +182,52 @@ fn resolve_attach() -> Option<String> {
     })
 }
 
+/// `%DSH_HOME%`：`pets/` 与显示层偏好文件（`pet-desktop.json`）都在这里，与网页端插件同源。
+fn resolve_home() -> std::path::PathBuf {
+    std::env::var("DSH_HOME")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::PathBuf::from(std::env::var("USERPROFILE").unwrap_or_else(|_| ".".to_string()))
+                .join(".dsh")
+        })
+}
+
+/// 显示层轮询：**刷新心跳**，并按"该不该显示"显示/隐藏窗口。
+///
+/// 每 1 秒一轮，比心跳 TTL（6 秒）密得多 —— 用户在设置里切到「页面内」之后，桌面这只
+/// 一秒内就让位，不用等超时。
+fn spawn_display_loop(app: AppHandle, shared: Arc<Mutex<Shared>>, home: std::path::PathBuf) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_millis(1000));
+        // 心跳：只要进程活着就一直刷（哪怕窗口是藏着的）—— 藏起来不等于退出，
+        // 用户可能只是想暂时看页面里那只。
+        if host::display::publish_heartbeat(&home).is_err() {
+            continue;
+        }
+        let preference = host::display::read_preference(&home);
+        let mode = host::display::normalise_mode(preference.get("mode"));
+        let should_show = host::display::compute_owner(&mode, true) == "desktop";
+        if let Some(window) = app.get_webview_window(pet_window::PET_WINDOW) {
+            match window.is_visible() {
+                Ok(visible) if visible == should_show => {}
+                _ => {
+                    if should_show {
+                        let _ = window.show();
+                    } else {
+                        let _ = window.hide();
+                    }
+                }
+            }
+        }
+        let mut guard = shared.lock().unwrap_or_else(|p| p.into_inner());
+        guard.layer_mode = mode;
+        guard.owner = if should_show { "desktop".to_string() } else { "inline".to_string() };
+        guard.window_visible = should_show;
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let active = parse_active();
@@ -190,8 +236,19 @@ pub fn run() {
     if let Some(page) = parse_arg("--page") {
         std::env::set_var("PET_DESKTOP_PAGE", page);
     }
+    // `--dsh inline`：把显示层偏好设成"页面内"再启动 —— 只给驱动用（桌面上那只必须让位，
+    // 而"页面内"是它唯一不会自动退回的 mode）。普通用户不需要这个参数。
     if let Some(dsh) = parse_arg("--dsh") {
-        std::env::set_var("PET_DESKTOP_DSH", dsh);
+        if dsh == "inline" {
+            let home = resolve_home();
+            let _ = host::display::write_preference(
+                &home,
+                serde_json::json!({ "mode": "inline" }),
+            );
+            eprintln!("[shell] 显示层偏好已设为 inline（桌面端不让位）");
+        } else {
+            std::env::set_var("PET_DESKTOP_DSH", dsh);
+        }
     }
     // 挂载模式下相位由上游直接推给页面（`/api/live2d-pet/events` 走转发），
     // 本机那条 DSH 桥就不需要了 —— 让它别去抢同一个上游。
@@ -206,7 +263,9 @@ pub fn run() {
             let handle = app.handle().clone();
             let runtime = resolve_runtime_dir(&handle);
             let pets_root = resolve_pets_root();
+            let home = resolve_home();
             eprintln!("[shell] 运行期目录：{}", runtime.display());
+            eprintln!("[shell] DSH_HOME：{}", home.display());
             match &attach {
                 Some(upstream) => eprintln!("[shell] **挂载模式**：宠物数据与相位都来自 {upstream}"),
                 None => eprintln!("[shell] 独立模式：宠物目录 {}", pets_root.display()),
@@ -231,11 +290,18 @@ pub fn run() {
                 bytes as f64 / 1024.0 / 1024.0
             );
 
-            let host = host::serve(shared.clone(), pets_root, plugin_root, attach.clone())?;
+            let host = host::serve(shared.clone(), pets_root, plugin_root, attach.clone(), home.clone())?;
             eprintln!("[shell] 宿主已就绪：{}", host.url);
             pet_window::create_pet_window(&handle, &host::page_url(&host))?;
             tray::setup(app)?;
             spawn_hover_loop(handle.clone(), shared.clone());
+
+            // ---- 显示层：桌面端要不要显示、以及"我还活着"的心跳 ----
+            //
+            // 用户在 DSH 设置里选了「页面内」时，这个窗口必须让位（否则桌面上和页面里各
+            // 一只）。判定读的是两端共用的偏好文件，规则在 `host::display` 里，有单元测试。
+            host::display::publish_heartbeat(&home)?;
+            spawn_display_loop(handle.clone(), shared.clone(), home.clone());
 
             // 相位桥：订阅运行中 DSH 的相位流。DSH 没开就只是 idle，宠物照样自己摸鱼。
             let dsh_base =
@@ -250,5 +316,11 @@ pub fn run() {
         })
         .build(tauri::generate_context!())
         .expect("Tauri 应用初始化失败")
-        .run(|_app, _event| {});
+        .run(move |_app, event| {
+            if let tauri::RunEvent::Exit = event {
+                // 退出时清掉心跳：页面里那只**立刻**回来，不用等 6 秒超时。
+                let home = resolve_home();
+                host::display::clear_heartbeat(&home);
+            }
+        });
 }

@@ -27,6 +27,9 @@ import { homedir } from 'node:os'
 import { dirname, extname, join, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { createDisplayLayer } from './display.js'
+import { desktopHint, desktopSupported, resolveDesktopBinary } from './desktop.js'
+
 export const name = 'live2d-pet'
 
 export const inject = ['webServer']
@@ -1300,8 +1303,7 @@ export function attachActivityEvents(ctx, hub) {
 }
 
 /** The activity stream + snapshot route. */
-function eventsRoute(hub) {
-  return {
+function eventsRoute(hub) {  return {
     kind: 'exact',
     path: API + '/events',
     handler: (request, response) => {
@@ -1350,17 +1352,98 @@ function eventsRoute(hub) {
   }
 }
 
+/**
+ * 显示层路由：桌宠在页面内还是桌面上。
+ *
+ * `GET` 给浏览器（它每秒问一次"现在该谁管这只宠物"），`POST` 给设置页（改偏好）。
+ * **页面只读、不写** —— 判定与"拉起/收掉桌面端"都在宿主半区，两个写者会互相擦。
+ */
+function layerRoute(display) {
+  return {
+    kind: 'exact',
+    path: API + '/layer',
+    handler: async (request, response) => {
+      if (!loopbackOnly(request)) {
+        response.writeHead(403)
+        response.end()
+        return
+      }
+      if (request.method === 'POST') {
+        let body = ''
+        try {
+          for await (const chunk of request) body += chunk
+          const parsed = JSON.parse(body === '' ? '{}' : body)
+          display.setMode(parsed.mode)
+        } catch {
+          sendJson(response, 400, { ok: false, error: 'bad-body' })
+          return
+        }
+      } else if (request.method !== 'GET' && request.method !== 'HEAD') {
+        response.writeHead(405, { allow: 'GET, HEAD, POST' })
+        response.end()
+        return
+      }
+      // 页面自己报来的地址就是 DSH 的地址（端口是配置的，猜会猜错）。
+      const origin = request.headers?.origin
+      if (typeof origin === 'string') display.setDshUrl(origin)
+      // 每次读状态都顺手 reconcile 一次：设置页点完马上能看到结果，不用等下一个 tick。
+      const status = display.reconcile()
+      sendJson(response, 200, {
+        ok: true,
+        ...status,
+        // 二进制在不在 —— 设置页那一行要如实告诉用户"下一句该干什么"。
+        binary: display.binaryInfo(),
+      })
+    },
+  }
+}
+
 /** The complete route table this plugin owns. */
-export function buildRoutes(hub) {
-  return [catalogRoute(), assetRoute(), runtimeRoute(), eventsRoute(hub)]
+export function buildRoutes(hub, display) {
+  const routes = [catalogRoute(), assetRoute(), runtimeRoute(), eventsRoute(hub)]
+  if (display !== undefined) routes.push(layerRoute(display))
+  return routes
 }
 
 export function apply(ctx) {
   const hub = new ActivityHub()
   attachActivityEvents(ctx, hub)
   ctx.effect(() => () => hub.dispose(), 'live2d-pet: activity hub')
+
+  // 显示层：每秒一次"按偏好把两边摆正"。桌面端的二进制由平台子包带下来
+  // （`lib/desktop.js`），没有就只是提示，不影响页面内那只。
+  const display = createDisplayLayer({
+    home: dshHome(),
+    hint: desktopHint({ home: dshHome() }),
+    resolveBinary: () => resolveDesktopBinary({ home: dshHome() }),
+    log: (message) => console.log('[live2d-pet] ' + message),
+  })
+  // 宿主侧把它挂出来：设置路由与 `/api/live2d-pet/layer` 共用同一个控制器。
+  display.binaryInfo = () => {
+    const found = resolveDesktopBinary({ home: dshHome() })
+    return {
+      found: found !== undefined,
+      path: found?.path ?? null,
+      source: found?.source ?? null,
+      supported: desktopSupported(),
+      hint: desktopHint({ home: dshHome() }),
+    }
+  }
+  const tick = setInterval(() => {
+    try {
+      display.reconcile()
+    } catch (error) {
+      console.log('[live2d-pet] 显示层 reconcile 失败：' + String(error && error.message))
+    }
+  }, 1000)
+  tick.unref?.()
+  ctx.effect(() => () => {
+    clearInterval(tick)
+    display.dispose()
+  }, 'live2d-pet: display layer')
+
   ctx.inject(['webServer'], (host) => {
-    for (const route of buildRoutes(hub)) {
+    for (const route of buildRoutes(hub, display)) {
       try {
         host.effect(() => host.webServer.register(route), 'live2d-pet: route ' + route.path)
       } catch (error) {

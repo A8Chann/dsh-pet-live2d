@@ -9,6 +9,7 @@
 // JS 版与 Rust 版，把两份 catalog 逐字段比、把闭包里每个资产逐字节比。翻错了会立刻红，
 // 而不是等用户发现装扮少了一个槽位。
 pub mod catalog;
+pub mod display;
 pub mod dsh_link;
 pub mod embed;
 pub mod http;
