@@ -30,11 +30,33 @@ whenToUse: >
 > verification-signals / browser-cdp / pet-domain-model / docs-and-workflow），
 > 不要为一次调试新开一个 skill。
 
+## 改了随包宠物（`pets/<id>/pet.json`）之后
+
+**必须把 `pets/<id>/pet.json` 的 `version` 抬一格**（插件自己的版本号另算）。
+
+原因是一段真实的历史事故：老版本的 `installBundledPets()` 是"目标目录存在就跳过"。
+插件目录随 `dsh plugin add` / npm 更新，用户的宠物目录 `%DSH_HOME%\pets\<id>\` 不会 ——
+于是宠物**自己的默认值永远停在装它的那一天**。2.3.0 往 pet.json 里加的那批（台词 /
+互动反应候选 / 摸鱼槽位 / 三个新相位 / 三个新槽位）**一个都没到过老用户的桌面**，
+症状看起来完全像插件的 bug：互动只有台词不演反应、相位台词不弹、装扮少三个槽位。
+
+现在（2.3.3 起）`installBundledPets()` 会**按内容**同步：目标那份与"我们装下去的那一份"
+逐字节相同就升级，用户改过就一个字都不碰（冷启动靠 `lib/index.js` 里的
+`BUNDLED_PET_HASHES` 历史指纹表认人）。所以：
+
+- 改完宠物**跑一次 `node tools/print-pet-hashes.mjs dsh-live2d-pet/pets/<id>/pet.json --code`**，
+  把**改动之前那一版**的哈希补进 `BUNDLED_PET_HASHES`（表里的是"老装机可能存在的那一份"，
+  当前的随包内容不需要进表）。漏了不会报错，只是"从那个旧版直接跳过来的人"拿不到更新。
+- 回归在 `tools/browser-test/test-host-sync.mjs`（纯 node，不用浏览器，0.7 秒）。
+  它盯的就是三条边界：装新的、更新我们的、**别碰用户改过的**。
+- 想让本机重新吃一遍随包版本：删掉 `%DSH_HOME%\pets\<id>\` 再重启 `dsh web`。
+
 ## 常用命令
 
 - 日常验证：`cd tools/browser-test && npm run dev -- <关键字>`（单个 driver 约 7 秒）
-- 提交前：`npm run suite`（16 个 driver 并发，约 3 分钟）；机器吃力时 `node run-suite.mjs --jobs 3`
-- 改了 `lib/client.js` 要重启 `dsh web` 才生效（bundle 不热重载）
+- 提交前：`npm run suite`（18 个 driver/测试并发，约 4 分钟）；机器吃力时 `node run-suite.mjs --jobs 3`
+- 改了 `lib/client.js` **或 `lib/index.js`** 都要重启 `dsh web`：客户端 bundle 不做热重载，
+  宿主半区是启动时 import 的（`InstallBundledPets` 这类启动代码不会自己重跑）
 
 ## 并发下的已知不稳定
 

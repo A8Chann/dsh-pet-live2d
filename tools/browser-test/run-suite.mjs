@@ -8,6 +8,9 @@
 // pure wall-clock waste — the serial suite spent most of its time waiting on
 // timers inside a single driver while thirteen others sat idle.
 //
+// `test-*.mjs` 是**纯 node** 的：host 半区的文件系统逻辑不需要浏览器，直接跑，
+// 也就不占一个 CDP 端口、不用等模型加载。
+//
 //   node run-suite.mjs                 # every driver, parallel
 //   node run-suite.mjs mask head       # only drivers whose name contains these
 //   node run-suite.mjs --jobs 1        # serial, for debugging the suite itself
@@ -20,6 +23,7 @@ import { PROFILES } from './paths.mjs'
 
 /** filename -> what user-visible contract it proves. */
 export const SUITE = {
+  'test-host-sync.mjs': '随包宠物升级：老装机拿得到新的默认值，改过的一个字都不碰',
   'cdp-sm.mjs': '动作状态机：点击→播放→回待机、重播、连点、面板播放、归位',
   'cdp-v12.mjs': 'v1.2 交互契约：面板不缩放、点击遮罩、视线回正、相位映射、摸鱼',
   'cdp-phase.mjs': '会话相位 → 动作映射（SSE）',
@@ -37,6 +41,7 @@ export const SUITE = {
   'cdp-merge.mjs': '装扮菜单：多槽位叠加、跨槽保留、白魔爪双层',
   'cdp-bubble.mjs': '动作定格能关掉：吹泡泡糖/掏手机 → 无，连测三轮',
   'cdp-interact.mjs': '互动与气泡：摸尾巴/转圈转晕/相位台词/文本·位置·开关可配',
+  'cdp-react-defaults.mjs': '互动反应候选的内置默认值：宠物没声明那三组也演得出来',
 }
 
 const argv = process.argv.slice(2)
@@ -99,13 +104,16 @@ purgeProfiles()
  * entirely, which is what makes the parallel run trustworthy.
  */
 async function runDriver(file, slot) {
-  const { proc, base } = await startServer(PORT_BASE + slot)
   const started = Date.now()
+  // 纯 node 的测试不起 server（它测的是 host 半区的函数，没有 HTTP 参与）。
+  const isPlainTest = file.startsWith('test-')
+  const server = isPlainTest ? undefined : await startServer(PORT_BASE + slot)
+  const base = server?.base
   try {
     return await new Promise((resolve) => {
       const child = spawn(process.execPath, [new URL('./' + file, import.meta.url).pathname.replace(/^\//, '')], {
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env, PET_BASE: base, PET_PORT: String(PORT_BASE + slot) },
+        env: { ...process.env, ...(base === undefined ? {} : { PET_BASE: base, PET_PORT: String(PORT_BASE + slot) }) },
       })
       let out = ''
       child.stdout.on('data', (d) => { out += d })
@@ -113,7 +121,7 @@ async function runDriver(file, slot) {
       child.on('close', (code) => resolve({ file, code, out, ms: Date.now() - started }))
     })
   } finally {
-    proc.kill()
+    server?.proc.kill()
   }
 }
 

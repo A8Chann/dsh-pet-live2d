@@ -2841,8 +2841,11 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
    * fidgetNone 与各选项的 fidgetWeight）；这里只放用户改过的部分，
    * 键都按名字存，换宠物时对不上的覆盖会被忽略（和装扮存档同一套思路）。
    *
-   *   phases: { <相位>: { motion: 组名|null, expression: 表情名|null } }
-   *   fidget: { <槽位>: { none: 权重, options: { <选项标签>: 权重 } } }
+   *   phases: { <相位>: { pools: { <槽位>: 条目表 } } }
+   *   fidget: { <槽位>: { entries: 条目表 } }
+   *   relations: { "<槽位>:<标签>": { pairs, requires } }
+   *   interactions: { <patReactions|tailReactions|spinReactions>: [标签] }
+   *   lines: { <键>: [台词] , phase: { <相位>: 台词 } }
    */
   /** 当前宠物的清单，给设置界面用（DSH 设置页拿不到组件里的 pet）。 */
   const MANIFEST = { current: null };
@@ -2857,7 +2860,10 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
    * 姿势本身的性质 —— 在摸鱼表里改它，右键面板点同一个姿势、相位池里抽到它，
    * 行为必须一致。所以它单独存一层，而不是挂在条目上。
    */
-  const PHASE_OVERRIDES = { phases: {}, fidget: {}, relations: {}, lines: {} };
+  // 五个键都要在这里给出来（哪怕只是空壳）：`applyOverride()` 是**原地往这个对象上写**的，
+  // 少一个键就等于那条路径第一次改设置时静默丢掉 —— 互动反应候选原来就是这么漏的
+  // （读的地方全写着 `?.`，所以"能读、写不进去"，只有正面写它的界面会踩到）。
+  const PHASE_OVERRIDES = { phases: {}, fidget: {}, relations: {}, interactions: {}, lines: {} };
 
   /** 槽位 id -> 中文标签（关系行显示「贴纸」而不是 `sticker`）。 */
   const slotLabelOf = (slotId) =>
@@ -3575,28 +3581,60 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
 
 
   /**
-   * What a head pat may answer with (requirement #5).
+   * 三个互动**内置的**反应候选（用户覆盖 <- 宠物声明 <- 这里）。
    *
-   * One of these at random, and no blush — the blush is what a tap used to add
-   * unconditionally, which made every pat look identical.
+   * 这三组原来只在 pet.json 里声明，代码侧没有任何默认值（`HEAD_PAT_REACTIONS`
+   * 是上一版实现留下的死常量，谁都没读它）—— 于是**没声明这三组的宠物，互动看着
+   * 是好的、其实什么都不演**：摸头/摸尾巴只有台词，转圈连台词都不弹。而这恰恰是
+   * 「做一只自己的宠物」最常见的状态（最小 pet.json 里根本没有这几个键）。
+   *
+   * 标签按同一个顺序解读：先当**动作组的中文名**找（catalog.json 里作者起的名），
+   * 找不到就当**表达式**闪一下。所以这里写的是用户看得懂的名字，不是 group / file id。
    */
-  const HEAD_PAT_REACTIONS = [
-    { motion: "Hammer" },
-    { expression: "问号" },
-    { expression: "星星眼" },
-  ];
+  const DEFAULT_REACTIONS = {
+    /** 摸头：随机一个，并且**故意不脸红** —— 脸红是以前每次摸头都加的东西，让每一下都一样。 */
+    patReactions: ["重锤出击", "问号", "星星眼"],
+    /** 摸尾巴：吐魂是表情，问号是符号表情。 */
+    tailReactions: ["吐魂", "问号"],
+    /** 转圈转晕：演「晕晕」。 */
+    spinReactions: ["晕晕"],
+  };
+
+  /** 一组反应候选的来历（诊断用，见 reactionSource）。 */
+  const REACTION_KEYS = Object.keys(DEFAULT_REACTIONS);
+
+  /** 洗一遍候选：只留非空字符串（那份清单可能来自 localStorage，不可信）。 */
+  const cleanReactionList = (list) =>
+    (Array.isArray(list) ? list : []).filter((name) => typeof name === "string" && name !== "");
 
   /**
-   * 互动的反应候选：宠物默认（pet.json 的 `patReactions` / `tailReactions` /
-   * `spinReactions`）+ 用户覆盖（`PHASE_OVERRIDES.interactions`）。
+   * 互动的反应候选：**用户覆盖 <- 宠物声明 <- 内置默认**。
    *
    * 条目是**标签**（「重锤出击」「星星眼」这种）：先当动作组找（宠物会给动作起中文名），
    * 找不到就当表达式名。这样设置界面里可以拿宠物自己的清单当候选，用户不用记 id。
+   *
+   * 这里的兜底顺序和台词（`linesNow`）、摸鱼池（`fidgetEntriesFor`）是同一套：
+   * 用户没改过就用宠物声明的，宠物没声明就用内置的 —— **任何一层为空都不能变成
+   * "这个互动没反应"**。
    */
   const interactionReactions = (key) => {
-    const mine = PHASE_OVERRIDES.interactions?.[key];
-    const list = Array.isArray(mine) && mine.length > 0 ? mine : (MANIFEST.current?.[key] ?? []);
-    return Array.isArray(list) ? list.filter((name) => typeof name === "string" && name !== "") : [];
+    const mine = cleanReactionList(PHASE_OVERRIDES.interactions?.[key]);
+    if (mine.length > 0) return mine;
+    const declared = cleanReactionList(MANIFEST.current?.[key]);
+    if (declared.length > 0) return declared;
+    return cleanReactionList(DEFAULT_REACTIONS[key]);
+  };
+
+  /**
+   * 这一组候选是从哪一层来的（"没反应"这类问题要一眼看出是哪一层空了）。
+   *
+   * 诊断读口，不参与行为：`user` / `pet` / `builtin` / `none`。
+   */
+  const reactionSource = (key) => {
+    if (cleanReactionList(PHASE_OVERRIDES.interactions?.[key]).length > 0) return "user";
+    if (cleanReactionList(MANIFEST.current?.[key]).length > 0) return "pet";
+    if (cleanReactionList(DEFAULT_REACTIONS[key]).length > 0) return "builtin";
+    return "none";
   };
 
   /** 跑一条反应（由点击/转圈触发）。 */
@@ -3988,6 +4026,17 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       api.effectiveLines = () => linesNow();
       /** 某个互动的**有效**反应候选（同样是与宠物默认合并后的结果）。 */
       api.effectiveReactions = (key) => interactionReactions(key);
+      /**
+       * 诊断：三组候选各自的**来历**（user / pet / builtin / none）与内置默认值。
+       *
+       * "点了她没反应"要先分清是哪一层空了：用户覆盖成了空数组、宠物没声明、
+       * 还是连内置默认都没有。只看 `effectiveReactions()` 是分不出来的。
+       */
+      api.reactionDiagnostics = () => ({
+        source: Object.fromEntries(REACTION_KEYS.map((key) => [key, reactionSource(key)])),
+        builtin: Object.fromEntries(REACTION_KEYS.map((key) => [key, DEFAULT_REACTIONS[key].slice()])),
+        effective: Object.fromEntries(REACTION_KEYS.map((key) => [key, interactionReactions(key)])),
+      });
       /** 台词的字段清单（测试用它确认"每一个字段都有输入框"）。 */
       api.lineFields = () => ({
         plain: LINE_FIELDS.map((field) => field.key),
@@ -6418,12 +6467,9 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
    */
   function InteractControls() {
     useSettings();
-    const listFor = (key) => {
-      const mine = PHASE_OVERRIDES.interactions?.[key];
-      if (Array.isArray(mine) && mine.length > 0) return mine;
-      const base = MANIFEST.current?.[key];
-      return Array.isArray(base) ? base : [];
-    };
+    // 候选显示的是**有效那一组**（用户覆盖 <- 宠物声明 <- 内置默认），和运行时
+    // `interactionReactions()` 同一个函数：界面上没勾的选项就不该演，勾着的必须真演。
+    const listFor = (key) => interactionReactions(key);
     const toggle = (key, label) => {
       const next = listFor(key).slice();
       const at = next.indexOf(label);
@@ -6446,8 +6492,16 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       h("span", { "data-row-label": "" }, label),
       note === undefined ? null : h("span", { "data-note-inline": "" }, note),
     );
-    const reactionRow = (key, title, note) => h("div", { "data-reaction-set": key },
-      h("div", { "data-row-label": "" }, title, note === undefined ? null : h("span", { "data-note-inline": "" }, note)),
+    // 从哪里来的写在行尾：**这只宠物没声明这一组**时，用户看到的默认值其实是插件
+    // 内置的那几个 —— 不说清楚他会以为"这是宠物自己的设定，改宠物就能改默认"。
+    const sourceNote = (key) => {
+      const source = reactionSource(key);
+      if (source === "user") return "（已改过）";
+      return source === "pet" ? "（宠物默认）" : "（内置默认）";
+    };
+    const reactionRow = (key, title) => h("div", { "data-reaction-set": key, ...(reactionSource(key) === "builtin" ? { "data-reaction-builtin": "" } : {}) },
+      h("div", { "data-row-label": "" }, title,
+        h("span", { "data-note-inline": "" }, sourceNote(key), "（随机一个）")),
       h("div", { "data-chips": "" }, candidates.length === 0
         ? h("span", { "data-note-inline": "" }, "这只宠物没有可选的动作/表情")
         : candidates.map((label) => {
@@ -6466,9 +6520,9 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       switchRow("tailEnabled", "摸尾巴有反应"),
       switchRow("spinEnabled", "鼠标绕着转圈会晕"),
       h(TuningControls, { key: "spin", group: "interact" }),
-      reactionRow("patReactions", "摸头时演什么", "（随机一个）"),
-      reactionRow("tailReactions", "摸尾巴时演什么", "（随机一个）"),
-      reactionRow("spinReactions", "转晕时演什么", "（随机一个）"),
+      reactionRow("patReactions", "摸头时演什么"),
+      reactionRow("tailReactions", "摸尾巴时演什么"),
+      reactionRow("spinReactions", "转晕时演什么"),
     );
   }
 

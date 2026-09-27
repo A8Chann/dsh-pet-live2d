@@ -21,6 +21,7 @@
  */
 
 import { cpSync, existsSync, mkdirSync, readFileSync, realpathSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, extname, join, sep } from 'node:path'
@@ -567,9 +568,89 @@ export function scanPet(dir, id) {
   }
 }
 
-/** Build the live catalog from disk (fresh per request, so installs are picked up). */
 /**
- * 把**随包分发**的宠物装进用户的宠物目录。
+ * 随包宠物 pet.json 的**历史内容指纹**（SHA-256），一份一行。
+ *
+ * 只为一件事存在：认出"用户宠物目录里那份是我们**某一次发出去的**原样副本"。
+ * 认出来才敢升级（`syncBundledPet`），认不出来就一个字都不碰。
+ *
+ * 为什么必须从 git 历史里现算、不能手抄：抄错一位的两种后果都是静默的 ——
+ * 要么永远不升级（老用户拿不到新的默认值），要么把用户自己改过的副本覆盖掉。
+ * 生成命令：`node tools/print-pet-hashes.mjs dsh-live2d-pet/pets/ds-whale-girl/pet.json --at <提交> --code`
+ * （每份内容取它**最后**出现的那个提交，否则第一次安装与仓库当时状态对不上）。
+ *
+ * 这是**冷启动**用的表：同步记录（`pets/.synced.json`）建立之后，判定就只看记录，
+ * 这个表只在"目标没有记录"时才参与 —— 也就是所有老装机，以及第一次装新版本的人。
+ * 因此每改一次随包宠物，都要把**改动之前那一版**的哈希补进来（改动之后那一版是目标，
+ * 不需要进表）。
+ */
+const BUNDLED_PET_HASHES = {
+  'ds-whale-girl': [
+    // ef7fb1a：模型第一次随包分发（1.0.x，17 个槽位、5 个相位）
+    '5421dee9d13ee60b91c341ab515bbef3fb8702a9791279c9a2f61124d4478b34',
+    // 3f18b195：面板跟随宿主主题 + 自拍可配置
+    '707049e3b8a05f3de5ddd49299bcb47fdd2ac1494209b7c710c1371be718bb27',
+    // 9b62d727：自拍独立成槽、氛围拆三个、摸鱼不再擦掉手选
+    '071a7bfe18b4882703a43f8a14dc7eded8d5aa08671dc3ecc4db220258e5be23',
+    // 6c6b61e1（2.0.0）：把作者调好的值烘成宠物默认
+    'e931e44a6589932688d7507b0d5e62ba4c0f9618492ec7fe644885117e61f12a',
+    // 4b594ed3（2.2.0）：多接三个会话状态
+    '88b86f32833882893e8ec10a9320bb4d9899a0211811d5a96544e4b97b804234',
+    // 25c4d285（2.3.0 前）：台词 / 反应候选 / 摸鱼槽位
+    '18840cd90fe70aa68632c45f77b4af1254595b5f963d261d2cbf34f6fbcaf579',
+    // 1.0.1（2.3.0 ~ 2.3.2 随包的那份）：内容与上面那条相同，只是换了插件版本号
+    '7c6cdb9c9f3d92636c388bffb3229c439cf01a65fe6a8a88499a8e4071f7884a',
+  ],
+}
+
+/** 同步记录：哪个宠物是我们装的、装的是哪一版、装下去那份长什么样。 */
+const SYNC_RECORD = '.synced.json'
+
+/** 文件和 buffer 的 SHA-256（判定"这是不是我们发出去的原样"）。 */
+function sha256(bytes) {
+  return createHash('sha256').update(bytes).digest('hex')
+}
+
+/** 读同步记录；读不出来就当"没有"（老装机本来就没有）。 */
+function readSyncRecord() {
+  const parsed = readJson(join(petsRoot(), SYNC_RECORD))
+  return parsed !== null && typeof parsed === 'object' ? parsed : {}
+}
+
+function writeSyncRecord(record) {
+  mkdirSync(petsRoot(), { recursive: true })
+  writeFileSync(join(petsRoot(), SYNC_RECORD), JSON.stringify(record, null, 2) + '\n')
+}
+
+/** 点分数字比较：'1.1.0' > '1.0.1'。非数字段（rc / beta）只取数字部分。 */
+export function compareVersions(a, b) {
+  const parts = (raw) => String(raw ?? '').split('.').map((piece) => {
+    const n = Number.parseInt(piece, 10)
+    return Number.isFinite(n) ? n : 0
+  })
+  const left = parts(a)
+  const right = parts(b)
+  for (let i = 0; i < Math.max(left.length, right.length); i += 1) {
+    const one = left[i] ?? 0
+    const two = right[i] ?? 0
+    if (one !== two) return one > two ? 1 : -1
+  }
+  return 0
+}
+
+/** 这份宠物目录里的 pet.json 是不是"某一次随包发出去的原样"。 */
+function isPristineBundledManifest(petId, manifestPath, fingerprints) {
+  let hash
+  try {
+    hash = sha256(readFileSync(manifestPath))
+  } catch {
+    return false
+  }
+  return (fingerprints[petId] ?? []).includes(hash)
+}
+
+/**
+ * 把随包宠物装进用户的宠物目录，并在**确实是我们装的那份**过期时更新它。
  *
  * 以前宠物是仓库里单独一份，装插件的人还得自己再拷一次 —— 从插件市场装完
  * 「看不见宠物」就是这么来的（插件包里有代码，没有模型）。
@@ -578,31 +659,99 @@ export function scanPet(dir, id) {
  * 已明确授权本项目转载与开源（见 pets/ds-whale-girl/LICENSE）；Core 是 Live2D Inc.
  * 的专有软件，只允许从官方渠道取，所以它走 CDN 兜底那条路。
  *
- * 只在目标**不存在**时复制：用户自己改过的宠物永远优先，绝不覆盖。
+ * **升级这一半是补上的**（原来只有"目标不存在才拷"）：插件目录会随
+ * `dsh plugin add` / npm 更新，用户的宠物目录不会 —— 于是宠物**自己的默认值
+ * 永远停在装它的那一天**。25c4d285 往 pet.json 里加的那批（台词 / 互动反应候选 /
+ * 摸鱼槽位 / 新增的三个相位）就这么一直没到过老用户的桌面，症状是"互动只有台词
+ * 不演反应、相位不弹台词、装扮少三个槽位"，而且**看起来完全像插件的 bug**。
+ *
+ * 三条判定，缺一条都会变成"静默覆盖用户数据"：
+ *   1. 目标不存在 → 装一份（并把版本与内容指纹记进 `pets/.synced.json`）；
+ *   2. 目标就是我们上次装下去的那一份（**内容指纹**对得上）→ 整份更新；
+ *   3. 用户动过（指纹对不上）→ **一个字都不碰**。
+ *
+ * 第 2 条在冷启动时（记录出现之前装的副本）靠 `BUNDLED_PET_HASHES` 认人：
+ * 内容与历史上任何一次随包分发**逐字节相同**才升级。改过名字/槽位/任何东西的副本
+ * 哈希必然不同，所以"用户自己改过的宠物永远优先，绝不覆盖"这条没有被削弱。
  */
-export function installBundledPets() {
+export function installBundledPets(options = {}) {
   const bundled = join(pluginRoot(), 'pets')
   if (!existsSync(bundled)) return
+  // 冷启动指纹表可以被注入：测试要造一份"我们以前发过的旧副本"，但测试**不能**
+  // 依赖生产表里的具体哈希（那样改一次表就得改测试，而且改错了也没人发现）。
+  const fingerprints = options.fingerprints ?? BUNDLED_PET_HASHES
   let names = []
   try {
     names = readdirSync(bundled).filter((entry) => !entry.startsWith('.'))
   } catch {
     return
   }
+  const record = readSyncRecord()
+  const notes = []
+  let dirty = false
   for (const name of names) {
     const source = join(bundled, name)
     const target = join(petsRoot(), name)
     try {
       if (!statSync(source).isDirectory()) continue
-      if (existsSync(target)) continue
-      mkdirSync(dirname(target), { recursive: true })
+      const manifestPath = join(source, 'pet.json')
+      if (!existsSync(manifestPath)) continue
+      const version = String(readJson(manifestPath)?.version ?? '')
+      const targetManifest = join(target, 'pet.json')
+
+      if (!existsSync(target)) {
+        mkdirSync(dirname(target), { recursive: true })
+        cpSync(source, target, { recursive: true })
+        record[name] = { version, hash: sha256(readFileSync(targetManifest)) }
+        dirty = true
+        continue
+      }
+
+      const synced = record[name]
+      const same = existsSync(targetManifest) ? sha256(readFileSync(targetManifest)) : undefined
+      const ours = (synced !== undefined && synced.hash === same)
+        || isPristineBundledManifest(name, targetManifest, fingerprints)
+      if (!ours) {
+        // 用户自己改过：不动它。**要说出来** —— 沉默地不升级，用户看到的是
+        // "插件更新了但没有任何变化"，比报错更难查。
+        if (compareVersions(version, readJson(targetManifest)?.version) > 0) {
+          notes.push(name + '：宠物目录里这份被改过，跳过更新（随包版本 ' + version
+            + '，本地 ' + String(readJson(targetManifest)?.version ?? '?') + '）')
+        }
+        continue
+      }
+      // **升级与否只看内容**，不看版本号：版本号是宠物自己声明的，随包那份在同一个
+      // 版本号下改过（补默认值就是这么发生的），只比版本号会让这次修订永远发不出去。
+      // 反过来，"版本相同 + 内容相同"在这里就短路了，不会做无谓的整份重写。
+      const bundledHash = sha256(readFileSync(manifestPath))
+      if (same === bundledHash) continue
+
+      // cpSync 是逐文件覆盖 —— 用户额外放进去的文件（自己的贴图、备注）不在随包
+      // 那份里，所以留得住。
+      // 「原先」那个版本号要**在覆盖之前**读：覆盖之后再读只会读到新的，日志就成了
+      // "更新到 1.1.0（原先 1.1.0）"（第一次跑就写成了这样）。
+      const was = String(readJson(targetManifest)?.version ?? '?')
       cpSync(source, target, { recursive: true })
+      record[name] = { version, hash: bundledHash }
+      dirty = true
+      notes.push(name + '：宠物默认值更新到 ' + version + '（原先 ' + was + '）')
     } catch {
       /* 只读文件系统之类：让用户自己拷，别让整个目录扫描失败 */
     }
   }
+  if (dirty) {
+    try {
+      writeSyncRecord(record)
+    } catch {
+      /* 记录写不进去只影响"下次少一次判定"，不影响这次已经装好的宠物 */
+    }
+  }
+  if (notes.length > 0 && options.quiet !== true) {
+    for (const note of notes) console.log('[live2d-pet] ' + note)
+  }
 }
 
+/** Build the live catalog from disk (fresh per request, so installs are picked up). */
 export function buildCatalog() {
   installBundledPets()
   const root = petsRoot()
