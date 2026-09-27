@@ -1,0 +1,13 @@
+# 桌面端的运行期产物，不进仓库
+node_modules/
+.run/
+# React UMD 由 tools/vendor-react.mjs 从 node_modules 铺过来
+sidecar/page/react/
+# Rust
+src-tauri/target/
+src-tauri/gen/
+# 打包产物
+dist/
+# 截屏证据（pet-on-desktop.png 是文档用的那一张）
+shots/*
+!shots/pet-on-desktop.png

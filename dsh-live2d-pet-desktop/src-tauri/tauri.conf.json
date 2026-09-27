@@ -1,0 +1,24 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "DSH-Pet-Live2D-Desktop",
+  "version": "0.0.1",
+  "identifier": "com.dsh.pet.live2d.desktop",
+  "build": {
+    "frontendDist": "../sidecar/page"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": null
+    },
+    "withGlobalTauri": false
+  },
+  "bundle": {
+    "active": false,
+    "targets": "all",
+    "icon": [
+      "icons/icon.png",
+      "icons/icon.ico"
+    ]
+  }
+}

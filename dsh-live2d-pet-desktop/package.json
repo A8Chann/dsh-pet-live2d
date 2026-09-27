@@ -1,0 +1,20 @@
+{
+  "name": "dsh-pet-live2d-desktop",
+  "version": "0.0.1",
+  "private": true,
+  "description": "DSH Live2D 桌宠的桌面端：Tauri 透明常驻窗 + 复用 dsh-live2d-pet 的宿主/浏览器半区",
+  "type": "module",
+  "scripts": {
+    "vendor": "node tools/vendor-react.mjs",
+    "sidecar": "node sidecar/server.mjs --page pet --port 8791",
+    "spike": "node sidecar/server.mjs --page spike --port 8792",
+    "ping": "node tools/ping.mjs",
+    "prep": "node tools/vendor-react.mjs",
+    "dev": "cargo run --manifest-path src-tauri/Cargo.toml -- --page pet",
+    "dev:spike": "cargo run --manifest-path src-tauri/Cargo.toml -- --page spike"
+  },
+  "devDependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  }
+}

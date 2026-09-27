@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh">
+
+<head>
+  <meta charset="utf-8">
+  <title>dsh-pet-live2d desktop</title>
+  <style>
+    /* 透明窗的第一条纪律：**页面自己不能有底色**。body 上任何一抹颜色都会让整块窗口
+       实心，看起来像"透明没生效"，其实是 CSS 干的。 */
+    html,
+    body {
+      margin: 0;
+      height: 100%;
+      background: transparent;
+      overflow: hidden;
+      /* 桌面宠物不该能选中文字、不该有滚动条、不该能整页拖走。 */
+      user-select: none;
+      -webkit-user-select: none;
+      cursor: default;
+    }
+
+    /* 主进程调试读口（driver / devtools 用）：平时完全不可见，也不吃事件。 */
+    #desktop-hud {
+      position: fixed;
+      left: 12px;
+      top: 12px;
+      padding: 8px 10px;
+      border-radius: 10px;
+      background: rgba(16, 22, 34, .86);
+      color: #d8e3ff;
+      font: 11px/1.6 ui-monospace, Consolas, monospace;
+      white-space: pre-wrap;
+      pointer-events: none;
+      display: none;
+    }
+
+    #desktop-hud[data-on] {
+      display: block;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="desktop-hud"></div>
+
+  <script>
+    // __ModuleLoader__ 垫片：DSH 客户端的模块表在桌面端不存在，这里只种
+    // react / react-dom/client 两个外部依赖（和 tools/browser-test/index.html 同源同法）。
+    window.__ModuleLoader__ = {
+      mode: 'queue',
+      pendingQueue: [],
+      load(registration) {
+        try {
+          const req = (spec) => {
+            if (spec === 'react') return window.React;
+            if (spec === 'react-dom/client') return window.ReactDOM;
+            if (spec === 'react-dom') return window.ReactDOM;
+            throw new Error('unseeded external: ' + spec);
+          };
+          const mod = registration.factory(req);
+          window.__pluginExports = window.__pluginExports || {};
+          window.__pluginExports[registration.id] = mod;
+        } catch (error) {
+          window.__bootError = String((error && error.stack) || error);
+        }
+      },
+    };
+    window.__errors = [];
+    window.addEventListener('error', (e) => window.__errors.push('error: ' + (e.message || e)));
+    window.addEventListener('unhandledrejection', (e) => window.__errors.push('rejection: ' + ((e.reason && e.reason.message) || e.reason)));
+  </script>
+
+  <!-- React UMD 由 sidecar 从 dsh-live2d-pet-desktop/node_modules 取（见 /react/* 路由）。
+       刻意与 DSH 客户端用同一份 UMD 产物，不另起一套 bundle。 -->
+  <script src="/react/react.development.js"></script>
+  <script src="/react/react-dom.development.js"></script>
+  <script src="/page/runtime.js"></script>
+  <script src="/page/desktop.js"></script>
+
+  <!-- 插件浏览器半区：**一个字都不改**地跑在桌面端（和真实的 DSH 一样按包名寻址）。 -->
+<script src="/plugins/dsh-pet-live2d/client.js"></script>
+<script type="module" src="/page/boot.js"></script>
+
+</html>
