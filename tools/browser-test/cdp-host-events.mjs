@@ -10,6 +10,7 @@ import { rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { browserPath, PROFILES, BASE } from './paths.mjs'
 import { waitReady } from './ready.mjs'
+import { waitForBoot } from './wait-for.mjs'
 
 const EDGE = browserPath()
 const PORT = 9377
@@ -34,7 +35,7 @@ const api = async (path) => JSON.parse(await (await fetch(BASE + path)).text())
 
 await send('Runtime.enable'); await send('Page.enable')
 await send('Page.navigate', { url: BASE + '/' })
-for (let i = 0; i < 240; i++) { await sleep(500); if (await ev('document.title') === 'done') break }
+await waitForBoot(ev)
 await waitReady(ev)
 
 const results = []

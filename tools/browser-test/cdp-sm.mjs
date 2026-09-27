@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto'
 import { browserPath, PROFILES, SHOTS, BASE } from './paths.mjs'
 import { waitReady, openPanel, panelFooter } from './ready.mjs'
 import { join } from 'node:path'
+import { waitForBoot } from './wait-for.mjs'
 
 const EDGE = browserPath()
 const PORT = 9341
@@ -38,7 +39,7 @@ const hash = async () => createHash('sha1').update(await ev('document.querySelec
 
 await send('Runtime.enable'); await send('Page.enable')
 await send('Page.navigate', { url: URL_TO_OPEN })
-for (let i = 0; i < 240; i++) { await sleep(500); if (await ev('document.title') === 'done') break }
+await waitForBoot(ev)
 await waitReady(ev)
 
 const out = {}

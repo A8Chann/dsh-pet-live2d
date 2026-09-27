@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import { rmSync } from 'node:fs'
 import { browserPath, PROFILES, BASE } from './paths.mjs'
 import { waitReady, openPanel } from './ready.mjs'
+import { waitFor } from './wait-for.mjs'
 import { join } from 'node:path'
 const EDGE = browserPath()
 const PORT = 9381
@@ -25,7 +26,9 @@ const send = (a, p = {}) => new Promise(r => { const id = ++nextId; pending.set(
 const ev = async (e) => (await send('Runtime.evaluate', { expression: e, awaitPromise: true, returnByValue: true })).result?.result?.value
 await send('Runtime.enable'); await send('Page.enable')
 await send('Page.navigate', { url: URL_TO_OPEN })
-for (let i = 0; i < 140; i++) { await sleep(500); if (await ev('document.querySelectorAll("[data-dsh-live2d-pet] canvas").length') > 0) break }
+// 不再自己轮询"canvas 出现了吗"：`waitReady` 等的是**更强的条件**（点击遮罩已经画好），
+// 而且它是 100ms 轮询、30 秒上限。原来那个 `sleep(500)` 的循环是重复等待 ——
+// 每轮 500ms，最坏 70 秒，还比 waitReady 弱。
 await waitReady(ev)
 // Assertions, not printouts: this driver used to end in an unconditional
 // process.exit(0) with only console.log output, so it could never fail.
@@ -241,9 +244,15 @@ check('the eyes open again after blinking', opened)
 // and a CDP round trip is easily 100ms+, so polling missed most of them and
 // reported "never blinks" for a pet that blinks perfectly well.
 const before = await ev('window.__dshLive2dPet.blinkCount()')
-await sleep(13000)
+// 13 秒的**覆盖率**是这个契约的一部分（"每 2.2-6.4 秒一次，12 秒窗口里得有几次"），
+// 所以窗口不能缩短；但**不必睡满**：眨眼计数是客户端自己数的，轮询它就够 ——
+// 第一次眨眼（平均 2-3 秒）就能满足 `>= 1`。超时才用满 13 秒。
+const blinked = await waitFor(
+  async () => (await ev('window.__dshLive2dPet.blinkCount()')) > before,
+  { timeoutMs: 13000, label: '自己眨眼', onTimeout: () => '13 秒内一次都没眨' },
+)
 const after = await ev('window.__dshLive2dPet.blinkCount()')
-check('the pet blinks on its own', after - before >= 1, (after - before) + ' blinks in 13s')
+check('the pet blinks on its own', blinked && after - before >= 1, (after - before) + ' blinks in 13s')
 // --- 指针「不在场」时必须回正 ---------------------------------------------
 // 鼠标移出窗口后 pointermove 不再发来，宠物会僵在最后一个注视方向上。页面拿不到
 // 窗口外的指针位置（要原生钩子），所以做的是回正：离开窗口 / 失焦 / 切标签页。
@@ -251,7 +260,8 @@ await gazeAt(1.0, 0.5)
 const beforeLeave = JSON.parse(await ev('JSON.stringify(window.__dshLive2dPet.gazeTarget())'))
 check('先把视线拉到一边（准备验回正）', Math.abs(beforeLeave.x) > 0.5, JSON.stringify(beforeLeave))
 await ev('document.documentElement.dispatchEvent(new MouseEvent("mouseleave", { bubbles: false }))')
-await sleep(900)
+// 回正是个缓动，轮询`data-gaze` 比猜一个毫秒数快得多（而且负载高时不会读到半途的值）。
+await waitFor(async () => (await gaze()) === 'center', { timeoutMs: 3000, label: '视线回正' })
 const afterLeave = JSON.parse(await ev('JSON.stringify(window.__dshLive2dPet.gazeTarget())'))
 check('鼠标离开窗口后视线回正',
   Math.abs(afterLeave.x) < 0.02 && Math.abs(afterLeave.y) < 0.02

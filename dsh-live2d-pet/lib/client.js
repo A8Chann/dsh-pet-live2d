@@ -7249,29 +7249,30 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     };
     const binary = current.binary ?? {};
     const supported = binary.supported !== false;
-    return h("div", { "data-settings": "", "data-setting": "layer" },
-      h("div", { "data-note": "" },
-        "她在**页面内**（随 DSH 启停）还是**桌面上**（一个独立窗口，DSH 关掉也站着）。"
-        + "同一时刻只有一只：不是 owner 的那份会让位。"),
-      h("div", { "data-chips": "", "data-layer-options": "" },
-        ...options.map(([mode, label, hint]) => h("button", {
-          key: mode,
-          type: "button",
-          title: hint,
-          disabled: busy,
-          ...(current.mode === mode ? { "data-on": "" } : {}),
-          "data-layer-mode": mode,
-          onClick: () => choose(mode),
-        }, label))),
-      h("div", { "data-note-inline": "", "data-layer-status": "" }, [
-        supported ? null : "这个平台还没有桌面版构建（" + (binary.hint ?? "") + "）",
-        supported && binary.found !== true ? "桌面端二进制不在：" + (binary.hint ?? "") : null,
-        supported && binary.found === true
-          ? "桌面端：" + (current.desktopRunning ? "运行中（已接管）" : "没在跑")
-            + " · " + String(binary.source ?? "")
-          : null,
-        note === "" ? null : note,
-      ].filter((line) => line !== null).join(" · ")),
+    return h("div", { "data-setting": "layer" },
+      // 三个选项是**药丸按钮**：形状与反应候选那排 chips 共用同一条规则，所以外面要套一层
+      // `[data-reaction-set]`（设置页作用域的 chips 样式挂在它下面）。少这层壳的表现是
+      // "三个按钮挤成一行字"，实测过一次。
+      h("div", { "data-reaction-set": "", "data-layer-options": "" },
+        h("div", { "data-chips": "" },
+          ...options.map(([mode, label, hint]) => h("button", {
+            key: mode,
+            type: "button",
+            title: hint,
+            disabled: busy,
+            ...(current.mode === mode ? { "data-on": "" } : {}),
+            "data-layer-mode": mode,
+            onClick: () => choose(mode),
+          }, label)))),
+      // 状态行：**只在这里**说一次"二进制在不在"，不要和选项混在一段里。
+      h("div", { "data-note-inline": "", "data-layer-status": "" },
+        [supported ? null : "本平台还没有桌面版构建",
+          supported && binary.found !== true ? "桌面端二进制不在" : null,
+          supported && binary.found === true
+            ? "桌面端：" + (current.desktopRunning ? "运行中（已接管）" : "没在跑") + "（" + String(binary.source ?? "") + "）"
+            : null,
+          note === "" ? null : note,
+        ].filter((line) => line !== null).join(" · ")),
     );
   }
 

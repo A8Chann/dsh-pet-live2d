@@ -18,6 +18,7 @@ import { rmSync } from 'node:fs'
 import { browserPath, PROFILES, BASE } from './paths.mjs'
 import { waitReady, openPanel, panelFooter } from './ready.mjs'
 import { join } from 'node:path'
+import { waitForBoot } from './wait-for.mjs'
 
 const EDGE = browserPath()
 const PORT = 9383
@@ -40,7 +41,7 @@ const send = (a, p = {}) => new Promise(r => { const id = ++nextId; pending.set(
 const ev = async (e) => (await send('Runtime.evaluate', { expression: e, awaitPromise: true, returnByValue: true })).result?.result?.value
 await send('Runtime.enable'); await send('Page.enable')
 await send('Page.navigate', { url: BASE + '/?variant=DBG' })
-for (let i = 0; i < 240; i++) { await sleep(400); if (await ev('document.title') === 'done') break }
+await waitForBoot(ev)
 await waitReady(ev)
 
 const results = []

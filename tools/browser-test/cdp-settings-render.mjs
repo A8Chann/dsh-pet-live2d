@@ -108,6 +108,22 @@ if (!applied) {
   const layerButtons = JSON.parse(await evaluate('JSON.stringify([...document.querySelectorAll("#dsh-settings-probe [data-layer-options] button")].map((n) => n.textContent))'))
   check('「显示位置」那张卡有三个选项', layerButtons.length === 3, layerButtons.join('/'))
 
+  // **观感也是契约**：那三个选项必须是"圆的、并排的、比正文小"。
+  //
+  // 这一条是补出来的 —— 加这张卡时漏了设置页作用域里 `[data-chips]` 的样式（在设置页里
+  // 那套药丸样式挂在 `[data-reaction-set]` 下面），表现是三个选项**挤成一行字**，
+  // 用户一眼就看出来了。数按钮个数抓不到这种问题，量样式才能。
+  const chips = JSON.parse(await evaluate(`JSON.stringify([...document.querySelectorAll('#dsh-settings-probe [data-layer-options] button')].map((n) => {
+    const style = getComputedStyle(n);
+    const box = n.getBoundingClientRect();
+    return { radius: style.borderRadius, w: Math.round(box.width), h: Math.round(box.height), top: Math.round(box.top) };
+  }))`))
+  check('选项横排在同一行', chips.length === 3 && new Set(chips.map((c) => c.top)).size === 1,
+    JSON.stringify(chips.map((c) => c.top)))
+  check('选项是胶囊形状', chips.every((c) => c.radius === '999px'), JSON.stringify(chips.map((c) => c.radius)))
+  check('选项紧凑（不是正文那么大）', chips.every((c) => c.w < 90 && c.h < 32),
+    JSON.stringify(chips.map((c) => [c.w, c.h])))
+
   const flags = JSON.parse(await evaluate('JSON.stringify([...document.querySelectorAll("#dsh-settings-probe [data-flag]")].map((n) => n.getAttribute("data-flag")))'))
   check('互动开关还在', flags.includes('patEnabled') && flags.includes('tailEnabled'), flags.join(','))
 

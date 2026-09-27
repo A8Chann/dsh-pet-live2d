@@ -18,6 +18,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } fr
 import { join } from 'node:path'
 import { browserPath, PROFILES, HERE, PLUGIN } from './paths.mjs'
 import { waitReady, openPanel, pageErrors } from './ready.mjs'
+import { waitForBoot } from './wait-for.mjs'
 
 /** 用户那份 Cubism Core（插件不内置它，本机没有就只能退回官方 CDN）。 */
 const CORE_SRC = join(process.env.USERPROFILE ?? '', '.dsh', 'pets', '.runtime')
@@ -104,7 +105,7 @@ const sameSet = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length === b
 
 await send('Runtime.enable'); await send('Page.enable')
 await send('Page.navigate', { url: BASE + '/' })
-for (let i = 0; i < 240; i++) { await sleep(500); if (await ev('document.title') === 'done') break }
+await waitForBoot(ev)
 check('页面真的加载出来了（夹具 DSH_HOME 有服务）', (await ev('!!window.__dshLive2dPet')) === true, 'DSH_HOME=' + HOME)
 check('这只宠物的 pet.json 里确实没有那三个键（下面断的才是 builtin 那一层）', dropped.length === 3, '删掉: ' + JSON.stringify(dropped))
 check('模型与点击遮罩就绪', (await waitReady(ev)) === true)

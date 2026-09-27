@@ -8,6 +8,7 @@ import { createHash } from 'node:crypto'
 import { browserPath, PROFILES, BASE, SHOTS } from './paths.mjs'
 import { waitReady, openPanel, closePanel } from './ready.mjs'
 import { join } from 'node:path'
+import { waitForBoot } from './wait-for.mjs'
 
 const EDGE = browserPath()
 const PORT = 9360
@@ -39,7 +40,7 @@ const shot = async (n) => { const s = await send('Page.captureScreenshot', { for
 
 await send('Runtime.enable'); await send('Page.enable')
 await send('Page.navigate', { url: BASE + '/' })
-for (let i = 0; i < 240; i++) { await sleep(500); if (await ev('document.title') === 'done') break }
+await waitForBoot(ev)
 await waitReady(ev)
 const sleep2 = sleep
 const out = {}

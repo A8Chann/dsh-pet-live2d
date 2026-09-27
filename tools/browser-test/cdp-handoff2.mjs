@@ -3,6 +3,7 @@ import { rmSync } from 'node:fs'
 import { browserPath, PROFILES, BASE } from './paths.mjs'
 import { waitReady } from './ready.mjs'
 import { join } from 'node:path'
+import { waitForBoot } from './wait-for.mjs'
 const EDGE = browserPath()
 const PORT = 9451
 const PROFILE = join(PROFILES, '_cdp-handoff2')
@@ -27,7 +28,7 @@ const snap = () => ev('JSON.stringify({ phase: document.querySelector("[data-dsh
 await fetch(BASE + '/__nudge?phase=idle')
 await send('Runtime.enable'); await send('Page.enable')
 await send('Page.navigate', { url: BASE + '/' })
-for (let i = 0; i < 240; i++) { await sleep(400); if (await ev('document.title') === 'done') break }
+await waitForBoot(ev)
 await waitReady(ev)
 const steps = []
 const step = async (at) => { steps.push({ at, s: JSON.parse(await snap()) }) }

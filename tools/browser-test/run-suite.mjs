@@ -20,30 +20,10 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import { rmSync } from 'node:fs'
 import { cpus } from 'node:os'
 import { PROFILES } from './paths.mjs'
-
-/** filename -> what user-visible contract it proves. */
-export const SUITE = {
-  'test-host-sync.mjs': '随包宠物升级：老装机拿得到新的默认值，改过的一个字都不碰',
-  'cdp-sm.mjs': '动作状态机：点击→播放→回待机、重播、连点、面板播放、归位',
-  'cdp-v12.mjs': 'v1.2 交互契约：面板不缩放、点击遮罩、视线回正、相位映射、摸鱼',
-  'cdp-phase.mjs': '会话相位 → 动作映射（SSE）',
-  'cdp-mask.mjs': '点击轮廓网格（alpha 剪影）',
-  'cdp-gaze.mjs': '注视跟随与回默认位',
-  'cdp-dpr.mjs': 'DPR 渲染倍率（放大清晰）',
-  'cdp-sharp.mjs': '2x 超采样下限（缩小不虚）',
-  'cdp-motion.mjs': '动作语义：嘴还原 / 喷水 / 定格 / 前置动作',
-  'cdp-exp.mjs': '装扮菜单：每个槽位选项都真的写进模型',
-  'cdp-handoff2.mjs': '定格姿势能被会话相位接管',
-  'cdp-host-events.mjs': '真实 DSH 事件接线（tools/*）+ 相位持续播放',
-  'cdp-head.mjs': '点头部才重锤出击；摸鱼不碰重锤/喷水',
-  'cdp-idle-return.mjs': '动作/表情到点自动回到初始待机',
-  'cdp-passthrough.mjs': '只有角色可拖动，透明处事件穿透',
-  'cdp-merge.mjs': '装扮菜单：多槽位叠加、跨槽保留、白魔爪双层',
-  'cdp-bubble.mjs': '动作定格能关掉：吹泡泡糖/掏手机 → 无，连测三轮',
-  'cdp-interact.mjs': '互动与气泡：摸尾巴/转圈转晕/相位台词/文本·位置·开关可配',
-  'cdp-react-defaults.mjs': '互动反应候选的内置默认值：宠物没声明那三组也演得出来',
-  'cdp-settings-render.mjs': '设置正文真的渲染得出来（挂在宠物组件之外的组件不许读到组件内的 ref）',
-}
+// 清单在**纯数据模块**里：这个文件一 import 就会开跑（顶层执行），所以任何想读清单的
+// 工具（计时统计等）只能 import 那个模块，不能反过来 import 这个跑者。
+export { SUITE, PARALLEL_SAFE } from './suite-manifest.mjs'
+import { SUITE, PARALLEL_SAFE } from './suite-manifest.mjs'
 
 const argv = process.argv.slice(2)
 const jobsFlag = argv.indexOf('--jobs')
@@ -127,10 +107,14 @@ async function runDriver(file, slot) {
 }
 
 const results = []
+const suiteStarted = Date.now()
+/** 两条车道各自的规模与实际 worker 数（收尾那一行要报，所以要在 try 外面可见）。 */
+let parallelLane = []
+let serialLane = []
+let parallelJobs = 0
 try {
   let pending = Object.entries(SUITE).filter(([file]) => only.length === 0 || only.some((o) => file.includes(o)))
   const total = pending.length
-  console.log('running ' + total + ' drivers across ' + Math.min(JOBS, total) + ' workers\n')
 
   if (pending.length === 0) {
     // Nothing matched. Without this the pool below never settles: it only
@@ -141,29 +125,69 @@ try {
     process.exit(1)
   }
 
-  let running = 0
+  /**
+   * **两条车道**：能并发的并发跑，脆弱的独占跑。
+   *
+   * 为什么不是"全都 N 并发"：headless Edge 用 SwiftShader 软件渲染模型，是纯 CPU 的，
+   * 而这台机器上**并发的代价是双向的** ——
+   *
+   *   * 抢 CPU 让每个 driver 都变慢（实测 6 并发跑出 260 秒，比串行还慢）；
+   *   * 更糟的是**断言开始失败**：靠固定 sleep 等缓动的 driver 在掉帧时读到半途的值，
+   *     6 并发实测红 6 条（cdp-motion / cdp-idle-return / cdp-head / cdp-bubble /
+   *     cdp-interact / cdp-react-defaults），串行时全绿。
+   *
+   * 所以并发只给那些**断言读终值、对帧率不敏感**的 driver（`PARALLEL_SAFE`，依据是实测
+   * 失败模式而不是感觉）；其余独占整机跑 —— 它们反而因此变快，因为没人跟它们抢 CPU。
+   */
+  const parallelLaneLocal = pending.filter(([file]) => PARALLEL_SAFE.has(file))
+  const serialLaneLocal = pending.filter(([file]) => !PARALLEL_SAFE.has(file))
+  parallelLane = parallelLaneLocal
+  serialLane = serialLaneLocal
+
+  console.log('running ' + total + ' drivers：'
+    + parallelLane.length + ' 条可并发（' + Math.min(JOBS, parallelLane.length) + ' workers）+ '
+    + serialLane.length + ' 条独占跑\n')
+
   // A monotonic slot per driver, NOT the live worker count: that count is
   // reused as drivers finish, so two concurrent drivers would land on the same
   // port and the second server would fail to bind.
   let slotSeq = 0
-  await new Promise((resolve) => {
-    const pump = () => {
-      while (running < JOBS && pending.length > 0) {
-        const [file, label] = pending.shift()
-        running += 1
-        runDriver(file, ++slotSeq).then((r) => {
-          running -= 1
-          const ok = r.code === 0
-          results.push({ file, label, ok, ms: r.ms, out: r.out })
-          console.log((ok ? 'PASS' : 'FAIL') + '  ' + file.padEnd(20) + label + '  (' + r.ms + 'ms)')
-          if (!ok) console.log(r.out.split('\n').slice(-25).join('\n'))
-          if (pending.length === 0 && running === 0) resolve()
-          else pump()
-        })
+
+  /** 跑一条车道；`jobs` 为 1 就是独占。 */
+  const runLane = async (lane, jobs) => {
+    let running = 0
+    let next = 0
+    await new Promise((resolve) => {
+      const pump = () => {
+        while (running < jobs && next < lane.length) {
+          const [file, label] = lane[next]
+          next += 1
+          running += 1
+          runDriver(file, ++slotSeq).then((r) => {
+            running -= 1
+            const ok = r.code === 0
+            results.push({ file, label, ok, ms: r.ms, out: r.out })
+            console.log((ok ? 'PASS ' : 'FAIL ') + file.padEnd(22) + label + '  (' + r.ms + 'ms)')
+            if (!ok) console.log(r.out.split('\n').slice(-25).join('\n'))
+            if (next >= lane.length && running === 0) resolve()
+            else pump()
+          })
+        }
+        // 空车道直接收（否则这个 Promise 永远不 resolve）。
+        if (lane.length === 0) resolve()
       }
-    }
-    pump()
-  })
+      pump()
+    })
+  }
+
+  // 长的一车先开跑（总时长取两车之和，先跑长的能把"尾巴"摊平）。
+  const sumOf = (lane, per) => lane.length * per
+  const parallelFirst = sumOf(parallelLane, 1) < sumOf(serialLane, 1)
+  parallelJobs = Math.min(JOBS, Math.max(1, parallelLane.length))
+  const lanes = parallelFirst
+    ? [[parallelLane, parallelJobs], [serialLane, 1]]
+    : [[serialLane, 1], [parallelLane, parallelJobs]]
+  for (const [lane, jobs] of lanes) await runLane(lane, jobs)
 } finally {
   purgeProfiles()
 }
@@ -172,6 +196,9 @@ try {
 results.sort((a, b) => Object.keys(SUITE).indexOf(a.file) - Object.keys(SUITE).indexOf(b.file))
 const failed = results.filter((r) => !r.ok)
 const wall = Math.max(...results.map((r) => r.ms))
+// **总时长也要报**：两条车道是串起来跑的，所以"最慢的单条"根本不是套件耗时 ——
+// 少了这一行，改调度时就只能靠感觉判断快了还是慢了。
 console.log('\n' + results.length + ' drivers, ' + (results.length - failed.length) + ' passed, ' + failed.length + ' failed'
-  + '   (slowest ' + wall + 'ms, ' + JOBS + ' workers)')
+  + '   (slowest ' + wall + 'ms, 总时长 ' + ((Date.now() - suiteStarted) / 1000).toFixed(1) + 's, '
+  + '并发车道 ' + parallelLane.length + '@' + parallelJobs + ' + 独占 ' + serialLane.length + ')')
 process.exit(failed.length === 0 ? 0 : 1)
