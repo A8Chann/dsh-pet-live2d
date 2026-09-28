@@ -1,0 +1,22 @@
+{
+  "name": "dsh-pet-live2d-desktop",
+  "version": "0.2.0",
+  "private": true,
+  "description": "DSH Live2D 桌宠的桌面端：单文件便携 exe（Tauri 壳 + 同进程 Rust 宿主半区）",
+  "type": "module",
+  "scripts": {
+    "icon": "node tools/make-icon.mjs",
+    "dev": "cargo run --manifest-path src-tauri/Cargo.toml -- --page pet",
+    "dev:spike": "cargo run --manifest-path src-tauri/Cargo.toml -- --page spike",
+    "build:portable": "node tools/build-portable.mjs",
+    "npm:prepare": "node tools/npm-prepare-subpackage.mjs",
+    "npm:verify": "node tools/verify-npm-distribution.mjs",
+    "verify:attach": "node tools/probe-attach.mjs",
+    "verify:compare": "node tools/probe-catalog.mjs",
+    "verify:shell": "node tools/desktop-driver.mjs --page pet",
+    "verify:settings": "node tools/probe-settings.mjs",
+    "verify:phase": "node tools/probe-phase.mjs --seconds 20",
+    "verify:anim": "node tools/probe-anim.mjs --ms 4000",
+    "page": "node tools/page-driver.mjs --page pet"
+  }
+}

@@ -1,7 +1,8 @@
 import { spawn } from 'node:child_process'
 import { rmSync } from 'node:fs'
 import { browserPath, PROFILES, BASE } from './paths.mjs'
-import { waitReady, openPanel } from './ready.mjs'
+import { waitReady, openPanel, killBrowser } from './ready.mjs'
+import { waitFor } from './wait-for.mjs'
 import { join } from 'node:path'
 const EDGE = browserPath()
 const PORT = 9381
@@ -10,7 +11,10 @@ const PROFILE = join(PROFILES, '_cdp-gaze')
 rmSync(PROFILE, { recursive: true, force: true })
 const edge = spawn(EDGE, ['--headless=new', '--remote-debugging-port=' + PORT, '--enable-unsafe-swiftshader',
   '--use-angle=swiftshader', '--no-first-run', '--no-default-browser-check', '--disable-extensions',
-  '--user-data-dir=' + PROFILE, '--window-size=1440,900', 'about:blank'], { stdio: 'ignore' })
+  // 视口要**装得下满偏半径**：她贴在右下角，探针只能往左上走，所以要给几百像素的余量。
+  // 原来 1440×900 的窗口只剩 ~166px 可用，而契约是 320px —— 那时候量出来的曲线只能到一半，
+  // 断言也就只能写成"按比例"的弱版本（这次踩过）。用 1920×1200 让断言能钉住真实半径。
+  '--user-data-dir=' + PROFILE, '--window-size=1920,1200', 'about:blank'], { stdio: 'ignore' })
 const sleep = (ms) => new Promise(r => setTimeout(r, ms))
 let page
 for (let i = 0; i < 120 && page === undefined; i++) {
@@ -25,7 +29,9 @@ const send = (a, p = {}) => new Promise(r => { const id = ++nextId; pending.set(
 const ev = async (e) => (await send('Runtime.evaluate', { expression: e, awaitPromise: true, returnByValue: true })).result?.result?.value
 await send('Runtime.enable'); await send('Page.enable')
 await send('Page.navigate', { url: URL_TO_OPEN })
-for (let i = 0; i < 140; i++) { await sleep(500); if (await ev('document.querySelectorAll("[data-dsh-live2d-pet] canvas").length') > 0) break }
+// 不再自己轮询"canvas 出现了吗"：`waitReady` 等的是**更强的条件**（点击遮罩已经画好），
+// 而且它是 100ms 轮询、30 秒上限。原来那个 `sleep(500)` 的循环是重复等待 ——
+// 每轮 500ms，最坏 70 秒，还比 waitReady 弱。
 await waitReady(ev)
 // Assertions, not printouts: this driver used to end in an unconditional
 // process.exit(0) with only console.log output, so it could never fail.
@@ -36,7 +42,17 @@ const check = (name, ok, detail) => {
 }
 const out = {}
 const gaze = () => ev('document.querySelector("[data-dsh-live2d-pet]").getAttribute("data-gaze")')
-const geo = JSON.parse(await ev('JSON.stringify((()=>{const r=document.querySelector("[data-dsh-live2d-pet]").getBoundingClientRect();return [Math.round(r.left),Math.round(r.top),Math.round(r.width),Math.round(r.height)]})())'))
+// `geo` 要等**布局稳定**再量：改了窗口尺寸之后页面会重排（她靠 `right/bottom` 定位），
+// 立刻量会拿到旧位置 —— 那样算出来的探针点会落在视口外，事件根本发不出去，
+// 表现是"注视值全是 0"（看着像功能坏了，其实是驱动量错了）。
+const geoOf = async () => JSON.parse(await ev('JSON.stringify((()=>{const r=document.querySelector("[data-dsh-live2d-pet]").getBoundingClientRect();return [Math.round(r.left),Math.round(r.top),Math.round(r.width),Math.round(r.height)]})())'))
+let geo = await geoOf()
+for (let i = 0; i < 20; i += 1) {
+  await sleep(200)
+  const again = await geoOf()
+  if (again[0] === geo[0] && again[1] === geo[1] && again[2] === geo[2]) break
+  geo = again
+}
 const win = JSON.parse(await ev('JSON.stringify([window.innerWidth, window.innerHeight])'))
 const move = async (x, y) => { await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y }); await sleep(500) }
 
@@ -60,41 +76,83 @@ check('coming back re-tracks', retracked, 'data-gaze=' + await gaze())
 // pulled the head to full deflection, and crossing the centre flipped it from
 // full-left to full-right. That is the bug these pin down.
 const gazeAt = async (fx, fy) => {
-  await send('Input.dispatchMouseEvent', {
-    type: 'mouseMoved',
-    x: Math.round(geo[0] + geo[2] * fx),
-    y: Math.round(geo[1] + geo[3] * fy),
-  })
+  // **夹到视口内**：`Input.dispatchMouseEvent` 对越界坐标会静默不送达，症状是注视值停在上
+  // 一次的值（或 0），看起来像功能坏了 —— 这个坑让本轮排查多花了好几次往返。
+  const x = Math.max(2, Math.min(win[0] - 3, Math.round(geo[0] + geo[2] * fx)))
+  const y = Math.max(2, Math.min(win[1] - 3, Math.round(geo[1] + geo[3] * fy)))
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y })
   await sleep(600)
   return JSON.parse(await ev('JSON.stringify(window.__dshLive2dPet.gazeTarget())'))
 }
 const middle = await gazeAt(0.5, 0.5)
 check('the pointer at the centre is a neutral gaze',
   Math.abs(middle.x) < 0.01 && Math.abs(middle.y) < 0.01, JSON.stringify(middle))
+
+/**
+ * 满偏半径由**页面自己**报出来（`gazeTrace`），测试不再自己猜公式。
+ *
+ * 这一条是这次修完才立的规矩：跟随半径以前是"她盒子宽度的一半"，测试按盒子比例摆指针；
+ * 改成像素契约（`gazeRangePx`）之后，再按比例摆就测不准了 —— 驱动必须按**同一份真值**
+ * 摆点，否则量到的是驱动自己的假设，不是产品行为（这次为此白跑了两轮）。
+ *
+ * 读的时机：得有一次 pointermove 之后 `gazeTrace` 才有值。
+ */
+const gazeRange = await (async () => {
+  const raw = await ev('JSON.stringify(window.__dshLive2dPet?.gazeTrace?.() ?? null)')
+  const trace = raw === 'null' ? null : JSON.parse(raw)
+  return trace === null ? 0 : trace.range
+})()
+/**
+ * 探针只能**往左上**走（她贴在右下角），而且两个方向的余量不一样 —— 所以要分别夹取。
+ *
+ * 这里算错过两次：先是写成"到她右侧的余量"（探针不往那边走），后来用单一数值同时管横竖
+ * （她上方的余量比左侧小，往下的点被甩出视口）。两次的**症状一样**：事件发不出去 ⇒
+ * 量到 0 ⇒ 看起来像功能坏了。所以探针的每个点位都必须能落到视口里。
+ */
+const probeRadiusX = Math.min(gazeRange, geo[0], geo[2])
+const probeRadiusY = Math.min(gazeRange, geo[1], geo[3])
+const probeRadius = probeRadiusX
+check('视口够大，能探到满偏半径（横竖都要）',
+  probeRadiusX >= gazeRange * 0.9 && probeRadiusY >= gazeRange * 0.9,
+  'x=' + Math.round(probeRadiusX) + ' y=' + Math.round(probeRadiusY) + '  gazeRange=' + gazeRange
+  + '  她在 ' + geo[0] + ',' + geo[1] + '  视口=' + win.join('x'))
+/** 距离她中心 `px` 像素处，对应"按 geo 摆点"的比例（测试其余部分仍按 geo 写法）。 */
+const fractionAt = (px) => 0.5 - (px / geo[2])
 const nudged = await gazeAt(0.53, 0.5)
 check('a nudge near the centre is a SMALL gaze change', Math.abs(nudged.x) < 0.3,
   JSON.stringify(nudged) + '  (the old mapping gave full deflection here)')
-// Just past the dead zone, so the ramp itself is exercised rather than the
-// flat spot: 0.12 of the half-width is deliberately ignored.
-const small = await gazeAt(0.60, 0.5)
-check('just past the dead zone the gaze has barely moved', small.x > 0 && small.x < 0.25,
-  JSON.stringify(small))
-const halfway = await gazeAt(0.75, 0.5)
-check('halfway out is a substantial gaze', Math.abs(halfway.x) > 0.4 && Math.abs(halfway.x) <= 1,
-  JSON.stringify(halfway))
-const farEdge = await gazeAt(1.0, 0.5)
-check('the edge is full deflection', Math.abs(farEdge.x) > 0.95, JSON.stringify(farEdge))
+// 死区之外的一小步：**偏移按像素算**（不是盒子比例）—— 像素契约下 30px 才算"刚出死区"，
+// 按盒子比例取的那个点只有 15px，会被死区吃掉（量到 0，是本轮踩过的坑）。
+const small = await gazeAt(fractionAt(Math.max(24, probeRadius * 0.25)), 0.5)
+check('just past the dead zone the gaze has barely moved', small.x < 0 && small.x > -0.3,
+  JSON.stringify(small) + '  (探针 ' + Math.round(Math.max(24, probeRadius * 0.25)) + 'px)')
+const halfway = await gazeAt(fractionAt(probeRadius * 0.75), 0.5)
+check('大半程是明显偏转', small.x > halfway.x && halfway.x <= -0.4,
+  JSON.stringify(halfway) + '  (探针半径 ' + Math.round(probeRadius) + '，满偏 ' + gazeRange + ')')
+const farEdge = await gazeAt(fractionAt(probeRadius), 0.5)
+check('探到满偏半径处接近满偏', Math.abs(farEdge.x) > 0.9, JSON.stringify(farEdge))
+
 check('the gaze grows with distance',
   Math.abs(middle.x) <= Math.abs(nudged.x) && Math.abs(nudged.x) <= Math.abs(small.x)
   && Math.abs(small.x) < Math.abs(halfway.x) && Math.abs(halfway.x) <= Math.abs(farEdge.x),
   [middle.x, nudged.x, small.x, halfway.x, farEdge.x].map((v) => v.toFixed(3)).join(' <= '))
+// **满偏半径是按像素算的**（不是"盒子的一半"）：所以她盒子外的移动也牵得动视线，
+// 而"多远算满偏"由 gazeRangePx 决定。上面 halfway / farEdge 两个点的位置就是按它算的。
+check('满偏半径是像素量级（不是舞台宽度）', gazeRange > 0 && gazeRange <= Math.min(win[0], win[1]),
+  'gazeRange=' + gazeRange + '  视口=' + win.join('x') + '  她的盒子=' + geo[2] + 'x' + geo[3])
 // --- the mouth follows the same offset -------------------------------------
 // Written per frame at the same seam as everything else. It used to never
 // appear at all, because the per-frame pass returned early whenever nothing was
 // pinned and no sweep was running.
 await gazeAt(0.5, 0.5)
-const mouthAt = async (fx, fy) => {
-  await gazeAt(fx, fy)
+/**
+ * 嘴巴的探针：**按像素偏移**摆点（和上面的跟随同一份契约）。
+ *
+ * 原来它按盒子比例（`fx/fy`）走，那是旧契约的写法 —— 换成像素契约之后，比例 0.6 只等于
+ * 30px，落在死区里，于是嘴巴"几乎没有反应"（那三条断言就是这么红的）。
+ */
+const mouthAtPx = async (px, py) => {
+  await gazeAt(fractionAt(px), 0.5 + (py / geo[3]))
   // The mouth EASES toward the pointer rather than snapping to it, so give it
   // a few time constants to arrive before reading.
   await sleep(700)
@@ -127,10 +185,11 @@ const mouthParams = async () => {
   }
   return JSON.parse(last)
 }
-const mouthCentre = await mouthAt(0.5, 0.5)
-const mouthHalf = await mouthAt(0.75, 0.5)
-const mouthEdge = await mouthAt(1.0, 0.5)
-const mouthBack = await mouthAt(0.5, 0.5)
+// 嘴巴的探针也按**像素偏移**（与跟随同一份契约）：中心 / 半个满偏 / 满偏 / 回中心。
+const mouthCentre = await mouthAtPx(0, 0)
+const mouthHalf = await mouthAtPx(probeRadius * 0.5, 0)
+const mouthEdge = await mouthAtPx(probeRadius, 0)
+const mouthBack = await mouthAtPx(0, 0)
 check('the mouth is closed with the pointer at the centre', mouthCentre === 0, 'follow=' + mouthCentre)
 check('the mouth opens with the pointer offset', mouthHalf > 0.2 && mouthEdge > mouthHalf,
   [mouthCentre, mouthHalf, mouthEdge].map((v) => Number(v).toFixed(3)).join(' < '))
@@ -178,12 +237,19 @@ const mouthAtFull = async (fx, fy) => {
   return { target, follow: await ev('window.__dshLive2dPet.mouthFollow()'), dbg }
 }
 const mouthRest = await mouthAtFull(0.5, 0.5)
-const mouthUp = await mouthAtFull(0.5, 0.15)
-const mouthDown = await mouthAtFull(0.5, 0.85)
+// 上下探针也用**夹取后的半径**：她贴在右下角，往下的余量比往上小得多，用全 `gazeRange`
+// 会把点甩出视口（事件发不出去 ⇒ 量到 target 0 ⇒ "嘴巴没反应"的假红）。
+const mouthUp = await mouthAtFull(0.5, 0.5 - (probeRadiusY * 0.6) / geo[3])
+const mouthDown = await mouthAtFull(0.5, 0.5 + (probeRadiusY * 0.6) / geo[3])
 // Shape follows the pointer VERTICALLY: up leans it the way the author's own
 // open-mouth keyframes do, down leans it the other way.
+//
+// ⚠️ 阈值别写死成"旧契约下的幅度"：跟随改成**椭圆**判据之后，竖直分量也会被归一化压一道
+// （实测 ±0.34 → ±0.18）。这条断言要钉的是**方向与可见幅度**，不是某个历史数值。
+// 幅度与 `target.y` 的**精确比例**由下面那条"the mouth equals …"全量法则负责。
 check('the mouth shape leans with the pointer height',
-  mouthUp.dbg.form > 0.2 && mouthDown.dbg.form < -0.2,
+  mouthUp.dbg.form > 0.1 && mouthDown.dbg.form < -0.1
+  && mouthUp.dbg.form > 0 && mouthDown.dbg.form < 0,
   'up ' + JSON.stringify(mouthUp.dbg) + ' ny=' + mouthUp.target.y.toFixed(3)
   + '  down ' + JSON.stringify(mouthDown.dbg) + ' ny=' + mouthDown.target.y.toFixed(3))
 // The full law, asserted against the offset the plugin computed rather than
@@ -197,18 +263,25 @@ check('the mouth equals 0.65·|offset| open and -0.7·ny lean at every position'
   [mouthRest, mouthUp, mouthDown].every((s) => lawError(s).open < 0.04 && lawError(s).form < 0.04),
   [mouthRest, mouthUp, mouthDown]
     .map((s) => 'ny=' + s.target.y.toFixed(3) + ' ' + JSON.stringify(s.dbg)).join('  '))
-// And with the pointer on the STAGE centre — the only position that is really
-// neutral — both contributions must be zero, so nothing is left pinned.
-const vw = await ev('window.innerWidth')
-const vh = await ev('window.innerHeight')
-await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: Math.round(vw / 2), y: Math.round(vh / 2) })
+// And with the pointer ON HER — the only position that is really neutral — both
+// contributions must be zero, so nothing is left pinned.
+//
+// ⚠️ 触发点是**她的中心**，不是视口中心：跟随契约改成"相对她的像素偏移"之后，视口中心
+// 离她有上千像素（她在右下角），那是一个**满偏**的位置，不是中性位 —— 拿它验"嘴巴闭着"
+// 必然红（量到 target y = -1）。旧契约下视口中心恰好等于她中心，所以这条断言以前是对的。
+await send('Input.dispatchMouseEvent', {
+  type: 'mouseMoved',
+  x: Math.round(geo[0] + geo[2] / 2),
+  y: Math.round(geo[1] + geo[3] / 2),
+})
 await sleep(700)
 const neutralTarget = JSON.parse(await ev('JSON.stringify(window.__dshLive2dPet.gazeTarget())'))
 const neutralMouth = await mouthParams()
-check('the mouth is shut with the pointer on the stage centre',
-  Math.abs(neutralTarget.y) < 0.01 && neutralMouth.open < 0.02 && Math.abs(neutralMouth.form) < 0.02,
+check('the mouth is shut with the pointer on her centre',
+  Math.abs(neutralTarget.x) < 0.01 && Math.abs(neutralTarget.y) < 0.01
+  && neutralMouth.open < 0.02 && Math.abs(neutralMouth.form) < 0.02,
   'target ' + JSON.stringify(neutralTarget) + ' ' + JSON.stringify(neutralMouth))
-await mouthAt(0.5, 0.5)
+await mouthAtPx(0, 0)
 
 // --- the pet must BLINK -----------------------------------------------------
 // The engine gates its blink behind "no motion drove parameters this frame",
@@ -241,17 +314,24 @@ check('the eyes open again after blinking', opened)
 // and a CDP round trip is easily 100ms+, so polling missed most of them and
 // reported "never blinks" for a pet that blinks perfectly well.
 const before = await ev('window.__dshLive2dPet.blinkCount()')
-await sleep(13000)
+// 13 秒的**覆盖率**是这个契约的一部分（"每 2.2-6.4 秒一次，12 秒窗口里得有几次"），
+// 所以窗口不能缩短；但**不必睡满**：眨眼计数是客户端自己数的，轮询它就够 ——
+// 第一次眨眼（平均 2-3 秒）就能满足 `>= 1`。超时才用满 13 秒。
+const blinked = await waitFor(
+  async () => (await ev('window.__dshLive2dPet.blinkCount()')) > before,
+  { timeoutMs: 13000, label: '自己眨眼', onTimeout: () => '13 秒内一次都没眨' },
+)
 const after = await ev('window.__dshLive2dPet.blinkCount()')
-check('the pet blinks on its own', after - before >= 1, (after - before) + ' blinks in 13s')
+check('the pet blinks on its own', blinked && after - before >= 1, (after - before) + ' blinks in 13s')
 // --- 指针「不在场」时必须回正 ---------------------------------------------
 // 鼠标移出窗口后 pointermove 不再发来，宠物会僵在最后一个注视方向上。页面拿不到
 // 窗口外的指针位置（要原生钩子），所以做的是回正：离开窗口 / 失焦 / 切标签页。
-await gazeAt(1.0, 0.5)
+await gazeAt(fractionAt(probeRadius), 0.5)
 const beforeLeave = JSON.parse(await ev('JSON.stringify(window.__dshLive2dPet.gazeTarget())'))
 check('先把视线拉到一边（准备验回正）', Math.abs(beforeLeave.x) > 0.5, JSON.stringify(beforeLeave))
 await ev('document.documentElement.dispatchEvent(new MouseEvent("mouseleave", { bubbles: false }))')
-await sleep(900)
+// 回正是个缓动，轮询`data-gaze` 比猜一个毫秒数快得多（而且负载高时不会读到半途的值）。
+await waitFor(async () => (await gaze()) === 'center', { timeoutMs: 3000, label: '视线回正' })
 const afterLeave = JSON.parse(await ev('JSON.stringify(window.__dshLive2dPet.gazeTarget())'))
 check('鼠标离开窗口后视线回正',
   Math.abs(afterLeave.x) < 0.02 && Math.abs(afterLeave.y) < 0.02
@@ -262,7 +342,7 @@ const mouthAfterLeave = await mouthParams()
 check('嘴也跟着回到中位', mouthAfterLeave.open < 0.05 && Math.abs(mouthAfterLeave.form) < 0.05,
   JSON.stringify(mouthAfterLeave))
 // 再动一下就恢复跟随。
-await gazeAt(0.75, 0.5)
+await gazeAt(fractionAt(probeRadius * 0.5), 0.5)
 check('指针回来后重新跟随', (await gaze()) === 'pointer', 'data-gaze=' + await gaze())
 
 // --- 设置页：改「注视死区」必须立刻改变手感，并记进 localStorage ---------------
@@ -1184,6 +1264,6 @@ await sleep(300)
 const bad = results.filter((r) => !r.ok)
 console.log((bad.length === 0 ? 'OK' : 'FAILED') + '  ' + (results.length - bad.length) + '/' + results.length + ' checks passed')
 ws.close()
-edge.kill()
+killBrowser(edge)
 await sleep(300)
 process.exit(bad.length === 0 ? 0 : 1)

@@ -1,8 +1,9 @@
 import { spawn } from 'node:child_process'
 import { rmSync } from 'node:fs'
 import { browserPath, PROFILES, BASE } from './paths.mjs'
-import { waitReady } from './ready.mjs'
+import { waitReady, killBrowser } from './ready.mjs'
 import { join } from 'node:path'
+import { waitForBoot } from './wait-for.mjs'
 const EDGE = browserPath()
 const PORT = 9451
 const PROFILE = join(PROFILES, '_cdp-handoff2')
@@ -27,7 +28,7 @@ const snap = () => ev('JSON.stringify({ phase: document.querySelector("[data-dsh
 await fetch(BASE + '/__nudge?phase=idle')
 await send('Runtime.enable'); await send('Page.enable')
 await send('Page.navigate', { url: BASE + '/' })
-for (let i = 0; i < 240; i++) { await sleep(400); if (await ev('document.title') === 'done') break }
+await waitForBoot(ev)
 await waitReady(ev)
 const steps = []
 const step = async (at) => { steps.push({ at, s: JSON.parse(await snap()) }) }
@@ -43,4 +44,4 @@ await sleep(1500); await step('nudge tool +2s')
 await fetch(BASE + '/__nudge?phase=idle')
 await sleep(1500); await step('nudge idle')
 console.log(JSON.stringify({ steps }, null, 1))
-ws.close(); edge.kill(); process.exit(0)
+ws.close(); killBrowser(edge); process.exit(0)

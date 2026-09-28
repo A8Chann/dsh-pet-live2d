@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>动作试验台（原始模型 + 原始动作）</title>
+<style>html, body { margin: 0; background: #fff; } canvas { display: block; }</style>
+</head>
+<body>
+<canvas id="stage" width="512" height="512"></canvas>
+<script src="/core/live2dcubismcore.min.js"></script>
+<script>
+// **动作试验台**：加载原始模型 + 原始 motion3，**自己解析曲线、自己推进时间、逐帧写参数**。
+//
+// 为什么（用户的要求）：「你得用无头浏览器起原始 live2d 测试动画，你不能直接改 pet 来测试动画，
+// 因为 pet 会被会话动作覆盖动画！」
+// 这里没有宠物插件的任何一层：没有会话相位、没有槽位定格、没有"保姿势"录像、没有 forceParams，
+// 也没有 Framework（Core 只提供 `parameters/parts/drawables/canvasinfo` + `update()/draw()`）。
+//
+// 注意两件事（都是实测踩出来的）：
+//   * **原始 model3.json 没有声明动作**（`FileReferences.Motions` 是空的），
+//     所以文件映射写在这里 —— 组名取自我们仓库那份 model3，文件对应原始目录里那份；
+//   * Core 的参数表是 `model.parameters.{ids,values,minimumValues,maximumValues,defaultValues}`。
+window.__lab = { ready: false, error: null };
+
+(function () {
+  const lab = window.__lab;
+
+  /** 组名 → 动作文件（原始目录里是中文名）。 */
+  const MOTION_FILES = {
+    Idle: 'idle.motion3.json',
+    Hammer: 'hammer.motion3.json',
+    BubbleGum: 'chuipaopao.motion3.json',
+    SprayWater: '喷水.motion3.json',
+    OpenCase: '开盖.motion3.json',
+    Selfie: '自拍.motion3.json',
+    SelfieQuick: '自拍简单.motion3.json',
+    Ketchup: '番茄酱.motion3.json',
+  };
+
+  /** 解析 motion3 的 Segments → [{t, v}, …]（按官方规范：段类型 + 段数据 交错）。 */
+  function parseCurve(curve) {
+    const seg = curve.Segments ?? [];
+    const points = [];
+    let i = 0;
+    while (i < seg.length) {
+      const type = seg[i];
+      if (type === 0) {
+        const count = seg[i + 1];
+        let at = i + 2;
+        for (let k = 0; k < count; k += 1) { points.push({ t: seg[at], v: seg[at + 1] }); at += 2; }
+        i = at;
+      } else if (type === 1 || type === 3) {
+        points.push({ t: seg[i + 1], v: seg[i + 2] });
+        i += 7;
+      } else if (type === 2) {
+        points.push({ t: seg[i + 1], v: seg[i + 2] });
+        i += 3;
+      } else {
+        i += 1;
+      }
+    }
+    return points;
+  }
+
+  function sampleAt(points, t) {
+    if (points.length === 0) return null;
+    if (t <= points[0].t) return points[0].v;
+    for (let i = 1; i < points.length; i += 1) {
+      if (points[i].t >= t) {
+        const a = points[i - 1];
+        const b = points[i];
+        if (b.t === a.t) return b.v;
+        return a.v + ((b.v - a.v) * (t - a.t)) / (b.t - a.t);
+      }
+    }
+    return points[points.length - 1].v;
+  }
+
+  lab.groups = () => Object.keys(lab._curves ?? {});
+  lab.curveIds = (group) => (lab._curves?.[group]?.[0] ?? []).map((c) => c.id);
+  lab.durationOf = (group) => {
+    let max = 0;
+    for (const curve of lab._curves?.[group]?.[0] ?? []) {
+      for (const point of curve.points) if (point.t > max) max = point.t;
+    }
+    return max;
+  };
+
+  /**
+   * 走一帧。
+   *
+   * ⚠️ **Core 只有 `update()`，没有 `saveParameters()` / `loadParameters()`** ——
+   * 那两个是 Cubism **Framework** 的方法（我们插件用的那层）。所以这里只调 `update()`，
+   * 它按参数表当前值重算几何。
+   */
+  function frame() {
+    lab.model.update();
+  }
+
+  /** 清空所有参数（回默认值）。 */
+  lab.stop = function () {
+    const model = lab.model;
+    if (!model) return 'no-model';
+    model.parameters.values.set(model.parameters.defaultValues);
+    frame();
+    lab._last = null;
+    return 'ok';
+  };
+
+  /** 把某个动作推进到 `seconds`（写曲线值 → 走一帧）。 */
+  lab.seek = function (group, seconds, index) {
+    const model = lab.model;
+    if (!model) return 'no-model';
+    const curves = lab._curves?.[group]?.[index ?? 0];
+    if (curves === undefined) return 'no-curves';
+    const ids = lab._idIndex ?? (lab._idIndex = new Map(Array.from(model.parameters.ids).map((id, at) => [String(id), at])));
+    const values = model.parameters.values;
+    for (const curve of curves) {
+      const at = ids.get(curve.id);
+      if (at === undefined) continue;
+      const value = sampleAt(curve.points, seconds);
+      if (value !== null) values[at] = value;
+    }
+    frame();
+    lab._last = { group: group, seconds: seconds };
+    return 'ok';
+  };
+
+  /** 手动写几个参数（用于"某个参数驱动哪块几何"的对照实验）。 */
+  lab.setParams = function (map) {
+    const model = lab.model;
+    if (!model) return 'no-model';
+    const ids = lab._idIndex ?? (lab._idIndex = new Map(Array.from(model.parameters.ids).map((id, at) => [String(id), at])));
+    for (const [id, value] of Object.entries(map ?? {})) {
+      const at = ids.get(id);
+      if (at === undefined) continue;
+      model.parameters.values[at] = value;
+    }
+    frame();
+    return 'ok';
+  };
+
+  lab.params = function () {
+    const model = lab.model;
+    if (!model) return {};
+    const ids = Array.from(model.parameters.ids).map(String);
+    const values = Array.from(model.parameters.values);
+    const out = {};
+    for (let i = 0; i < ids.length; i += 1) out[ids[i]] = values[i];
+    return out;
+  };
+  lab.paramRange = function (id) {
+    const model = lab.model;
+    if (!model) return null;
+    const at = Array.from(model.parameters.ids).map(String).indexOf(id);
+    if (at < 0) return null;
+    return {
+      min: model.parameters.minimumValues[at],
+      max: model.parameters.maximumValues[at],
+      default: model.parameters.defaultValues[at],
+    };
+  };
+
+  /** 每块 drawable 的几何盒（引擎算完的，模型空间，y 向上）。 */
+  lab.drawables = function () {
+    const model = lab.model;
+    if (!model) return [];
+    const ids = Array.from(model.drawables.ids).map(String);
+    const positions = model.drawables.vertexPositions;
+    const opacities = model.drawables.opacities;
+    const out = [];
+    for (let i = 0; i < ids.length; i += 1) {
+      const verts = positions[i];
+      if (verts === undefined || verts.length < 2) continue;
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      for (let k = 0; k + 1 < verts.length; k += 2) {
+        if (verts[k] < minX) minX = verts[k];
+        if (verts[k] > maxX) maxX = verts[k];
+        if (verts[k + 1] < minY) minY = verts[k + 1];
+        if (verts[k + 1] > maxY) maxY = verts[k + 1];
+      }
+      out.push({ id: ids[i], index: i, opacity: opacities ? opacities[i] : null, box: { minX: minX, maxX: maxX, minY: minY, maxY: maxY } });
+    }
+    return out;
+  };
+
+  (async function () {
+    try {
+      const modelJson = await (await fetch('/model/c_0120.model3.json')).json();
+      lab.motions = MOTION_FILES;
+      lab._curves = {};
+      for (const [group, file] of Object.entries(MOTION_FILES)) {
+        const response = await fetch('/model/motions/' + encodeURIComponent(file));
+        if (!response.ok) { lab._curves[group] = [[]]; continue; }
+        const motion = await response.json();
+        lab._curves[group] = [(motion.Curves ?? []).map((curve) => ({ id: String(curve.Id), points: parseCurve(curve) }))];
+      }
+      const moc = await Live2DCubismCore.Moc.fromArrayBuffer(
+        await (await fetch('/model/' + modelJson.FileReferences.Moc)).arrayBuffer(),
+      );
+      const model = Live2DCubismCore.Model.fromMoc(moc);
+      lab.model = model;
+      model.update();   // Core 只有 update()
+      lab.textures = modelJson.FileReferences.Textures ?? [];
+      lab.ready = true;
+    } catch (error) {
+      lab.error = String(error && error.stack ? error.stack : error);
+    }
+  })();
+})();
+</script>
+</body>
+</html>

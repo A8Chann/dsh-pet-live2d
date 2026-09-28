@@ -1,8 +1,9 @@
 import { spawn } from 'node:child_process'
 import { rmSync } from 'node:fs'
 import { browserPath, PROFILES, BASE } from './paths.mjs'
-import { waitReady } from './ready.mjs'
+import { waitReady, killBrowser } from './ready.mjs'
 import { join } from 'node:path'
+import { waitForBoot } from './wait-for.mjs'
 const EDGE = browserPath()
 const PORT = Number(process.argv[3] ?? 9411)
 const DPR = Number(process.argv[2] ?? 1)
@@ -31,7 +32,7 @@ for (const size of [160, 300, 500, 760]) {
   await sleep(300)
   await ev('window.localStorage.setItem("dsh-live2d-pet.state.v1", ' + JSON.stringify(JSON.stringify({ size, right: 24, bottom: 0 })) + ')')
   await send('Page.navigate', { url: BASE + '/' })
-  for (let i = 0; i < 240; i++) { await sleep(400); if (await ev('document.title') === 'done') break }
+  await waitForBoot(ev)
   await waitReady(ev)
   const g = JSON.parse(await ev('JSON.stringify((()=>{const c=document.querySelector("[data-dsh-live2d-pet] canvas");const r=document.querySelector("[data-dsh-live2d-pet]").getBoundingClientRect();return {backing:[c.width,c.height],css:[Math.round(r.width),Math.round(r.height)],dpr:window.devicePixelRatio}})())'))
   const expected = Math.round(size * Math.min(3, Math.max(2, g.dpr)))
@@ -39,4 +40,4 @@ for (const size of [160, 300, 500, 760]) {
 }
 out.allMinimumMet = out.cases.every((c) => c.minimumMet)
 console.log(JSON.stringify(out, null, 1))
-ws.close(); edge.kill(); process.exit(0)
+ws.close(); killBrowser(edge); process.exit(0)

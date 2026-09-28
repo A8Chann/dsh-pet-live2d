@@ -10,6 +10,37 @@ whenToUse: >
 
 **这条是踩了最多次的坑，优先级最高。**
 
+## 量单个动作/参数的行为，要去**干净试验台**，别在跑着的宠物上量
+
+用户的原话：「**你得用无头浏览器起原始 live2d 测试动画，你不能直接改 pet 来测试动画，
+因为 pet 会被会话动作覆盖动画**」。这一条我付出了很大代价才学会 —— 在宠物身上量到的读数
+被这些层污染，而且每一层都能单独让结论反过来：
+
+| 污染源 | 造成的假象 |
+|---|---|
+| 会话相位（`phase`） | 动作被顶掉，`currentGroup` 一直是 Idle |
+| 槽位定格 + **保姿势录像回放** | 参数被每帧写回旧值，曲线看着"跑了但画面不动" |
+| 我加的 `forceParams` / `pin` | 参数被钉住，连手机都打不开（拿它当产品功能是错的） |
+| 面板没关 | 量到的是面板像素，不是她 |
+
+**试验台**：`tools/motion-lab/index.html`（服务 + 无头 Edge，`tools/lab.mjs` 驱动）。
+它只加载原始 `.moc3` + 原始 `motion3.json`，**自己解析曲线、自己推进时间**，
+没有任何插件层。API：`stop()` / `seek(group, seconds)` / `setParams({id: v})` /
+`params()` / `paramRange(id)` / `drawables()`。
+
+写它时踩到的三件事（都记在这里免得再犯）：
+
+1. **原始 `model3.json` 没有声明任何动作**（`FileReferences.Motions` 是空的）——
+   文件映射要写死在试验台里（组名取自仓库那份 model3，文件对应原始目录里的中文名）。
+2. **Core 只有 `update()`**，没有 `saveParameters()` / `loadParameters()`（那是 Framework 的）。
+   直接写参数 + `update()` 就能重算几何 —— 先用一个"必然改变画面"的参数自检
+   （`ParamAngleZ = 30` 会让顶点校验和跳 275），确认机制通了再去量别的。
+3. **量程必须先读**（`paramRange`）：`phone4` 是 -10…10，拿 0→1 去试只走 5% 量程，
+   量到"什么都没动"。
+
+判"某参数驱动哪块几何"要用**顶点坐标/块级位移**，不要用"全模型顶点校验和" ——
+`phone5` 只动 5 块小几何，校验和只差 0.04，看起来像"没动"。
+
 给一只**一直在呼吸眨眼**的宠物做视觉验证时，下面两种方法都是无效的：
 
 | 方法 | 表面结果 | 为什么无效 |
@@ -31,6 +62,40 @@ core.update = () => {
 ```
 
 确定性、不受动画相位影响。所有"某效果是否真的生效"的断言都应该落到这里。
+
+## 瞬时效果必须**帧内逐帧**采样，外面读只能量到 0
+
+"这一条也是踩了多次的"：`drawn(id)` 给的是**上一帧 update() 那一刻**的值，而**从外面**
+（CDP，每几十毫秒一次）读，采到的是一堆离散点。`phone2`（抬手臂）的峰值 **0.545 只存在
+4ms** —— 外面每 60ms 读一次，量到的全是 0，于是得出了"参数根本没动"的错误结论，白查两轮。
+
+做法：把采样器**装进页面**，用 `requestAnimationFrame` 收每一帧：
+
+```js
+// 经 CDP 求值；注意用 awaitPromise，且**不要**在外面套 JSON.stringify（见下）
+return new Promise(function (resolve) {
+  const peak = {}, low = {};
+  const started = performance.now();
+  function tick() {
+    for (const id of list) { const v = api.drawn(id); /* 记 peak / low */ }
+    if (performance.now() - started < ms) requestAnimationFrame(tick);
+    else resolve({ peak, low });
+  }
+  requestAnimationFrame(tick);
+});
+```
+
+顺带三条"工具自己骗人"的坑（都是这一轮踩的）：
+
+| 症状 | 原因 |
+|---|---|
+| 拿到 `undefined` / `{}` | `awaitPromise: true` 要的是**表达式本身**求值成 promise；外面套一层 `JSON.stringify(...)` 会立刻返回 `{}` |
+| 页面里抛异常却只看得到 `undefined` | 只取 `message.result.result.value`；要同时读 `exceptionDetails` |
+| 断言"12 秒后还是抬起"却红了 | 会话相位在那之前接管（`kind` 变 `phase`）是**合法覆盖**；判据要限定"她自己演的那一段" |
+
+**判据要由"对象自己声明的清单"决定**，不要挑一个参数名盯死：量"自拍有没有举手"时，判据取
+各动作 `motion3.json` 的 `Curves`（动作自己说它写哪些参数），而不是猜 `phone` ——
+`phone` 是"手机在不在手里"，抬手臂的是 `phone2`，两回事。
 
 ## 断言"点得到"要断三层，只断一层必漏
 

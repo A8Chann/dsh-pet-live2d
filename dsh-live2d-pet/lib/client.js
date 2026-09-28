@@ -37,6 +37,124 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   const MIN_SIZE = 160;
   const MAX_SIZE = 760;
   const DEFAULT_SIZE = 300;
+  /** 显示层轮询间隔：桌面端接管/让位要在一秒内被看见。 */
+  const LAYER_POLL_MS = 1000;
+
+  /**
+   * 桌面端注册进来的"跟随处理器"。
+   *
+   * 为什么需要这条通道：`pointermove` 只在指针**落在窗口内**时才由浏览器送来 —— 用户在
+   * 别的程序里动鼠标时，落点不在我们这个窗口上，页面**一个事件都收不到**（全屏透明层也
+   * 帮不上忙：事件不是被挡住，而是压根没发生在这个窗口上）。
+   *
+   * 而壳本来就在**每 33ms 读一次全局光标**（穿透判定必须知道指针在哪，见它的 hover 循环），
+   * 所以把那个坐标顺手喂进来就够了 —— 不需要新的轮询，也不需要原生鼠标钩子。
+   */
+  const externalPointer = { handler: null, lastX: null, lastY: null };
+
+  /**
+   * 壳调用的入口：`window.__petPointer(x, y)`（`clientX/clientY`，逻辑像素）。
+   *
+   * 位置没变就什么都不做 —— 壳 33ms 喂一次，光标的静止不该被当成"一直在动"。
+   */
+  function applyExternalPointer(clientX, clientY) {
+    if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return;
+    if (externalPointer.handler === null) return;
+    if (externalPointer.lastX === clientX && externalPointer.lastY === clientY) return;
+    externalPointer.lastX = clientX;
+    externalPointer.lastY = clientY;
+    externalPointer.handler(clientX, clientY);
+  }
+  if (typeof window !== "undefined") window.__petPointer = applyExternalPointer;
+
+  /**
+   * 这一份客户端跑在**哪里**。
+   *
+   * 桌面壳（`sidecar/page/runtime.js`）会建 `window.__petDesktop`，DSH 页面里没有。
+   * 让位判据必须知道这件事 —— 否则"owner === desktop"会被两边同时当成"该我显示"或
+   * "该我让位"（实测踩过：桌面端那只把自己藏了，用户看到"桌面上什么都没有"）。
+   */
+  const isDesktopShell = typeof window.__petDesktop === "object" && window.__petDesktop !== null;
+
+  /**
+   * 跟随范围的诊断快照（最近一次 pointermove 的中间量）。
+   *
+   * 挂在模块级而不是组件 ref 上：它要能被**页面外的驱动**读到（经 `__dshLive2dPet.gazeTrace()`），
+   * 而"跟随范围"这类问题最难的地方就是"看着像没反应"——量出判据与参数才有得查。
+   */
+  const gazeTrace = { current: null };
+
+  /**
+   * 显示层状态的**模块级 store**。
+   *
+   * 为什么不能放在 `Pet` 组件的 ref 里：设置页那一节（`PetSettingsBody`）渲染在**宠物组件
+   * 之外**（它挂在 DSH 设置页上），读组件内的 ref 会直接 `ReferenceError: layerRef is not
+   * defined` —— 整节设置打不开。这个坑真的踩过，而且是"宠物看着正常、只有设置页崩"的形态。
+   *
+   * 现在两个渲染者都从这里读：`Pet` 负责轮询（它本来就常驻），设置页只读 + 订阅。
+   */
+  const LAYER_INITIAL = { mode: "auto", owner: "inline", desktopRunning: false, binary: null, download: null, at: 0 };
+  const layerStore = { value: LAYER_INITIAL, listeners: new Set() };
+  const setLayerState = (next) => {
+    const merged = Object.assign({}, layerStore.value, next);
+    if (merged.mode === layerStore.value.mode
+      && merged.owner === layerStore.value.owner
+      && merged.desktopRunning === layerStore.value.desktopRunning
+      && merged.binary === layerStore.value.binary
+      && merged.download === layerStore.value.download) return;
+    layerStore.value = merged;
+    for (const listener of layerStore.listeners) {
+      try { listener(merged); } catch { /* 一个订阅者坏了不该拖垮别的 */ }
+    }
+  };
+  /** 订阅显示层状态（返回当前值）。 */
+  function useLayerState() {
+    const [value, setValue] = useState(layerStore.value);
+    useEffect(() => {
+      const listener = (next) => setValue(next);
+      layerStore.listeners.add(listener);
+      // 订阅之前可能已经变了：补一次当前值。
+      listener(layerStore.value);
+      return () => { layerStore.listeners.delete(listener); };
+    }, []);
+    return value;
+  }
+
+  /**
+   * **谁在轮询**：一个模块级单例，**不跟着任何组件走**。
+   *
+   * 原来轮询写在 `Pet` 的 effect 里 —— 那有个要命的缺口：**用户在设置里选了"桌面"之后，
+   * 页面里那只会让位（`visibility: hidden`），而设置页那一行要显示的正是"桌面端在跑"**。
+   * 可设置页只订阅、不轮询，所以它等到的是"页面那只还活着时的最后一次结果"，文本就停在
+   * "二进制不在"不动；只有重新打开设置页（重新挂载、读到 store 的当前值）才对。
+   *
+   * 换句话说：这个功能的观测者不能是它要观测的那个东西。轮询挪到模块级，页面里那只在不在
+   * 都照轮（它本来就是每秒一次 GET，代价可以忽略）。
+   */
+  let layerPollStarted = false;
+  let layerPollTimer = 0;
+  function ensureLayerPolling() {
+    if (layerPollStarted) return;
+    layerPollStarted = true;
+    const poll = async () => {
+      try {
+        const response = await fetch(API + "/layer", { cache: "no-store" });
+        const payload = await response.json();
+        setLayerState({
+          mode: typeof payload?.mode === "string" ? payload.mode : "auto",
+          owner: payload?.owner === "desktop" ? "desktop" : "inline",
+          desktopRunning: payload?.desktopRunning === true,
+          binary: payload?.binary ?? null,
+          download: payload?.download ?? null,
+          at: Date.now(),
+        });
+      } catch {
+        /* DSH 那边的路由还没挂上、或页面刚起来：下一轮再问 */
+      }
+      layerPollTimer = window.setTimeout(poll, LAYER_POLL_MS);
+    };
+    poll();
+  }
 
   // -------------------------------------------------- motion controller
   //
@@ -175,6 +293,17 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
      * different from the idle loop.
      */
     let settled = false;
+    /**
+     * **反应跑完之后要回到哪个动作**（`{group, index, options}`，`null` = 回待机）。
+     *
+     * 由来：摸头 / 摸尾巴是一段"临时表演"，但它结束时 `finishAction` 会 `playIdle()` ——
+     * 于是用户刚选好的槽位动作（掏出手机 / 吹泡泡糖）**被整个还原**掉了
+     * （用户报的"摸头和摸尾巴不要还原当前动作啊"）。
+     *
+     * 这里记住"开演之前她在演什么"，反应一结束就把它接回去。接的时候用的是**同一个选项**
+     * （`persist`/`hold` 原样带过去），所以举着的手还是举着、泡还是那个泡。
+     */
+    let resumeAfterAction = null;
     /** Downsampled opacity grid of the rendered character (null = unknown). */
     let hitMask = null;
     /** The stage-local box the grid spans (the model's bounding box). */
@@ -920,13 +1049,31 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
      * 把"别的槽位还选着的动作"的姿势写回去 —— 右手拿着手机的同时嘴部吹泡泡糖。
      *
      * 写在 applyRelease **之后**（否则会被还原表顶掉），表达式层之前（表情仍然最大）。
+     *
+     * ⚠️ **动作驱动的参数不能被保姿势录像压住**（这一条修的是用户报的"装扮里的自拍右手不抬"）：
+     * 自拍（`Selfie`）驱动 `phone5`（抬手；干净试验台实测：推 `phone5` 会让
+     * `看手机/ArtMesh26` 那块几何变形），但「掏出手机」定格时录下的那一帧里 `phone5=0`，
+     * 于是这一层每帧把它写回 0 —— 写在动作更新之后，**曲线被压住**。干净环境实测：
+     * 自拍里 `phone5` 涨到 9.713，而手那块几何一动不动（盒完全相同）。
+     *
+     * 判据**由宠物声明**（`motionOptions.<组>.ignoreKeptParams`），不在这里猜：
+     * 我试过"`currentEntry.params` 里有的就跳过"，那是**宿主按曲线生成的清单**，
+     * 可能含动作文件根本没写的参数（实测 `OpenCase` 的清单含 `phone5`，曲线却不写它）——
+     * 结果把相位/别的槽位那套保姿势一起打断了（`cdp-head`「no single hand option
+     * dominates」、`cdp-host-events`「tool phase sustains」当场红，A/B 撤回那一处即全绿）。
+     * 声明式的名单面窄、看得见、改 pet.json 就能调，不会误伤别的路径。
      */
     const applyKeptPoses = (core, values) => {
       if (keptPoses.length === 0 || values === null) return;
+      const skip = currentEntry === null
+        ? null
+        : optionsFor(currentEntry.group)?.ignoreKeptParams ?? null;
+      const skipSet = Array.isArray(skip) ? new Set(skip) : null;
       for (const group of keptPoses) {
         const frame = poseSnapshots.get(group);
         if (frame === undefined) continue;
         for (const id of Object.keys(frame)) {
+          if (skipSet !== null && skipSet.has(id)) continue;
           const at = parameterIndex(core, id);
           if (at >= 0) values[at] = frame[id];
         }
@@ -1497,6 +1644,14 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         }, ACTION_HOLD_MAX_MS);
         return;
       }
+      // **把开演之前的动作接回去**（摸头/摸尾巴是一段临时表演，不该把用户的槽位动作还原）。
+      // 检查顺序放在最后：`hold` 那条分支自己会 park（槽位动作在演），不需要接。
+      if (resumeAfterAction !== null) {
+        const resume = resumeAfterAction;
+        resumeAfterAction = null;
+        // 相位在这期间接管了就不接：相位优先，接了会跟它抢身体。
+        if (sustainPhase === null && playOnce(resume.group, resume.index, resume.options)) return;
+      }
       playIdle();
     };
 
@@ -1865,9 +2020,36 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
        * Passing the normalized offset straight to the focus controller keeps the
        * magnitude, so the gaze is proportional to how far the pointer actually is.
        */
-      updatePointer(x, y, width, height) {
+      /**
+       * 把"指针相对她中心的偏移"翻成注视方向。
+       *
+       * 接口是**偏移量**（`dx/dy` 相对她中心）加**满偏半径**（`rangePx`），不是"指针坐标 +
+       * 一个假盒子"。早先的写法是 `(x, y, width, height)`、内部拿 `width/2` 当中心，
+       * 而调用方给的是**视口坐标** —— 两个坐标系混在一句话里，结果 `nx` 恒为满偏（实测：
+       * 她中心 2386 配 width 640，`(2386-320)/320` 直接夹到 1）。实参读口一打出来就露了。
+       *
+       * 现在偏移归偏移、半径归半径，`rangePx` 就是"离她多远算看到最边上"。桌面端与网页端
+       * 共用这一条，差别只在调用方给的半径。
+       */
+      /**
+       * 把"指针相对她中心的偏移"翻成注视方向。
+       *
+       * 接口是**偏移量**（`dx/dy` 相对她中心）加**满偏半径**（`rangePx`），不是"指针坐标 +
+       * 一个假盒子"。早先的写法是 `(x, y, width, height)`、内部拿 `width/2` 当中心，
+       * 而调用方给的是**视口坐标** —— 两个坐标系混在一句话里，结果 `nx` 恒为满偏（实测：
+       * 她中心 2386 配 width 640，`(2386-320)/320` 直接夹到 1）。实参读口一打出来就露了。
+       *
+       * **偏转强度用圆形范数**：两根轴同一个半径，合成长度压到 1 以内 —— 等距线是正圆。
+       * （试过椭圆：竖直方向更宽容，但用户明确要正圆，而且"远近"本来就该由**一个**半径
+       * 决定，多一个竖直半径只是多一个要调的旋钮。）
+       */
+      updatePointer(dx, dy, rangePx) {
         if (model === null) return;
-        const half = { x: Math.max(1, width / 2), y: Math.max(1, height / 2) };
+        const range = Math.max(40, Number.isFinite(rangePx) ? rangePx : 320);
+        // 诊断：把**进函数的实参**记下来（算错与传错是两回事，只看结果分不出来）。
+        gazeTrace.current = Object.assign(gazeTrace.current ?? {}, {
+          callIn: { dx: Math.round(dx), dy: Math.round(dy), range: Math.round(range) },
+        });
         const shape = (value) => {
           // A small dead zone, so hand tremor near the centre does not make the
           // eyes wander, and a linear ramp beyond it up to full deflection.
@@ -1876,9 +2058,13 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           const t = Math.min(1, (size - TUNING.gazeDeadzone) / (1 - TUNING.gazeDeadzone));
           return value < 0 ? -t : t;
         };
-        const nx = shape((x - half.x) / half.x);
-        // Screen y grows downward; the controller wants up-positive.
-        const ny = shape((y - half.y) / half.y);
+        const shapedX = shape(dx / range);
+        const shapedY = shape(dy / range);
+        // 圆形范数：按"到她的距离"压合成长度，方向保留 —— 等距线是正圆。
+        const norm = Math.hypot(shapedX, shapedY);
+        const scale = norm > 1 ? 1 / norm : 1;
+        const nx = shapedX * scale;
+        const ny = shapedY * scale;
         gazeTarget = { x: nx, y: ny };
         // How far the pointer is, on the SAME normalized scale the gaze uses, so
         // the mouth and the eyes agree about how far away it is.
@@ -1923,6 +2109,10 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       }),
       /** Diagnostic: the normalized gaze target the pointer last produced. */
       gazeTarget: () => gazeTarget,
+      /** Diagnostic: 最近一次 pointermove 的跟随判据（舞台尺寸 / 满偏半径 / 是否算"在看"）。 */
+      gazeTrace: () => gazeTrace.current,
+      /** Diagnostic: 当前生效的可调项快照（排查"改了没生效"时先看它）。 */
+      tuning: () => Object.assign({}, TUNING),
       /**
        * 别的槽位还选着动作时，替它们保住姿势（见 keptPoses 的注释）。
        *
@@ -1936,6 +2126,27 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       },
       /** Diagnostic: 正在替哪些动作保姿势。 */
       keptPoseDebug: () => ({ kept: keptPoses.slice(), snapshots: Array.from(poseSnapshots.keys()) }),
+      /**
+       * **诊断专用**：把某几个参数每帧强制写成给定值（传 `null` 清除）。
+       *
+       * 用途：量"某个参数到底驱动画面上哪一块几何" —— 把它推满量程，看哪几块 drawable
+       * 在动。**不要用它当产品功能**：我上一轮拿它（和 `pin`）去"修"动作，把手机盖钉死、
+       * 手机都打不开了（用户报的）。它只该出现在探针里。
+       */
+      forceParams: (map) => {
+        forcedParams = map === null || map === undefined ? null : Object.assign({}, map);
+      },
+      /**
+       * 让下一段临时表演**跑完接回**这里给的动作（`null` = 不接，回待机）。
+       *
+       * 用途：摸头 / 摸尾巴只是一段反应，不该把用户选好的槽位动作还原掉
+       * （用户报的"摸头和摸尾巴不要还原当前动作"）。
+       */
+      resumeAfter: (plan) => {
+        resumeAfterAction = plan === null || plan === undefined ? null : plan;
+      },
+      /** Diagnostic: 现在记着要接回哪个动作。 */
+      resumeDebug: () => resumeAfterAction,
       setExpressionApplier(fn) {
         applyExpression = typeof fn === "function" ? fn : null;
       },
@@ -2091,6 +2302,104 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
        * 会被判成"没落在她身上"，事件落空。并把集盒之后，尾巴摆到哪儿都算她。
        */
       tailBoxNow: () => measureTailBox(),
+      /**
+       * 尾巴这一层要画的形状：**按轮廓那套栅格重采一遍**（舞台局部像素矩形），读不到返回 null。
+       *
+       * 为什么不是"包围盒 / 凸包 / 逐块矩形"（三种都试过）：那些都是**几何并集**，而
+       * `hitsMask` 用的静态轮廓是**栅格**（还是"一格膨胀"的保守版）。两套几何不一致，
+       * 差集就成了"能摸到、判定却不算她"的空白区 —— 实测 14 格（网格 20×20），
+       * 而**把这一层关掉，那 14 格直接变 0**。用户看到的就是"右下角明明什么都没有却能摸"。
+       *
+       * 所以这里从**模型空间的三角面**重采一份与静态轮廓同规格的栅格：
+       *   * 落在同一个模型包络盒里（归一化方式和 `hitsMaskGrid` 完全一致）；
+       *   * 格子边长与静态轮廓同量级，于是两边的贴合程度一样；
+       *   * 输出的是矩形列表，由调用方拼成 `M x y h w v h h-w Z`（和 `maskPath()` 同形）。
+       */
+      tailRectNow: () => {
+        const list = tailIndicesNow();
+        const im = model?.internalModel;
+        if (list.length === 0 || im === null || im === undefined) return null;
+        // 目标格数：静态轮廓是 26×26 那一档；这里按包络盒的长边取 30，格子约 10px。
+        const bounds = model?.getBounds?.();
+        const envelope = bounds ?? hitBox;
+        if (envelope === undefined || envelope === null) return null;
+        const width = envelope.width;
+        const height = envelope.height;
+        if (!(width > 0) || !(height > 0)) return null;
+        const cells = 30;
+        const stepX = width / cells;
+        const stepY = height / cells;
+        const cols = Math.max(1, Math.round(width / stepX));
+        const rows = Math.max(1, Math.round(height / stepY));
+        const solid = new Uint8Array(cols * rows);
+        const toStage = (x, y) => modelToStage(x, y);
+        for (const entry of list) {
+          let index = entry.index;
+          if (typeof entry.id === "string" && typeof im.getDrawableIndex === "function") {
+            const fresh = im.getDrawableIndex(entry.id);
+            if (fresh >= 0) index = fresh;
+          }
+          let verts;
+          try {
+            verts = im.getDrawableVertices(index);
+          } catch {
+            continue;
+          }
+          if (verts === undefined || verts === null || verts.length < 6) continue;
+          // 逐三角面打点：每个格心落在某个三角形里就算实心。隐藏配件会"缩放成一点"，
+          // 退化三角形由 `pointInTriangle` 直接排掉（它按面积判）。
+          const count = Math.floor(verts.length / 2);
+          for (let t = 0; t + 2 < count; t += 3) {
+            let minX = Infinity;
+            let minY = Infinity;
+            let maxX = -Infinity;
+            let maxY = -Infinity;
+            for (const k of [t, t + 1, t + 2]) {
+              const vx = verts[k * 2];
+              const vy = verts[k * 2 + 1];
+              if (vx < minX) minX = vx;
+              if (vx > maxX) maxX = vx;
+              if (vy < minY) minY = vy;
+              if (vy > maxY) maxY = vy;
+            }
+            if (!(maxX > minX) || !(maxY > minY)) continue;
+            const gx0 = Math.max(0, Math.floor(((minX - envelope.x) / width) * cols) - 1);
+            const gx1 = Math.min(cols - 1, Math.ceil(((maxX - envelope.x) / width) * cols) + 1);
+            const gy0 = Math.max(0, Math.floor(((minY - envelope.y) / height) * rows) - 1);
+            const gy1 = Math.min(rows - 1, Math.ceil(((maxY - envelope.y) / height) * rows) + 1);
+            for (let gy = gy0; gy <= gy1; gy += 1) {
+              for (let gx = gx0; gx <= gx1; gx += 1) {
+                if (solid[gy * cols + gx] === 1) continue;
+                const px = envelope.x + ((gx + 0.5) / cols) * width;
+                const py = envelope.y + ((gy + 0.5) / rows) * height;
+                if (pointInTriangle(px, py, verts, t, t + 1, t + 2) === true) solid[gy * cols + gx] = 1;
+              }
+            }
+          }
+        }
+        // 实心格 → 舞台局部矩形（外扩 1px 抵挡 120ms 的摆动采样差；静态轮廓那边也有一格膨胀，
+        // 量的口径一致）。相邻格各自成矩形没关系：`clip-path` 是并集。
+        const rects = [];
+        for (let gy = 0; gy < rows; gy += 1) {
+          for (let gx = 0; gx < cols; gx += 1) {
+            if (solid[gy * cols + gx] !== 1) continue;
+            const x0 = envelope.x + (gx / cols) * width;
+            const y0 = envelope.y + (gy / rows) * height;
+            const x1 = envelope.x + ((gx + 1) / cols) * width;
+            const y1 = envelope.y + ((gy + 1) / rows) * height;
+            const a = toStage(x0, y0);
+            const b = toStage(x1, y1);
+            if (a === null || b === null) continue;
+            rects.push({
+              x0: Math.min(a.x, b.x) - 1,
+              y0: Math.min(a.y, b.y) - 1,
+              x1: Math.max(a.x, b.x) + 1,
+              y1: Math.max(a.y, b.y) + 1,
+            });
+          }
+        }
+        return rects.length === 0 ? null : rects;
+      },
       /**
        * 模型空间 → **舞台局部**坐标（CSS px），读不到返回 null。
        *
@@ -2816,6 +3125,12 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     ROOT_SEL + " [data-panel] [data-tabs] button{flex:1;border:0;background:transparent;color:var(--pp-muted);font:600 11px/2 inherit;border-radius:7px;cursor:pointer}",
     ROOT_SEL + " [data-panel] [data-tabs] button[data-on]{background:var(--pp-accent);color:var(--pp-ink-strong)}",
     ROOT_SEL + " [data-panel] [data-body]{flex:1;overflow:auto;padding:8px}",
+    // 桌面端的「设置」页签把面板加宽一档：设置正文是**表格**（池子、相位、关系），
+    // 270px 里那几列会挤成一团。加宽只发生在这一个页签上，别的页签宽度不变。
+    ROOT_SEL + " [data-panel][data-wide]{width:342px}",
+    // 面板里的设置正文：字体与卡片内边距比设置页收一档，同样的内容不至于翻半天。
+    ROOT_SEL + " [data-panel-settings] [data-card-body]{padding:7px 9px}",
+    ROOT_SEL + " [data-panel-settings] [data-pool-row]{grid-template-columns:minmax(0,1fr) 64px 18px 52px;gap:3px}",
     ROOT_SEL + " [data-panel] [data-group]{margin-bottom:9px}",
     ROOT_SEL + " [data-panel] [data-group]>span{display:block;margin:0 0 4px 2px;color:var(--pp-dim);font-size:10px;letter-spacing:.06em}",
     ROOT_SEL + " [data-panel] [data-chips]{display:flex;flex-wrap:wrap;gap:4px}",
@@ -2855,6 +3170,17 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
    * 规则只写一遍、作用域各来一份，两个地方就不会再走岔。
    */
   const SETTINGS_SCOPES = [SETTINGS_SEL, ROOT_SEL + " [data-settings]"];
+
+  /**
+   * 是不是跑在桌面端（`dsh-live2d-pet-desktop` 的那个壳里）。
+   *
+   * 判据是页面运行时留下的标记，不是 UA、也不是壳直接告诉我们的：桌面端没有 DSH 的
+   * 客户端壳，所以 `ctx.slots` 那一节挂不上，设置正文得有**另一个**入口 —— 也就是
+   * 右键面板的第三个页签。**网页端不认这个标记，行为一个字都不变**（那里设置正文
+   * 的家仍然是 DSH 设置页）。
+   */
+  const desktopNow = () =>
+    typeof window !== "undefined" && window.__petDesktop !== undefined && window.__petDesktop !== null;
   /**
    * 视觉语言：**卡片**。每一组设置是一张卡片（标题条 + 内容区），池子、相位都住在
    * 卡片里，层级靠"卡片 > 行 > 药丸"三层表达，而不是一堆同权重的裸控件。
@@ -3109,8 +3435,39 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
    * 不需要再穿一层 setter。写进去下一帧就生效。
    */
   const TUNING = {
-    /** 指针离舞台多远仍能牵引视线，px。 */
-    gazeRange: 240,
+    /**
+     * **注视满偏半径**，px：离她中心多远算"看到最边上"（视线到这儿就满偏）。
+     *
+     * 它只是**满偏那一圈**，不是"还看不看她"（那是下面 `gazeWatchingRatio` 的倍数）。
+     * 两者合起来是一条连续的曲线（**正圆，只有一个半径**）：
+     *   * 距离比 0 → 1（= 这个半径）：视线按距离成比例偏转，到这儿满偏；
+     *   * 再往外到 `× gazeWatchingRatio`：强度缓动衰减到 0；
+     *   * 更远：当她没在看，视线回正。
+     * 早先只有"贴边"没有"衰减/回正"，于是 220px 之外一律"贴边斜眼" —— 鼠标跑到别的屏上
+     * 就变成"全屏都在追"（用户两次报的就是这个）。只贴边不回正，等于一直在盯着你。
+     *
+     * 上限是**视口的一半**：半径超过视野没有意义（远处一律贴边），而正圆不像椭圆那样能
+     * "竖直方向借一点"，所以可用半径就是这个框能容下的最大圆。
+     */
+    gazeRangePx: 220,
+    /**
+     * **视线能跟多远**（相对满偏半径的倍数）。
+     *
+     * 跟随强度由**到她的圆形距离比**决定，只有一处曲线，没有硬边界：
+     *
+     *   距离比 0 → 1（= `gazeRangePx`）        强度 0 → 1（成比例，到这儿满偏）
+     *   =1 … `gazeWatchingRatio`                强度 1 → 0（缓动衰减）
+     *   ≥ 倍数                                   强度 0：当她没在看，视线回正
+     *
+     * 为什么不要硬边界：早先写成"超过阈值立刻回正"，于是她要么满偏斜眼盯着、要么啪一下
+     * 回正，中间没有过渡 —— 用户看到的就是"全屏都在追踪"（贴边）或"突然不看了"。衰减
+     * 让远处"渐渐不感兴趣"，这也更像活物。
+     *
+     * 2.7 是按实际几何定的：她贴屏幕底边，桌面端视口高 1392 → 页面正中就离她 546px，
+     * 而满偏半径 220 × 2.7 ≈ 594 > 546，所以"在屏幕中部动鼠标"仍在范围内（只是强度很弱）。
+     * 小于 2.5 的话竖直方向会白白浪费掉半屏。
+     */
+    gazeWatchingRatio: 2.7,
     /** 中心附近被忽略的比例（死区）：没有它，手抖一像素眼珠就动。 */
     gazeDeadzone: 0.12,
     /** 嘴部：跟随强度 / 形状强度 / 缓动时间常数（ms）。 */
@@ -3143,7 +3500,10 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
    */
   const TUNING_FIELDS = [
     { key: "gazeDeadzone", label: "注视死区", min: 0, max: 0.6, step: 0.01 },
-    { key: "gazeRange", label: "注视范围 px", min: 0, max: 800, step: 10 },
+    // 「满偏半径」：离她多远算"看到最边上"。**调大 = 范围更大**（220 是"一个巴掌"）。
+    { key: "gazeRangePx", label: "注视满偏 px", min: 80, max: 900, step: 20 },
+    // 「收回倍数」：满偏的多大倍数之外当她没在看（中间那段是缓动衰减，不是硬边界）。
+    { key: "gazeWatchingRatio", label: "收回倍数", min: 1.2, max: 6, step: 0.1 },
     { key: "mouthFollow", label: "嘴跟随意", min: 0, max: 1, step: 0.05 },
     { key: "mouthDrop", label: "嘴形强度", min: -1, max: 1, step: 0.05 },
     { key: "mouthEaseMs", label: "嘴缓动 ms", min: 30, max: 800, step: 10 },
@@ -3172,6 +3532,146 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   const TUNING_KEY = "dsh-pet-live2d.settings.v1";
   /** 装扮存档的 key。放这里是因为开关（applyFlag）也要用它清存档。 */
   const OUTFIT_KEY = "dsh-pet-live2d:outfit";
+
+  // ---------------------------------------------------------------------------
+  // 共享设置：**宿主优先，localStorage 兜底**
+  //
+  // 用户报的"桌面的设置与 DSH 里的设置没有同步"。根因不是"同步没写"，而是**两边根本
+  // 不共享存储**：桌面端页面是 `http://127.0.0.1:<壳的随机端口>`，DSH 是
+  // `http://127.0.0.1:3080` —— localStorage 按 origin 隔离，各存一份、永不互见。
+  //
+  // 所以三类**跨窗口该一致**的设置（可调项 / 相位池子覆盖+开关 / 装扮）走宿主：
+  // 插件宿主半区把它们落在 `%DSH_HOME%\pet-settings.json`，两个页面都读它。
+  // 窗口自己的东西（位置、大小）仍然留在 localStorage —— 那本来就该各窗口不同。
+  //
+  // 独立模式（DSH 不在）时 `/api/live2d-pet/settings` 是 404，于是自然退回 localStorage，
+  // 行为与以前一致。
+  // ---------------------------------------------------------------------------
+  const SETTINGS_URL = "/api/live2d-pet/settings";
+  /** 轮询间隔：跨窗口同步靠它（localStorage 的 `storage` 事件不跨 origin）。 */
+  const SHARED_POLL_MS = 3000;
+  /** 轮询定时器（模块级一份 —— 热重载/重复 apply 不该堆出好几个）。 */
+  let sharedPoll = 0;
+  /**
+   * 把"宿主拉回来的装扮"应用到画面上的回调。
+   *
+   * **必须是模块级的桥**：槽位选择与 pin 都在 `Pet` 组件里（`slotSelectionsRef` /
+   * `commitPinsRef`），而拉取/轮询是模块级的 `apply()` 起的 —— 直接引用会 ReferenceError，
+   * 而且是**静默**的那种（client-state skill 里那几次都是这个）。所以由 `Pet` 挂上来。
+   */
+  const applyOutfitRef = { current: null };
+  /**
+   * 宿主存档里的键 → localStorage 键。
+   *
+   * ⚠️ **必须惰性构造**：`OVERRIDE_KEY` 在下面（和 `saveOverrides` 挨着）才声明，
+   * 在模块加载期直接写一个对象字面量会撞 TDZ —— 症状是**整个插件 import 失败**：
+   *   `dsh-pet-live2d: import failed: Cannot access 'OVERRIDE_KEY' before initialization`
+   * （我第一版就是这么写的，直接把页面打成 "Failed to load plugins"。）
+   */
+  const sharedKeys = () => ({ tuning: TUNING_KEY, overrides: OVERRIDE_KEY, outfit: OUTFIT_KEY });
+  /** 宿主那份的版本号；每次 POST 回来或轮询发现变化时更新。 */
+  let sharedRev = -1;
+  /** 宿主可用吗（第一次探测的结果；404 就不再问了，省得每 3 秒白跑一次）。 */
+  let hostAvailable = null;
+  /** 正在把宿主的改动往内存里灌 —— 期间不要回写宿主，否则自己写自己读打转。 */
+  let applyingHost = false;
+
+  const readLocal = (key) => {
+    try {
+      const raw = window.localStorage.getItem(key);
+      return raw === null ? null : JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  };
+  const writeLocal = (key, value) => {
+    try {
+      if (value === null || value === undefined) window.localStorage.removeItem(key);
+      else window.localStorage.setItem(key, JSON.stringify(value));
+    } catch {
+      /* 无痕模式之类：这次生效，下次不记得 */
+    }
+  };
+
+  /** 把一份宿主存档按 key 写进 localStorage 并调用方负责灌内存。 */
+  const cacheHost = (payload) => {
+    for (const [name, key] of Object.entries(sharedKeys())) {
+      const value = payload?.[name];
+      if (value === undefined) continue;
+      writeLocal(key, value === null ? null : value);
+    }
+  };
+
+  /**
+   * 三个界面（DSH 设置页 / 桌面右键面板 / 独立模式的桌面壳）共用同一份值的落点。
+   *
+   * 有宿主就写宿主（两端都能看见），同时留一份 localStorage 当"宿主不在时的兜底"。
+   */
+  const persistShared = (patch) => {
+    for (const [name, key] of Object.entries(sharedKeys())) {
+      if (patch[name] === undefined) continue;
+      writeLocal(key, patch[name]);
+    }
+    if (applyingHost) return;
+    if (hostAvailable === false) return;
+    try {
+      void fetch(SETTINGS_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(patch),
+        cache: "no-store",
+      }).then((response) => {
+        if (response.status === 404) { hostAvailable = false; return null; }
+        if (!response.ok) return null;
+        return response.json();
+      }).then((payload) => {
+        if (payload === null || payload === undefined) return;
+        hostAvailable = true;
+        if (typeof payload.rev === "number") sharedRev = payload.rev;
+      }).catch(() => { /* 宿主不在就算了，本地那份已经写好了 */ });
+    } catch {
+      /* 同上 */
+    }
+  };
+
+  /**
+   * 拉一次宿主存档；有变化就灌进内存并广播。
+   *
+   * 这是"另一个窗口改了、这个窗口跟着变"的唯一途径 —— localStorage 的 `storage` 事件
+   * **不会跨 origin 触发**，所以必须轮询（3 秒一次，代价可以忽略）。
+   */
+  const pullShared = async (apply) => {
+    if (hostAvailable === false) return false;
+    let payload = null;
+    try {
+      const response = await fetch(SETTINGS_URL, { cache: "no-store" });
+      if (response.status === 404) { hostAvailable = false; return false; }
+      if (!response.ok) return false;
+      payload = await response.json();
+    } catch {
+      return false;
+    }
+    if (payload === null || typeof payload !== "object") return false;
+    hostAvailable = true;
+    const rev = typeof payload.rev === "number" ? payload.rev : 0;
+    if (rev === sharedRev) return false;
+    sharedRev = rev;
+    cacheHost(payload);
+    applyingHost = true;
+    try {
+      apply(payload);
+    } finally {
+      applyingHost = false;
+    }
+    return true;
+  };
+
+  /** 把一份共享存档灌进内存（tuning / overrides / outfit 各自的应用由调用方给）。 */
+  const applyShared = (payload, hooks) => {
+    if (payload?.tuning !== null && payload?.tuning !== undefined) hooks.tuning(payload.tuning);
+    if (payload?.overrides !== null && payload?.overrides !== undefined) hooks.overrides(payload.overrides);
+    if (payload?.outfit !== null && payload?.outfit !== undefined) hooks.outfit(payload.outfit);
+  };
 
   /** 把存档里的值夹进合法区间 —— 坏值不能让宠物动不了。 */
   const clampSetting = (field, value) => Math.min(field.max, Math.max(field.min, value));
@@ -3343,11 +3843,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   const OVERRIDE_KEY = "dsh-pet-live2d.settings.v2";
 
   const saveOverrides = () => {
-    try {
-      window.localStorage.setItem(OVERRIDE_KEY, JSON.stringify(Object.assign({}, PHASE_OVERRIDES, { flags: FLAGS })));
-    } catch {
-      /* 无痕模式之类：这次生效，下次不记得 */
-    }
+    // 走共享落点（宿主优先）：相位池子覆盖与开关两个窗口共用同一份。
+    persistShared({ overrides: Object.assign({}, PHASE_OVERRIDES, { flags: FLAGS }) });
   };
 
   /** 开关类设置：存档 + 广播（装扮存档开关关掉时顺带清掉那份存档）。 */
@@ -3386,12 +3883,20 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   };
 
   /** 读回存档；值只做类型校验，范围由调用方按权重语义处理。 */
-  const restoreOverrides = () => {
-    let saved = null;
-    try {
-      saved = JSON.parse(window.localStorage.getItem(OVERRIDE_KEY) ?? "null");
-    } catch {
-      saved = null;
+  /**
+   * 读回相位池子覆盖 + 开关。
+   *
+   * `given` 传进来时用它（宿主拉回来的那份），否则读 localStorage —— 两条路的清洗逻辑
+   * 是同一份，别写第二遍（写第二遍的下场是两边清洗规则慢慢分叉）。
+   */
+  const restoreOverrides = (given) => {
+    let saved = given === undefined ? null : given;
+    if (saved === undefined || saved === null) {
+      try {
+        saved = JSON.parse(window.localStorage.getItem(OVERRIDE_KEY) ?? "null");
+      } catch {
+        saved = null;
+      }
     }
     if (saved === null || typeof saved !== "object") return;
     const phases = saved.phases;
@@ -3726,11 +4231,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       const field = TUNING_FIELDS.find((entry) => entry.key === key);
       TUNING[key] = field === undefined ? value : clampSetting(field, value);
     }
-    try {
-      window.localStorage.setItem(TUNING_KEY, JSON.stringify(TUNING));
-    } catch {
-      /* 无痕模式之类：这次改动仍然生效，只是下次不记得 */
-    }
+    // 走共享落点：有宿主就写宿主（DSH 与桌面端两个窗口都能看见），本地留一份兜底。
+    persistShared({ tuning: Object.assign({}, TUNING) });
     notifySettings();
   };
 
@@ -3739,12 +4241,14 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
    *
    * 手改坏了存档最多回到合法范围，不会出现「死区 5」这种把宠物冻住的配置。
    */
-  const restoreTuning = () => {
-    let saved = null;
-    try {
-      saved = JSON.parse(window.localStorage.getItem(TUNING_KEY) ?? "null");
-    } catch {
-      saved = null;
+  const restoreTuning = (given) => {
+    let saved = given === undefined ? null : given;
+    if (saved === undefined || saved === null) {
+      try {
+        saved = JSON.parse(window.localStorage.getItem(TUNING_KEY) ?? "null");
+      } catch {
+        saved = null;
+      }
     }
     if (saved === null || typeof saved !== "object") return;
     let restored = false;
@@ -3948,6 +4452,30 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     /** 转圈转晕：演「晕晕」。 */
     spinReactions: ["晕晕"],
   };
+
+  /**
+   * 某些反应开演前要**先清掉**的槽位（标签 → 槽位 id → 该让位的选项名单；空数组 = 全清）。
+   *
+   * 用户报的：「重锤出击动作应该判断一下当前眼部是不是 晕晕/呆呆眼，情绪是不是
+   * 开心兴奋/闭眼口水，如果是应该先把眼部或情绪还原为默认」。
+   *
+   * 理由：`Hammer` 只写手臂参数，脸它一概不管。于是眼部停在「晕晕」、情绪停在「闭眼口水」
+   * 时挥锤，画面上是"一个晕乎乎、闭着眼流口水的人在奋力挥锤"——动作与表情自相矛盾。
+   * 只清**列出来的**那几个选项：用户选的其它眼睛（星星眼之类）不该被这一锤抹掉。
+   *
+   * 用户可配（设置里那份覆盖）：`PHASE_OVERRIDES.interactions.clearSlots`。
+   */
+  const DEFAULT_REACTION_CLEARS = {
+    重锤出击: { eyes: ["晕晕", "呆呆眼"], mood: ["开心兴奋", "闭眼口水"] },
+  };
+
+  /**
+   * 反应留下的槽位改动**多久之后收回默认**（用户要求"过一段事件（时间）应该还原为默认"）。
+   *
+   * 12 秒与手动点的表情同一个上限（`EXPRESSION_HOLD_MS`）—— 都属"临时效果"，
+   * 两套时长不一致会让用户觉得其中一个是坏的。
+   */
+  const REACTION_REVERT_MS = 12000;
 
   /** 一组反应候选的来历（诊断用，见 reactionSource）。 */
   const REACTION_KEYS = Object.keys(DEFAULT_REACTIONS);
@@ -4186,15 +4714,6 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
    * 而每帧读几十个顶点是白烧 CPU。采样点在 `saveParameters` 缝里（这一帧真正要画的姿势）。
    */
   const TAIL_BOX_SAMPLE_MS = 100;
-
-  /**
-   * 尾巴那一块矩形在包围盒外**再放宽的比例**。
-   *
-   * 它每 120ms 跟着实时盒子重建，而尾鳍一直在摆 —— 采样时刻的位置和用户抬手那一刻
-   * 会差一点。实测（探针 `probe-tail-precise.mjs`）不留余量时会有落点掉在矩形之外、
-   * 事件穿透到页面。放宽按这一块自己的尺寸取比例，所以缩小/放大宠物都合适。
-   */
-  const TAIL_LAYER_PAD = 0.08;
 
   /**
    * Build a coarse opacity grid of the character as actually rendered.
@@ -4563,6 +5082,15 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       return () => window.cancelAnimationFrame(id);
     }, [panelOpen]);
     const [tab, setTab] = useState("motions");
+    /**
+     * 显示层状态：**订阅模块级的 store**（不是本地 ref）。
+     *
+     * 轮询由模块级单例负责（`ensureLayerPolling`）—— 它**必须**不依赖这个组件：
+     * 用户在设置里选了"桌面"之后，页面里这只就让位了，而这个组件一旦不渲染，
+     * 由它驱动的轮询也就停了，设置页那一行便永远停在旧文本上（实测：要重开设置页才更新）。
+     */
+    const layer = useLayerState();
+    useEffect(() => { ensureLayerPolling(); }, []);
     // 设置值在模块作用域的 store 里（DSH 设置页和这里的面板共用一份）。
     // 订阅它既为重渲染，也为下面那个「相位映射随设置重算」的 effect 提供依赖。
     const settingsRev = useSettings();
@@ -4945,40 +5473,34 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         const api = motion.current;
         const stage = stageRef.current;
         if (api === null || stage === null) return;
-        const box = typeof api.tailBoxNow === "function" ? api.tailBoxNow() : null;
-        if (box === null || typeof api.modelToStage !== "function") {
+        // 诊断开关：`window.__petNoTailLayer = true` 之后这一层不再拼进 `clip-path`。
+        // 用它一次就能量出"尾巴层到底贡献了多大一片可摸区"（对比量比反复改代码猜快得多）。
+        const hull = window.__petNoTailLayer === true
+          ? null
+          : (typeof api.tailRectNow === "function" ? api.tailRectNow() : null);
+        if (hull === null || typeof api.modelToStage !== "function") {
           if (last !== "") { last = ""; setTailPath(""); }
           return;
         }
         const rect = stage.getBoundingClientRect();
         if (rect.width <= 0 || rect.height <= 0) return;
-        // 模型空间 → 舞台：`modelToStage()` 用"模型空间包络盒 ↔ 引擎自绘盒"对齐，
-        // 缩放、拖动、resize 之后都成立（比 `toStagePosition` 稳 —— 那个 API
-        // 在这层包装上直接抛异常）。
+        // **逐块一个矩形**，拼成一条 path（`clip-path` 默认 nonzero，重叠部分照样算内部）。
         //
-        // 注意**模型空间 y 向上、舞台 y 向下**：小 y 的顶点画在舞台下方。所以要把
-        // 两个对角都映射完再取 min/max —— 直接拿 minX/minY 当左上角会把这一层画到
-        // 屏幕外（第一版就是这么错的：尾巴层跑到左边去了）。
-        //
-        // 再加一圈**摆动的余量**：这一层每 120ms 更新一次，而尾鳍一直在摆，所以
-        // 采样时刻的位置和用户抬手那一刻的位置差着一个余量；不留的话就会出现
-        // "实测点在这层外面"（第一版 5 轮里有 2 轮是这样）。余量按这一块自己的
-        // 尺寸取比例，缩放之后依然合适。
-        const padX = (box.maxX - box.minX) * TAIL_LAYER_PAD;
-        const padY = (box.maxY - box.minY) * TAIL_LAYER_PAD;
-        const a = api.modelToStage(box.minX - padX, box.minY - padY);
-        const b = api.modelToStage(box.maxX + padX, box.maxY + padY);
-        if (a === null || b === null) return;
-        const left = Math.max(0, Math.min(a.x, b.x));
-        const top = Math.max(0, Math.min(a.y, b.y));
-        const right = Math.min(rect.width, Math.max(a.x, b.x));
-        const bottom = Math.min(rect.height, Math.max(a.y, b.y));
-        const width = right - left;
-        const height = bottom - top;
-        if (!(width > 0) || !(height > 0)) return;
-        // 一条矩形 = 一段 subpath，直接拼在轮廓路径后面（同一个 `clip-path`）。
-        const next = "M" + left.toFixed(1) + " " + top.toFixed(1)
-          + "h" + width.toFixed(1) + "v" + height.toFixed(1) + "h-" + width.toFixed(1) + "Z";
+        // 这里不再做空间映射：`tailRectNow()` 已经给的是**舞台局部像素**（它内部把四个角
+        // 都映射过了）。第一版在这里先并成一个大盒再映射，结果框进 43%×54% 的空白 ——
+        // 用户看到的就是"右下角明明什么都没有却能摸"。
+        let next = "";
+        for (const box of hull) {
+          const left = Math.max(0, Math.min(rect.width, box.x0));
+          const top = Math.max(0, Math.min(rect.height, box.y0));
+          const right = Math.max(0, Math.min(rect.width, box.x1));
+          const bottom = Math.max(0, Math.min(rect.height, box.y1));
+          const width = right - left;
+          const height = bottom - top;
+          if (!(width > 0) || !(height > 0)) continue;
+          next += "M" + left.toFixed(1) + " " + top.toFixed(1)
+            + "h" + width.toFixed(1) + "v" + height.toFixed(1) + "h-" + width.toFixed(1) + "Z";
+        }
         if (next === last) return;
         last = next;
         setTailPath(next);
@@ -5006,10 +5528,10 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       if (stage === null) return undefined;
       // The resting target is the stage centre, i.e. where the model sits.
       focusDefaultRef.current = () => {
-        const rect = stage.getBoundingClientRect();
         // The DEFAULT resting target is the model's own centre — not the last
         // pointer position — so the pet always settles back to a neutral gaze.
-        motion.current.updatePointer(rect.width / 2, rect.height / 2, rect.width, rect.height);
+        // 偏移 0 = 正中，与"满偏半径"无关（视线回中不该受那个参数影响）。
+        motion.current.updatePointer(0, 0, 320);
         reportGaze("center");
       };
       let resting = false;
@@ -5061,36 +5583,114 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         if (list.length > 0) runReactionRef.current(pick(list));
         say(pick(linesNow().spin));
       };
-      const onMove = (event) => {
+      /**
+       * 跟随一次指针位置（**视口坐标**）。
+       *
+       * 两个来源，同一条逻辑：
+       *   * 网页端 / 指针在窗口内时 —— DOM 的 `pointermove`（浏览器只在落点位于本窗口时送来）；
+       *   * **桌面端 + 指针在别的程序上** —— 由壳喂进来（`window.__petPointer`）。
+       *     没有这条通道时，用户一离开宠物窗口她就不跟了（这正是"只有焦点在宠物上才有跟随"）。
+       *
+       * **坐标系是视口，不是她那个盒子。** 原来把坐标减去 `stage.getBoundingClientRect()`，
+       * 于是盒子外的点全被当成"远得没边"（判据半径又只有 240px），整段跟随就断了。
+       * 现在：以她的**中心**为原点、按像素距离归一化，`gazeRangePx` 是满偏半径。
+       */
+      const onMove = (clientX, clientY, source) => {
         const rect = stage.getBoundingClientRect();
-        const x = event.clientX - rect.left;
-        const y = event.clientY - rect.top;
+        // 她在视口里的中心（`rect` 只用来定位她，不再用来归一化）。
+        const centreX = rect.left + rect.width / 2;
+        const centreY = rect.top + rect.height / 2;
+        const dx = clientX - centreX;
+        const dy = clientY - centreY;
+        // 满偏半径：**按像素算，不按盒子算**。
+        //
+        // 旧契约是"偏移 ÷ 她盒子的一半"，缺点在桌面端很明显：盒子是 300px，于是**全屏**
+        // 的移动都落在"盒子外的死区"里，一离开她那个方块就不跟了（用户报的"跟随范围有问题"）。
+        // 像素契约修好了那一段，但**范围要给对**：见 `gazeRangePx` 的注释 —— 它是"从多远
+        // 开始贴边"，调大了就成了"全屏都在跟且处处满偏"。
+        // 满偏半径：**正圆，一个半径说了算**。
+        //
+        // 旧契约是"偏移 ÷ 她盒子的一半"，缺点在桌面端很明显：盒子是 300px，于是**全屏**
+        // 的移动都落在"盒子外的死区"里，一离开她那个方块就不跟了（用户报的"跟随范围有问题"）。
+        //
+        // 上限取**视口半高/半宽**：半径超过视野就没有意义（远处一律贴边），而正圆又不能像
+        // 椭圆那样"竖直方向借一点" —— 所以允许的半径就是这个框能容下的最大圆。
+        const range = Math.max(
+          Math.min(rect.width, rect.height) / 2,
+          Math.min(TUNING.gazeRangePx, Math.min(window.innerWidth, window.innerHeight) / 2),
+        );
+        // ---- 太远就当她没在看（衰减，不是硬边界）-----------------------------
+        //
+        // 判据是**到她的圆形距离** `u = hypot(dx, dy) / range`：
+        //   * `u ≤ 1`：在满偏圆内，强度 1；
+        //   * `1 < u < ratio`：强度从 1 缓动衰减到 0 —— 她"渐渐不感兴趣"；
+        //   * `u ≥ ratio`：当她没在看，视线回正。
+        //
+        // 为什么不要硬边界：早先写成"超过阈值立刻回正"，于是她要么满偏斜眼盯着、要么啪一下
+        // 回正，中间没有过渡 —— 用户看到的就是"全屏都在追踪"（贴边）或"突然不看了"。
+        // 衰减让远处"渐渐不感兴趣"，这也更像活物。
+        const watching = range * TUNING.gazeWatchingRatio;
+        const u = Math.hypot(dx, dy) / range;
+        const strength = u <= 1 ? 1 : (u >= TUNING.gazeWatchingRatio ? 0 : (TUNING.gazeWatchingRatio - u) / (TUNING.gazeWatchingRatio - 1));
+        if (strength <= 0) {
+          // 她没在看：回中位，并把对外状态标回 `center`（驱动与用户都看得见这一点）。
+          if (!resting) {
+            resting = true;
+            focusDefault();
+          }
+          gazeTrace.current = {
+            dx: Math.round(dx), dy: Math.round(dy),
+            at: { x: Math.round(clientX), y: Math.round(clientY) },
+            centre: { x: Math.round(centreX), y: Math.round(centreY) },
+            box: { w: Math.round(rect.width), h: Math.round(rect.height) },
+            range: Math.round(range),
+            watching: Math.round(watching),
+            distanceRatio: Number(u.toFixed(3)), strength: 0,
+            tuningPx: TUNING.gazeRangePx,
+            source: source ?? "dom", skipped: "out-of-watching-range",
+          };
+          return;
+        }
         // ---- 鼠标围着转圈 → 转晕 ------------------------------------------
         // 判定的是"围绕舞台中心的**累计转角**"：每次移动取与上一次的夹角增量
         // （归一化到 ±180°），在一段时间窗内累计；够 spinTurns 圈就触发一次。
         // 用累计角而不是"位置绕了几圈"，是因为前者对半径不敏感 —— 贴着角色转
         // 小圈和远远地转大圈都算，符合"逗她"的直觉。
-        spinTrack(rect, x, y);
-        const near = x >= -TUNING.gazeRange && y >= -TUNING.gazeRange
-          && x <= rect.width + TUNING.gazeRange && y <= rect.height + TUNING.gazeRange;
-        if (near) {
-          resting = false;
-          motion.current.updatePointer(x, y, rect.width, rect.height);
-          reportGaze("pointer");
-        } else if (!resting) {
-          resting = true;
-          focusDefault();
-        }
+        // ⚠️ `spinTrack` 要的是**盒子内的坐标**（它围绕舞台中心算累计转角），这里给的是
+        // 视口坐标 —— 必须转回去。直接传视口坐标的后果是"围绕一个远处的点转小角"，
+        // 累计转角小到永远够不着阈值（实测 103 次移动只累计 0.13 弧度，阈值 12.57）。
+        spinTrack(rect, clientX - rect.left, clientY - rect.top);
+        // 诊断读口：跟随范围这一块最容易"看着像没反应"，把中间量挂出来，
+        // 驱动量到异常时一眼能看出是判据错了还是参数没生效（只读，不影响行为）。
+        gazeTrace.current = {
+          dx: Math.round(dx), dy: Math.round(dy),
+          at: { x: Math.round(clientX), y: Math.round(clientY) },
+          centre: { x: Math.round(centreX), y: Math.round(centreY) },
+          box: { w: Math.round(rect.width), h: Math.round(rect.height) },
+          range: Math.round(range),
+          watching: Math.round(watching),
+          distanceRatio: Number(u.toFixed(3)), strength: Number(strength.toFixed(3)),
+          tuningPx: TUNING.gazeRangePx,
+          source: source ?? "dom",
+        };
+        resting = false;
+        // 强度乘在偏移上：满偏圆内是 1（与原行为一致），远处按**圆形距离比**平滑衰减到 0。
+        motion.current.updatePointer(dx * strength, dy * strength, range);
+        reportGaze("pointer");
       };
       /**
        * 指针「不在场」了：回正。
        *
-       * 鼠标一旦移出窗口，pointermove 就不再发来，宠物会**僵在最后一个注视方向**上
-       * （用户报的就是这个）。页面拿不到窗口外的指针位置——那需要原生钩子，浏览器
-       * 里没有这个能力——所以这里能做的是回正：离开窗口 / 窗口失焦 / 切标签页，
-       * 都当成指针不在场，视线与嘴一起缓动回中位。
+       * 网页端：鼠标移出窗口后 `pointermove` 不再发来，宠物会僵在最后一个注视方向上，
+       * 所以离开窗口 / 失焦 / 切标签页都当成"指针不在场"，视线与嘴缓动回中位。
+       *
+       * **桌面端不要走这条**：那边由壳持续喂全局光标位置（`window.__petPointer`），指针
+       * "离开窗口"根本不代表它不存在 —— 恰恰相反，用户在别的程序里动鼠标时她**应该**跟着。
+       * 所以桌面端把 `mouseleave`/`blur` 的回正效果压掉，只在壳明确说"指针不在场"时回正
+       * （壳那边有 `outside` 判定）。
        */
       const onLeave = () => {
+        if (isDesktopShell) return;
         if (resting) return;
         resting = true;
         focusDefault();
@@ -5099,12 +5699,22 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       root.addEventListener("mouseleave", onLeave);
       window.addEventListener("blur", onLeave);
       document.addEventListener("visibilitychange", onLeave);
-      window.addEventListener("pointermove", onMove, { passive: true });
-      return () => {
-        window.removeEventListener("pointermove", onMove);
+      // DOM 路径：指针落在本窗口内时走它（网页端全部走它；桌面端在窗口内也走它）。
+      const onDomMove = (event) => onMove(event.clientX, event.clientY, "dom");
+      window.addEventListener("pointermove", onDomMove, { passive: true });
+      // 壳路径：**桌面端专有** —— 指针在别的程序上时 DOM 一个事件都不会有，只有壳知道它在哪。
+      if (isDesktopShell) {
+        externalPointer.handler = (x, y) => {
+          onMove(x, y, "shell");
+          // 壳喂进来的位置说明指针在场（它是在读全局光标），把"回正"的状态解除掉。
+          resting = false;
+        };
+      }      return () => {
+        window.removeEventListener("pointermove", onDomMove);
         root.removeEventListener("mouseleave", onLeave);
         window.removeEventListener("blur", onLeave);
         document.removeEventListener("visibilitychange", onLeave);
+        if (isDesktopShell) externalPointer.handler = null;
         focusDefaultRef.current = () => {};
       };
     }, [ready]);
@@ -5305,16 +5915,13 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     const saveOutfit = () => {
       // 开关关掉就既不存也不读（见设置页「装扮」那一节）。
       if (!FLAGS.outfitArchive) return;
-      try {
-        const out = {};
-        for (const id of OUTFIT_SLOTS) {
-          const label = slotSelectionsRef.current[id];
-          if (label !== undefined) out[id] = label;
-        }
-        window.localStorage.setItem(OUTFIT_KEY, JSON.stringify(out));
-      } catch {
-        /* 无痕模式之类存不下：不影响这次，只是下次不记得 */
+      const out = {};
+      for (const id of OUTFIT_SLOTS) {
+        const label = slotSelectionsRef.current[id];
+        if (label !== undefined) out[id] = label;
       }
+      // 走共享落点：宿主在就写宿主（另一个窗口也能看见），顺带留一份本地兜底。
+      persistShared({ outfit: out });
     };
     const readOutfit = () => {
       if (!FLAGS.outfitArchive) return null;
@@ -5381,27 +5988,160 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     }, [armExpressionClear]);
 
     /**
-     * 跑一条互动反应（点击 / 转圈触发）。
+     * 跑一条互动反应（摸头 / 摸尾巴 / 转圈转晕）。
      *
-     * 标签先当**动作组**找（宠物在 catalog.json 里给动作起了中文名），找不到就当
-     * **表达式**闪一下（闪完由 EXPRESSION_HOLD_MS 自动收，不会永久占着槽位）。
+     * **反应不该还原当前动作**：开演之前先记下她在演什么（`resumeAfter`），演完由
+     * `finishAction` 接回去 —— 于是摸一下头，举着的手还举着、泡泡还在。
+     *
+     * 反应本身优先走"**随机换一个槽位里的选项**"（`chooseSlotOption` 那条路）：抽中的标签
+     * 是某个装扮槽位的选项时，换的就是**那一格**，别的槽位与当前动作都不受影响 ——
+     * 这正是用户要的"随机到哪一个插槽里的就放哪一个插槽里的"。
+     *
+     * 兜底两级，都不能变成"这个互动没反应"：
+     *   ① 是某个槽位的选项 → 换那一格；
+     *   ② 不是选项 → 当**动作组**播一次（播完接回原动作）；
+     *   ③ 再不是 → 当**表达式**闪一下（闪完自动收，不占槽位）。
+     */
+    /**
+     * 这次反应改过哪些槽位（收回默认时只动它们）。
+     *
+     * **必须是 ref**：`runReaction` 是 `useCallback`、计时器回调又是另一个闭包，普通 `const`
+     * 每次 render 都重建、两边各持一份 —— 收回时读到的永远是空的（client-state skill 里
+     * 那三次"功能正常但读数是 0"就是这个毛病）。
+     */
+    const reactionTouchedRef = useRef(new Set());
+    /** 收回默认的计时器（同样必须是 ref：跨 render 存活）。0 = 没在计时。 */
+    const reactionRevertRef = useRef(0);
+
+    function noteReactionTouched(slotId) {
+      reactionTouchedRef.current.add(slotId);
+    }
+
+    /**
+     * 反应留下的槽位改动**过一会儿收回默认**（②④：摸头 / 摸尾巴 / 转晕都算）。
+     *
+     * 收回的是"这次反应碰过的槽位"，用 `chooseSlotOption(slot, null)` 回**默认**选项
+     * （不是回上一个选择 —— 用户要的是"还原为默认"）。
+     * 重复触发时重新计时：摸三下头，最后一下之后才开始数。
+     */
+    function armReactionRevert() {
+      window.clearTimeout(reactionRevertRef.current);
+      reactionRevertRef.current = window.setTimeout(() => {
+        reactionRevertRef.current = 0;
+        const touched = Array.from(reactionTouchedRef.current);
+        reactionTouchedRef.current = new Set();
+        for (const slotId of touched) {
+          const slot = (petRef.current?.expressionSlots ?? []).find((candidate) => candidate.id === slotId);
+          if (slot === undefined) continue;
+          if (slotSelectionsRef.current[slotId] === undefined) continue;
+          chooseSlotOption(slot, null, false);
+        }
+      }, REACTION_REVERT_MS);
+    }
+
+    /**
+     * 这条反应开演前要先清掉哪些槽位（标签 → 槽位 id → 该让位的选项名单；空数组 = 全清）。
+     *
+     * 用户可配：`PHASE_OVERRIDES.interactions.clearSlots`。默认那一条见
+     * `DEFAULT_REACTION_CLEARS`（重锤出击 vs 晕晕/呆呆眼 + 开心兴奋/闭眼口水）。
+     */
+    function reactionClears(label) {
+      const user = PHASE_OVERRIDES.interactions?.clearSlots?.[label];
+      if (user !== undefined && user !== null && typeof user === "object") return user;
+      const declared = MANIFEST.current?.reactionClears?.[label];
+      if (declared !== undefined && declared !== null && typeof declared === "object") return declared;
+      return DEFAULT_REACTION_CLEARS[label] ?? {};
+    }
+
+    /**
+     * 跑一条互动反应（摸头 / 摸尾巴 / 转圈转晕）。
+     *
+     * **反应不该还原当前动作**：开演之前先记下她在演什么（`resumeAfter`），演完由
+     * `finishAction` 接回去 —— 于是摸一下头，举着的手还举着、泡泡还在。
+     *
+     * 反应本身优先走"**随机换一个槽位里的选项**"（`chooseSlotOption` 那条路）：抽中的标签
+     * 是某个装扮槽位的选项时，换的就是**那一格**，别的槽位与当前动作都不受影响 ——
+     * 这正是用户要的"随机到哪一个插槽里的就放哪一个插槽里的"。
+     *
+     * 兜底两级，都不能变成"这个互动没反应"：
+     *   ① 是某个槽位的选项 → 换那一格；
+     *   ② 不是选项 → 当**动作组**播一次（播完接回原动作）；
+     *   ③ 再不是 → 当**表达式**闪一下（闪完自动收，不占槽位）。
      */
     const runReaction = useCallback((label) => {
       if (typeof label !== "string" || label === "") return false;
+      // ①' 声明式的"先清掉"：动作只写手臂参数时，留着眼部/情绪会画出"晕乎乎的人在挥锤"。
+      const clears = reactionClears(label);
+      for (const slotId of Object.keys(clears)) {
+        const slot = (petRef.current?.expressionSlots ?? []).find((candidate) => candidate.id === slotId);
+        if (slot === undefined) continue;
+        const current = slotSelectionsRef.current[slotId];
+        if (current === undefined) continue;
+        const labels = clears[slotId];
+        // 空数组 = 清掉这一格；非空 = 只清列出来的那几个选项（当前选择不在名单里就不动）。
+        if (Array.isArray(labels) && labels.length > 0 && !labels.includes(current)) continue;
+        chooseSlotOption(slot, null, false);
+        noteReactionTouched(slotId);
+      }
+      // ① 抽中的标签落在某个装扮槽位里：换掉那一格。
+      for (const slot of petRef.current?.expressionSlots ?? []) {
+        const option = (slot.options ?? []).find((candidate) => candidate.label === label);
+        if (option !== undefined) {
+          // `satisfy = true`：手动互动等同于用户自己点它（前提由插件补齐，比如点自拍会
+          // 先把手机掏出来）。自动路径（摸鱼/相位）才不能补。
+          chooseSlotOption(slot, option, true);
+          noteReactionTouched(slot.id);
+          armReactionRevert();
+          return true;
+        }
+      }
+      // ② 不是槽位选项：当**动作组**播一次。这一段是临时表演，记下当前动作、演完接回去。
+      motion.current.resumeAfter(previousMotionPlan());
       const groups = motion.current.groups();
       const entry = (petRef.current?.motions ?? []).find((item) => item.label === label);
       const group = entry !== undefined && Array.isArray(groups[entry.group]) ? entry.group : undefined;
       if (group !== undefined) {
         motion.current.playOnce(group, 0, { kind: "tap" });
+        armReactionRevert();
         return true;
       }
       if (Array.isArray(groups[label])) {
         motion.current.playOnce(label, 0, { kind: "tap" });
+        armReactionRevert();
         return true;
       }
+      // ③ 当成表达式闪一下。表达式不碰身体，所以刚才那份"接回"要撤掉（否则会空接一次）。
+      motion.current.resumeAfter(null);
       flashExpression(label);
+      armReactionRevert();
       return true;
-    }, [flashExpression]);
+    }, [chooseSlotOption, flashExpression]);
+
+    /**
+     * 她现在演的是什么（用于"反应演完接回来"）。
+     *
+     * 只认**槽位动作**：`currentGroup` 是引擎当前的动作组，而它的选项在 `expressionSlots`
+     * 里按标签反查 —— 拿到**同一个选项**才能把 `persist` / `hold` 原样带回去（举着的手
+     * 靠 `persist` 才不会被看门狗放下）。查不到就返回 null（回待机，和以前一样）。
+     *
+     * ⚠️ 刻意用**函数声明**：`runReaction` 在上面就要用它，`const` 会 TDZ（和
+     * `chooseSlotOption` 同一个理由）。
+     */
+    function previousMotionPlan() {
+      const group = motion.current.currentGroup();
+      if (typeof group !== "string" || group === "" || group === "Idle") return null;
+      for (const slot of petRef.current?.expressionSlots ?? []) {
+        for (const option of slot.options ?? []) {
+          if (option.motion !== group) continue;
+          return {
+            group,
+            index: 0,
+            options: { kind: "slot", hold: true, persist: true },
+          };
+        }
+      }
+      return null;
+    }
     runReactionRef.current = runReaction;
 
     /**
@@ -5420,8 +6160,12 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
      * @param {boolean} satisfy 手动点选时传 true：前提由插件补齐（点自拍会先把手机
      *   掏出来）。摸鱼/相位这些自动路径**不能**传 —— 那会绕过用户配的权重，
      *   变成"她自己去掏手机再拍照"。
+     *
+     * ⚠️ 这里刻意用**函数声明**（不是 `const … = useCallback`）：`runReaction` 在上面、
+     * 又要调它（互动反应 = 换一个槽位的选项）。`const` 有 TDZ，首次渲染就会
+     * "Cannot access before initialization"；函数声明会提升，所以顺序随便放。
      */
-    const chooseSlotOption = useCallback((slot, option, satisfy) => {
+    function chooseSlotOption(slot, option, satisfy) {
       // 关系（同时 / 前提）是按**选项**生效的：用户在这里改过的内容必须对面板点选、
       // 摸鱼抽中、相位抽中同时成立，所以统一在这一个入口合成。
       option = effectiveOption(slot.id, option);
@@ -5583,7 +6327,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       // choice the user reverses from this panel (or with 归位), and expiring it
       // after a few seconds would make the panel feel broken.
       window.clearTimeout(expressionTimer.current);
-    }, [applyExpressions]);
+    }
 
     // The fidget effect below subscribes on a different dependency list, so it
     // reaches the chooser through a ref. Without this assignment the ref keeps
@@ -5619,12 +6363,16 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
      * 对不上就当没存过，不要凭空造一个选项出来）。
      */
     const outfitRestoredRef = useRef(false);
-    useEffect(() => {
-      if (outfitRestoredRef.current || !ready) return;
-      if (slotByIdRef.current.size === 0) return;
-      outfitRestoredRef.current = true;
-      const saved = readOutfit();
-      if (saved === null) return;
+    /**
+     * 把一份装扮存档应用到槽位上（**同一份清洗逻辑**，两个入口共用）。
+     *
+     * 两个入口：① 启动时读本地存档；② 模块级的轮询从宿主拉回"另一个窗口改的那份"。
+     * 校验必须一致 —— 写两份的话，一边校验一边不校验，就会出现"某个窗口能存进去、
+     * 另一个窗口把它丢掉"的怪现象。
+     */
+    const applyOutfit = (saved) => {
+      if (saved === null || typeof saved !== "object") return false;
+      if (slotByIdRef.current.size === 0) return false;
       const chosen = Object.assign({}, slotSelectionsRef.current);
       let restored = false;
       for (const id of OUTFIT_SLOTS) {
@@ -5634,9 +6382,19 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         chosen[id] = label;
         restored = true;
       }
-      if (!restored) return;
+      if (!restored) return false;
       slotSelectionsRef.current = chosen;
       commitPinsRef.current();
+      return true;
+    };
+    // 挂上模块级的桥：宿主的改动由轮询拉回来后走这里（见 applyOutfitRef 的注释）。
+    applyOutfitRef.current = applyOutfit;
+
+    useEffect(() => {
+      if (outfitRestoredRef.current || !ready) return;
+      if (slotByIdRef.current.size === 0) return;
+      outfitRestoredRef.current = true;
+      applyOutfit(readOutfit());
     }, [ready]);
 
     // ---- session activity (#4) -----------------------------------------
@@ -6176,10 +6934,75 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       };
     }, [panelOpen]);
 
+    /**
+     * 显示层：这只宠物现在归谁管。
+     *
+     * 宠物有两条呈现路径 —— **页面内**（就是这里）与**桌面上**（一个原生窗口进程）。
+     * 两边都可能活着，所以按 `mode` + 桌面端心跳算出一个 owner；**owner 不是我就让位**
+     * （判据见 `rootStyle` 调用处：两边跑的是同一段客户端代码，"我是谁"要自己判断）。
+     *
+     * 让位用的是 `visibility: hidden` + `pointer-events: none`，**不是 `display: none`**：
+     * 后者会让元素尺寸变 0（`getBoundingClientRect()` 全零），而命中遮罩、自适应缩放都
+     * 靠尺寸算 —— 藏起来再显示回来时判定就歪了。`visibility` 保留布局，一藏一显不留后遗症。
+     *
+     * **轮询不在这里**：它由模块级单例 `ensureLayerPolling()` 负责。写在这个组件的 effect
+     * 里曾经导致一个很隐蔽的 bug —— 选了"桌面"之后这个组件让位/不渲染，轮询随之停掉，
+     * 于是设置页那一行永远停在旧文本（要重开设置页才更新）。观测者不能是要观测的那个东西。
+     */
+    useEffect(() => {
+      ensureLayerPolling();
+    }, []);
+
     const onContextMenu = useCallback((event) => {
       event.preventDefault();
       setPanelOpen(true);
     }, []);
+
+    /**
+     * 桌面端专属：**托盘菜单**驱动的两个动作。
+     *
+     * 桌宠没有任务栏按钮（壳把窗口设成不进任务栏），托盘是唯一的常驻入口。所以
+     * "设置…"和"归位"这两项要把动作送到页面里来：
+     *
+     *   * `settings` → 打开面板并切到设置页签（等于替用户点开它）；
+     *   * `reset`    → 位置与大小回到默认，并演一下"归位"的反应。
+     *
+     * **两条通道都接**：
+     *   * `window.__petCommand(name)` —— 桌面壳的**命令队列**（页面每 33ms 取一次）；
+     *   * `pet://reset` / `pet://settings` DOM 事件 —— 网页端与将来可能有的桥。
+     *
+     * 为什么命令走 HTTP 而不是 Tauri 的窗口事件：`window.emit()` **不发 DOM 事件**、
+     * 只走 IPC，而外部页面没有 `window.__TAURI__`（壳里 `withGlobalTauri: false`）。
+     * 原来只监听 DOM 事件，于是托盘里"设置""归位"点了**永远没反应**（用户报过）。
+     */
+    useEffect(() => {
+      if (!desktopNow()) return undefined;
+      const onReset = () => {
+        // 默认位置就是首次打开时那套（面板右下角），见 pos 的初始化。
+        setSize(DEFAULT_SIZE);
+        setPos({ right: 24, bottom: 0 });
+        saveStored({ size: DEFAULT_SIZE, right: 24, bottom: 0 });
+        lastInteraction.current = Date.now();
+        say(pick(linesNow().reset));
+      };
+      const onSettings = () => {
+        setTab("settings");
+        setPanelOpen(true);
+      };
+      /** 壳的命令队列入口：名字与 DOM 事件同一套。 */
+      const onCommand = (command) => {
+        if (command === "reset") onReset();
+        else if (command === "settings") onSettings();
+      };
+      window.__petCommand = onCommand;
+      window.addEventListener("pet://reset", onReset);
+      window.addEventListener("pet://settings", onSettings);
+      return () => {
+        if (window.__petCommand === onCommand) delete window.__petCommand;
+        window.removeEventListener("pet://reset", onReset);
+        window.removeEventListener("pet://settings", onSettings);
+      };
+    }, [say]);
 
     const onPointerDown = useCallback((event) => {
       if (event.button !== 0) return;
@@ -6230,22 +7053,29 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           });
         } else if (state.onModel) {
           lastInteraction.current = Date.now();
-          // **摸头优先于摸尾巴**：两者区域可能重叠（尾巴/翅膀挂件在身后，几何上会伸到
-          // 头部附近），先判头才符合直觉 —— 用户报的"摸头出的是摸尾巴的效果"就是
-          // 原来先判尾巴造成的。隐藏配件的问题另有 isDrawableVisible 兜着。
-          if (state.onHead && FLAGS.patEnabled) {
+          // **摸尾巴优先于摸头**（2026-09 按用户要求翻回来的）。
+          //
+          // 历史：最早就是"先判尾巴"，用户报"摸头出的是摸尾巴的效果" → 改成"先判头"。
+          // 当时的原因是**失败模式**：`hitsTail` 把 16 块名字带"尾/翅"的几何全算尾巴，
+          // 其中 11 块是**可换配件**（几何一直留在原地、横跨全身），于是尾鳍上 86.6% 的
+          // 点同时算头（`cdp-interact` 里量到的），先判尾巴等于"点在头部也给尾巴反应"。
+          //
+          // 现在那个前提没了：尾鳍已按**贴图**收窄到 5 块真尾鳍（`TAIL_FIN_UV`），实测
+          // 重叠降到 **9%**（网格 32×32：只算头 262、只算尾巴 17、两者都算 29）。而用户
+          // 看到的是"尾巴画在头发上面"—— 点在**看得见的尾鳍**上时，他要的是摸尾巴。
+          // 取舍：那 29 格（头部区域里的一小片）现在会给尾巴反应；换来的是可见尾鳍上的
+          // 点击行为与画面一致。改回去只需把这两个分支换回来。
+          if (state.onTail && FLAGS.tailEnabled) {
+            const list = interactionReactions("tailReactions");
+            if (list.length > 0) runReactionRef.current(pick(list));
+            say(pick(linesNow().tail));
+          } else if (state.onHead && FLAGS.patEnabled) {
             // 摸头：从 `patReactions` 里随机挑一个（默认是 重锤出击 / 问号 / 星星眼），
             // 并且**故意不脸红**。表情类反应是"闪一下"，到点由自动清理收走，
             // 所以摸头不会在用户选的槽位上留下永久表情。
             const list = interactionReactions("patReactions");
             if (list.length > 0) runReactionRef.current(pick(list));
             say(pick(linesNow().pat));
-          } else if (state.onTail && FLAGS.tailEnabled) {
-            // 摸尾巴：判据和摸头同一套（模型自己的三角面），部件集合是 cdi3 里
-            // 命名为尾/鳍/翅/翼 的那些。反应从 pet.json 的 `tailReactions` 里随机。
-            const list = interactionReactions("tailReactions");
-            if (list.length > 0) runReactionRef.current(pick(list));
-            say(pick(linesNow().tail));
           } else {
             // Anywhere else on the character is a lighter acknowledgement —
             // deliberately WITHOUT 重锤出击, which now belongs to the head only.
@@ -6327,6 +7157,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     const panel = panelOpen && pet !== undefined
       ? h("div", {
           "data-panel": "",
+          // 桌面端的设置页签需要更宽（见样式表里那条 [data-wide]）。
+          ...(tab === "settings" ? { "data-wide": "" } : {}),
           // Pin the panel once it is on screen (requirement #11).
           //
           // It is anchored to the pet's box, so resizing the pet moved the panel
@@ -6365,9 +7197,17 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
             // DSH 自己的设置页（那一节由 host 注册，和这里共用同一份 store），右键面板
             // 里再放一份，只是"改池子不用翻设置"。用户要求去掉 —— 面板现在只负责
             // 「点一下换个样子」，改数值去设置页。
+            //
+            // **桌面端是例外**：那边没有 DSH 设置页（`ctx.slots` 挂不上），设置正文
+            // 没有别的家 —— 所以只在桌面端把这一页签加回来。守卫见 desktopNow()。
+            desktopNow() ? h("button", {
+              type: "button",
+              "data-tab-settings": "",
+              ...(tab === "settings" ? { "data-on": "" } : {}),
+              onClick: () => setTab("settings"),
+            }, "设置") : null,
           ),
-          h("div", { "data-body": "" }, tab === "slots"
-            // Dress-up slots: one choice each, and choices in different slots
+          h("div", { "data-body": "" }, tab === "slots"            // Dress-up slots: one choice each, and choices in different slots
             // coexist (glasses AND cat ears AND a dark tablecloth).
             ? (pet.expressionSlots ?? []).map((slot) => {
                 // An option is active when every expression it carries is pinned:
@@ -6417,6 +7257,11 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
                   }, entry.count > 1 ? "第 " + (index + 1) + " 段" : "播放")),
                 ),
               ))
+            : tab === "settings"
+            // 桌面端专属：设置正文（和 DSH 设置页那一节是同一个组件、同一份 store）。
+            // 外面这层 `data-settings` 把作用域带进来 —— 面板只有 270→340px 宽，
+            // 样式表里已经为窄容器收过一档列宽。
+            ? h("div", { "data-settings": "", "data-panel-settings": "" }, h(PetSettingsBody, null))
             : null,
           ),
           h("div", { "data-hintrow": "" }, "在宠物身上点右键打开这里 · Esc 或点空白处关闭"),
@@ -6438,13 +7283,25 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     return h("div", {
       [PET_ATTR]: "",
       ref: rootRef,
-      style: rootStyle(size, pos),
+      // **让位判据**：owner 不是我，就把自己藏起来。
+      //
+      // 客户端半区在**两边**都跑（DSH 页面里一份、桌面端窗口里一份），所以"我是谁"要自己
+      // 判断：桌面壳会建 `window.__petDesktop`（页面侧没有这个）。
+      //   * 页面里：所有权在桌面端 → 让位（否则会看见两只）
+      //   * 桌面端：所有权在页面内（用户选了"页面内"）→ 让位
+      // 这两个方向必须都判，否则会出现"两只"或"一只都没有"。
+      style: rootStyle(size, pos, isDesktopShell ? layer.owner !== "desktop" : layer.owner !== "inline"),
       // Observability: the committed action of the motion state machine
       // ('idle' while resting) and the current gaze target, so the pet's
       // behaviour is inspectable without reaching into engine internals.
       "data-motion": motionGroup === "" ? "idle" : motionGroup,
       "data-gaze": gaze,
       "data-phase": phase,
+      // 显示层：owner=desktop 时这一份已经让位（藏在桌面端那只后面）。
+      "data-layer": layer.owner,
+      "data-layer-mode": layer.mode,
+      // 这一份是"页面里"还是"桌面窗口里" —— 让位判据与诊断都靠它。
+      "data-renderer": isDesktopShell ? "desktop" : "page",
       // 宿主主题：面板与气泡的配色 token 按它切（见 CSS 里的 --pp-*）。
       "data-theme": theme,
     },
@@ -6488,8 +7345,21 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
 
   /** Positioning lives on the pet's own root div, so it works whether it is
    * reached through the React container or not. */
-  function rootStyle(size, pos) {
-    return { width: size, height: size, right: pos.right, bottom: pos.bottom };
+  function rootStyle(size, pos, yieldToOther) {
+    const style = { width: size, height: size, right: pos.right, bottom: pos.bottom };
+    if (yieldToOther === true) {
+      // 让位给**另一份**实现：**不用 display:none**（尺寸会变 0，命中遮罩与自适应缩放都
+      // 靠它算，藏一次再显示判定就歪了）。visibility 保留布局，pointer-events 顺带让点击穿过去。
+      //
+      // ⚠️ 判据是"owner **不是**我"，不是"owner 是桌面端"。
+      // 客户端半区在**两边**都跑：页面里一份、桌面端的窗口里一份，而两边跑的是同一段
+      // 客户端代码。所以"owner === desktop"在**桌面端那一份里**也为真 —— 写成那样会把
+      // 唯一该显示的那只藏起来（实测：窗口可见、canvas 也在画、就是 `visibility: hidden`，
+      // 用户看到的是"桌面上什么都没有"）。
+      style.visibility = "hidden";
+      style.pointerEvents = "none";
+    }
+    return style;
   }
 
   // --------------------------------------------------------------- mount
@@ -7053,8 +7923,118 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     );
   }
 
-  function PetSettingsBody() {
+  /**
+   * 显示层：桌宠在**页面内**还是**桌面上**。
+   *
+   * 三个选项就是 `pet-desktop.json` 的 `mode`：`auto` 谁在跑听谁的、`inline` 永远在页面里、
+   * `desktop` 永远在桌面上（没跑就拉起）。改完 POST 给宿主半区 —— 它负责拉起/收掉桌面端
+   * 并写偏好文件；**页面只读不写**，两个写者会互相擦。
+   *
+   * 这一整张卡只在"这个平台有桌面版"时才有意义；没有的话（比如 macOS 还没构建）给一行
+   * 说明而不是三个点了没反应的按钮。
+   */
+  function LayerControls() {
     useSettings();
+    const layer = useLayerState();
+    const [busy, setBusy] = useState(false);
+    const [note, setNote] = useState("");
+    const current = layer;
+    const options = [
+      ["auto", "自动", "桌面端在跑就用桌面，否则留在页面里"],
+      ["inline", "页面内", "永远在 DSH 页面里（随 DSH 启停）"],
+      ["desktop", "桌面", "永远在桌面上；没跑就拉起一个"],
+    ];
+    const choose = (mode) => {
+      setBusy(true);
+      setNote("正在切换…");
+      fetch(API + "/layer", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ mode }),
+      }).then((response) => response.json()).then((payload) => {
+        setBusy(false);
+        // **选「桌面」但没成，必须说清楚为什么** —— 否则症状就是"点了没反应"。
+        // 两种最常见：二进制不在（还没装 / 还没构建）、拉起来了但没起来。
+        //
+        // 这条是补的：第一版只把 `desktopRunning` 翻成一句陈述句（"桌面端没在跑。"），
+        // 用户点完看到的字和点之前几乎一样，于是合理地报"啥变化都没有"。
+        if (payload?.ok !== true) {
+          setNote("切换失败：" + (payload?.error ?? "未知"));
+          return;
+        }
+        if (payload.mode === "desktop" && payload.desktopRunning !== true) {
+          setNote(payload.binary?.found === true
+            ? "桌面端拉起来了，但它没在 6 秒内报活 —— 看看是不是被系统拦住了（未签名的 exe 会被 SmartScreen 拦）"
+            : "桌面端二进制不在" + (payload.binary?.hint === undefined ? "" : "：" + payload.binary.hint));
+          return;
+        }
+        setNote(payload.desktopRunning === true ? "桌面端已在跑。" : "已切回页面内。");
+      }).catch((error) => {
+        setBusy(false);
+        setNote("切换失败：" + String(error && error.message));
+      });
+    };
+    const binary = current.binary ?? {};
+    const supported = binary.supported !== false;
+    const download = current.download ?? { state: "idle" };
+    const missing = supported && binary.found !== true;
+    /** 惰性下载：二进制不在时那个按钮做的事（先回话、后台下，进度靠每秒轮询带回来）。 */
+    const fetchBinary = () => {
+      setNote("正在下载桌面端（约 5MB）…");
+      fetch(API + "/layer", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "download-desktop" }),
+      }).then((response) => response.json()).then((payload) => {
+        setNote(payload?.download?.started === true ? "下载已开始…" : "下载没能开始：" + (payload?.download?.reason ?? "未知"));
+      }).catch((error) => setNote("下载请求失败：" + String(error && error.message)));
+    };
+    const downloadLine = download.state === "downloading"
+      ? "正在下载…"
+      : download.state === "done"
+        ? "下载完成，已就绪"
+        : download.state === "failed"
+          ? "下载失败（" + String(download.reason ?? "未知") + (download.detail === null || download.detail === undefined ? "" : "：" + download.detail) + "）"
+          : null;
+    return h("div", { "data-setting": "layer" },
+      // 三个选项是**药丸按钮**：形状与反应候选那排 chips 共用同一条规则，所以外面要套一层
+      // `[data-reaction-set]`（设置页作用域的 chips 样式挂在它下面）。少这层壳的表现是
+      // "三个按钮挤成一行字"，实测过一次。
+      h("div", { "data-reaction-set": "", "data-layer-options": "" },
+        h("div", { "data-chips": "" },
+          ...options.map(([mode, label, hint]) => h("button", {
+            key: mode,
+            type: "button",
+            title: hint,
+            disabled: busy,
+            ...(current.mode === mode ? { "data-on": "" } : {}),
+            "data-layer-mode": mode,
+            onClick: () => choose(mode),
+          }, label)))),
+      // 状态行：**只在这里**说一次"二进制在不在"，不要和选项混在一段里。
+      //
+      // 缺二进制时给一个**能点的下一步**：只说"不在"，用户除了盯着看没有别的动作可做 ——
+      // 这正是"点了桌面没反应"那次投诉的另一半。
+      h("div", { "data-note-inline": "", "data-layer-status": "" },
+        [supported ? null : "本平台还没有桌面版构建",
+          missing ? "桌面端二进制不在" : null,
+          supported && binary.found === true
+            ? "桌面端：" + (current.desktopRunning ? "运行中（已接管）" : "没在跑") + "（" + String(binary.source ?? "") + "）"
+            : null,
+          downloadLine,
+          note === "" ? null : note,
+        ].filter((line) => line !== null).join(" · ")),
+      missing ? h("div", { "data-layer-actions": "" },
+        h("button", {
+          type: "button",
+          disabled: busy || download.state === "downloading",
+          "data-layer-download": "",
+          onClick: fetchBinary,
+        }, download.state === "downloading" ? "下载中…" : "下载桌面端（约 5MB）")) : null,
+    );
+  }
+
+  function PetSettingsBody() {    useSettings();
     const card = (key, title, hint, body) => h("div", { key, "data-card": key },
       h("div", { "data-card-head": "" },
         h("span", { "data-card-title": "" }, title),
@@ -7065,6 +8045,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     return [
       ...TUNING_GROUPS.filter((group) => !TUNING_GROUPS_INLINE.includes(group.id)).map((group) => card(
         "tune-" + group.id, group.label, group.hint, h(TuningControls, { group: group.id }))),
+      // 显示层放最上面：它是"这只宠物在哪"的问题，比手感/池子更先要回答。
+      card("layer", "显示位置", "页面内 / 桌面上", h(LayerControls, null)),
       card("phases", "会话相位", "每个相位一组池子", h(PhaseControls, null)),
       // 「摸鱼节奏」（多久摸一次）和「摸鱼」（摸鱼做什么）是同一件事的两半，原来
       // 被「会话相位」隔成两张卡，调摸鱼要上下跳。合成一张：节奏在上、池子在下。
@@ -7115,9 +8097,31 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
 
   function apply(ctx) {
     ensureStyle();
-    // 设置值在模块作用域，客户端启动时读一次存档就够了。
+    // 先按本地存档起来（宿主不在时这就是全部）。
     restoreTuning();
     restoreOverrides();
+    // 再问宿主要"共享的那一份"：桌面端与 DSH 是两个 origin，localStorage 互不可见，
+    // 所以跨窗口一致只能靠宿主。拉回来会覆盖本地（宿主是权威），并广播给两个界面。
+    const applyRemote = (payload) => {
+      applyShared(payload, {
+        tuning: (value) => restoreTuning(value),
+        overrides: (value) => {
+          restoreOverrides(value);
+          notifySettings();
+        },
+        outfit: (value) => {
+          // 装扮是"槽位选择"：灌进去要顺带把 pin 重算一遍（否则画面不跟着变）。
+          // 真正的实现在 `Pet` 里（槽位状态在那边），走模块级的桥。
+          if (applyOutfitRef.current !== null) applyOutfitRef.current(value);
+          notifySettings();
+        },
+      });
+    };
+    void pullShared(applyRemote);
+    // 3 秒轮询：另一个窗口改了，这个窗口跟着变。`storage` 事件不跨 origin，只能轮询。
+    if (sharedPoll === 0) {
+      sharedPoll = window.setInterval(() => { void pullShared(applyRemote); }, SHARED_POLL_MS);
+    }
     applySettings(ctx);
     // Takeover: an earlier instance — a hot reload, or one left behind by a
     // crashed reload — must not leave a second floating pet on the page.

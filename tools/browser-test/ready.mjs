@@ -8,6 +8,7 @@
 //
 // Polling a real condition costs nothing when the condition is already true and
 // stays correct when the machine is slow, which a fixed sleep never is.
+import { execFileSync } from 'node:child_process'
 
 /** Resolve once the pet has loaded and produced its click mask. */
 export async function waitReady(ev, timeoutMs = 30000) {
@@ -88,4 +89,29 @@ export async function pageErrors(ev) {
 }
 export async function pauseFidget(ev) {
   return ev('window.__dshLive2dPet.setFidgetEnabled(false)')
+}
+
+/**
+ * 收掉无头浏览器 —— **整棵进程树**，不是那个父进程。
+ *
+ * 每个 driver 原来写的是 `edge.kill()`，而 headless Edge 会派生子进程（渲染、GPU、
+ * utility…），杀父进程**不会**带走它们。实测一轮套件跑完留下 **101 个**无头浏览器进程
+ * 在那儿占 CPU —— 下一轮就更慢，断言也更容易在负载下读到半途的值。
+ *
+ * 所以统一走这里：Windows 用 `taskkill /T /F`（Node 的 `kill` 没有树语义），
+ * 其它平台杀进程组。**同步**执行 —— 后面紧接着 `process.exit()` 的那些 driver 里也得生效。
+ */
+export function killBrowser(child) {
+  const pid = child?.pid
+  if (typeof pid !== 'number' || pid <= 0) return
+  try {
+    if (process.platform === 'win32') {
+      execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' })
+      return
+    }
+    process.kill(-pid, 'SIGKILL')
+  } catch {
+    // 已经退了，或者权限不够：退回普通 kill，至少把父进程收掉。
+    try { child.kill() } catch { /* 真的没了 */ }
+  }
 }

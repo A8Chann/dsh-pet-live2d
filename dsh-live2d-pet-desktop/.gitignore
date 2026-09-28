@@ -1,0 +1,24 @@
+# ---- 运行期产物（不进仓库）----
+node_modules/
+.run/
+dist/
+
+# ---- Rust ----
+src-tauri/target/
+src-tauri/gen/
+# 诊断用的小工具（`src-tauri/src/bin/`）按需创建，不进仓库
+src-tauri/src/bin/
+
+# ---- npm 平台子包 ----
+# 清单与 README 进仓库；exe 是构建产物（9MB，由 tools/npm-prepare-subpackage.mjs 铺）
+npm/desktop-win32-x64/bin/*.exe
+
+# ---- 截图证据 ----
+# 只留文档里用到的那两张；临时对比、调试截图不进仓库。
+shots/*
+!shots/pet-on-desktop.png
+!shots/settings-panel.png
+
+# 说明：以前这里还忽略过 "构建产物"（sidecar/embed、embed-manifest、src-tauri/binaries）——
+# 那是 deno sidecar 那条路留下的，宿主半区翻成 Rust 之后资源由 build.rs 在编译期嵌入，
+# 这三个路径都不存在了。

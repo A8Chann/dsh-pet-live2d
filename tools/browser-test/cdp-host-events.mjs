@@ -9,7 +9,8 @@ import { spawn } from 'node:child_process'
 import { rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { browserPath, PROFILES, BASE } from './paths.mjs'
-import { waitReady } from './ready.mjs'
+import { waitReady, killBrowser } from './ready.mjs'
+import { waitForBoot } from './wait-for.mjs'
 
 const EDGE = browserPath()
 const PORT = 9377
@@ -34,7 +35,7 @@ const api = async (path) => JSON.parse(await (await fetch(BASE + path)).text())
 
 await send('Runtime.enable'); await send('Page.enable')
 await send('Page.navigate', { url: BASE + '/' })
-for (let i = 0; i < 240; i++) { await sleep(500); if (await ev('document.title') === 'done') break }
+await waitForBoot(ev)
 await waitReady(ev)
 
 const results = []
@@ -170,7 +171,7 @@ check('pet celebrates', celebrated, 'data-motion=' + await attr('data-motion'))
 const bad = results.filter(r => !r.ok)
 console.log((bad.length === 0 ? 'OK' : 'FAILED') + '  ' + (results.length - bad.length) + '/' + results.length + ' checks passed')
 ws.close()
-edge.kill()
+killBrowser(edge)
 // Give the socket a moment to finish closing. Calling process.exit() while it
 // is mid-close trips a libuv assertion on Windows, and the suite keys off the
 // exit code, so that teardown noise would be reported as a test failure.

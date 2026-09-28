@@ -16,8 +16,9 @@
 import { spawn } from 'node:child_process'
 import { rmSync } from 'node:fs'
 import { browserPath, PROFILES, BASE } from './paths.mjs'
-import { waitReady, openPanel, panelFooter } from './ready.mjs'
+import { waitReady, openPanel, panelFooter, killBrowser } from './ready.mjs'
 import { join } from 'node:path'
+import { waitForBoot } from './wait-for.mjs'
 
 const EDGE = browserPath()
 const PORT = 9383
@@ -40,7 +41,7 @@ const send = (a, p = {}) => new Promise(r => { const id = ++nextId; pending.set(
 const ev = async (e) => (await send('Runtime.evaluate', { expression: e, awaitPromise: true, returnByValue: true })).result?.result?.value
 await send('Runtime.enable'); await send('Page.enable')
 await send('Page.navigate', { url: BASE + '/?variant=DBG' })
-for (let i = 0; i < 240; i++) { await sleep(400); if (await ev('document.title') === 'done') break }
+await waitForBoot(ev)
 await waitReady(ev)
 
 const results = []
@@ -313,6 +314,6 @@ check('重载之后装扮真的画出来了', (await drawn('ParamCheek71')) === 
 const bad = results.filter((r) => !r.ok)
 console.log((bad.length === 0 ? 'OK' : 'FAILED') + '  ' + (results.length - bad.length) + '/' + results.length + ' checks passed')
 ws.close()
-edge.kill()
+killBrowser(edge)
 await sleep(300)
 process.exit(bad.length === 0 ? 0 : 1)

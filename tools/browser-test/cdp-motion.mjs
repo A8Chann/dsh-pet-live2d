@@ -1,8 +1,9 @@
 import { spawn } from 'node:child_process'
 import { rmSync, writeFileSync } from 'node:fs'
 import { browserPath, PROFILES, BASE } from './paths.mjs'
-import { waitReady, openPanel } from './ready.mjs'
+import { waitReady, openPanel, killBrowser } from './ready.mjs'
 import { join } from 'node:path'
+import { waitForBoot } from './wait-for.mjs'
 const EDGE = browserPath()
 const PORT = 9441
 const PROFILE = join(PROFILES, '_cdp-motion')
@@ -24,7 +25,7 @@ const send = (a, p = {}) => new Promise(r => { const id = ++nextId; pending.set(
 const ev = async (e) => (await send('Runtime.evaluate', { expression: e, awaitPromise: true, returnByValue: true })).result?.result?.value
 await send('Runtime.enable'); await send('Page.enable')
 await send('Page.navigate', { url: BASE + '/?variant=DBG' })
-for (let i = 0; i < 240; i++) { await sleep(400); if (await ev('document.title') === 'done') break }
+await waitForBoot(ev)
 await waitReady(ev)
 const IDS = ["chuipaopao","chuipaopao2","chuipaopao7","pengshui","jingyu","phone","phone2","phone4"]
 const readExpr = 'JSON.stringify((()=>{const raw=window.__PET_DBG.model.internalModel.coreModel._model.parameters; const o={}; for(const id of ' + JSON.stringify(IDS) + '){const i=Array.from(raw.ids).indexOf(id); o[id]=i<0?"NOID":+raw.values[i].toFixed(2)} return o})())'
@@ -147,6 +148,6 @@ await sleep(600)
 const bad = results.filter((r) => !r.ok)
 console.log((bad.length === 0 ? 'OK' : 'FAILED') + '  ' + (results.length - bad.length) + '/' + results.length + ' checks passed')
 ws.close()
-edge.kill()
+killBrowser(edge)
 await sleep(300)
 process.exit(bad.length === 0 ? 0 : 1)

@@ -11,7 +11,8 @@ import { spawn } from 'node:child_process'
 import { rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { browserPath, PROFILES, BASE } from './paths.mjs'
-import { waitReady, openPanel, pageErrors } from './ready.mjs'
+import { waitReady, openPanel, pageErrors, killBrowser } from './ready.mjs'
+import { waitForBoot } from './wait-for.mjs'
 
 const EDGE = browserPath()
 const PORT = 9388
@@ -35,7 +36,7 @@ const ev = async (e) => (await send('Runtime.evaluate', { expression: e, awaitPr
 
 await send('Runtime.enable'); await send('Page.enable')
 await send('Page.navigate', { url: BASE + '/' })
-for (let i = 0; i < 240; i++) { await sleep(500); if (await ev('document.title') === 'done') break }
+await waitForBoot(ev)
 
 const results = []
 const check = (label, ok, detail) => { results.push({ label, ok }); console.log((ok ? '  PASS ' : '  FAIL ') + label + (detail ? '   ' + detail : '')) }
@@ -167,7 +168,7 @@ const tailProbe = await json(`(() => {
 check('摸尾巴判定与几何一致：有几何就该有命中；几何全退化（默认没戴尾巴配件）就该一个都不中',
   tailGeometry.length > 0 ? (tailProbe?.tail ?? 0) > 0 : (tailProbe?.tail ?? -1) === 0,
   '有几何的部件=' + JSON.stringify(tailGeometry) + ' tail 命中=' + tailProbe?.tail)
-check('找得到一个只在头部的点（下面那条路由断言才有意义）',
+check('找得到一个**只算头、不算尾巴**的点（下面那条路由断言才有意义）',
   tailProbe?.headPoint !== null && tailProbe?.headPoint !== undefined,
   JSON.stringify({ headPoint: tailProbe?.headPoint, both: tailProbe?.both, head: tailProbe?.head, tail: tailProbe?.tail }))
 if (tailProbe?.headPoint) {
@@ -181,7 +182,15 @@ if (tailProbe?.headPoint) {
     return text !== null && (String(patLines).includes(text) || String(tailLines).includes(text))
   }, 6000)
   const text = await bubble()
-  check('点头部给的是**摸头**的台词，不是摸尾巴的（用户报的就是这个）',
+  // 路由是**尾巴优先**（2026-09 按用户要求从"头优先"翻回来）。
+  //
+  // 历史：最早先判尾巴，用户报"摸头出的是摸尾巴的效果" → 改成先判头；那个报告的前提是
+  // `hitsTail` 把 11 块**没显形的配件**也算进去（尾鳍上 86.6% 的点同时算头）。收窄到
+  // 5 块真尾鳍之后重叠降到 **9%**，而用户看到"尾巴画在头发上面"，于是要求点在尾鳍上算摸尾巴。
+  //
+  // 所以这条断言取的是**只算头、不算尾巴**的点（上面的 headPoint 已经是这个含义）：
+  // 点头部仍然给摸头台词；重叠那一片（29/1024 格）现在归尾巴，这是有意的取舍。
+  check('点**只算头**的部位给的是摸头台词（重叠区归尾巴，见路由注释）',
     said && String(patLines).includes(text),
     'bubble=' + text + ' pat=' + String(patLines) + ' tail=' + String(tailLines))
 }
@@ -355,27 +364,41 @@ check('开得回来', (await setFlag('bubbleEnabled', true)) === true)
 await sleep(400)
 
 // --- (4) 转圈转晕 -----------------------------------------------------------
-// 先把时间窗调大：合成的画圈是**逐次 CDP 往返**（231 次约 1.5-2 秒），默认窗口
-// 1600ms 会在转完之前到期、每轮清零。真实用户转两圈约 1 秒，所以默认值没问题 ——
-// 需要迁就的是测试。顺带这条断言也就验证了"窗口可配"。
-check('时间窗可配（调大到 6000ms）',
-  (await setInput('#dsh-settings-probe [data-input="spinWindowMs"]', '6000')) === true)
+// 时间窗必须**宽到与机器速度无关**：合成的画圈是逐次 CDP 往返（几百次），窗口一到期
+// 累计就被整轮作废。原来这里设的是 6000ms —— 那已经是这个字段的**上限**
+// （`spinWindowMs` 的 max，见 TUNING_FIELDS），机器吃力时画完 3.2 圈要 6 秒以上，
+// 于是只剩最后小半圈被累计、`total` 停在 0.59 弧度，三条断言一起假红（单跑就绿）。
+//
+// 所以这里**不假装能设更大**：断言改成"设置真的生效了"，值就是上限本身；要迁就的是
+// 画圈要比 6 秒快（下面那条 elapsed 断言会把这一点明确报出来，而不是留一堆看不懂的红）。
+const SPIN_WINDOW_MS = 6000
+check('时间窗可配（拉到上限 6000ms）',
+  (await setInput('#dsh-settings-probe [data-input="spinWindowMs"]', String(SPIN_WINDOW_MS))) === true)
 await sleep(400)
 check('窗口设置真的生效了',
-  (await ev('window.__dshLive2dPet.spinDebug().windowMs')) === 6000,
+  (await ev('window.__dshLive2dPet.spinDebug().windowMs')) === SPIN_WINDOW_MS,
   'windowMs=' + await ev('window.__dshLive2dPet.spinDebug().windowMs'))
 const spinSetup = await json(`(() => {
   const r = document.querySelector('[data-dsh-live2d-pet]').getBoundingClientRect()
   return JSON.stringify({ cx: r.x + r.width / 2, cy: r.y + r.height / 2, radius: r.width * 0.45 })
 })()`)
-const steps = 96
+// 步数=每圈 32 步（每步 ~11°，比"抖动"大得多，判定按 `atan2` 的增量累计，够用）。
+// 早先是每圈 96 步 = 308 次 CDP 往返，实测要 7 秒 —— 比 6 秒的窗口还长，累计必被作废。
+// 每次往返约 23ms 是这里唯一真正的时间开销，所以**减少步数**是唯一有效的办法。
+const steps = 32
 const turns = 3.2
+// 画圈本身要**比时间窗快**，否则窗口中途到期、累计被整轮作废（见上面的说明）。
+// 所以顺手量一下耗时并断言：机器吃力时这条会直接报出来，而不是让下面三条一起红。
+const spinStart = Date.now()
 for (let i = 0; i <= steps * turns; i++) {
   const angle = (i / steps) * Math.PI * 2
   const x = Math.round((spinSetup?.cx ?? 0) + Math.cos(angle) * (spinSetup?.radius ?? 100))
   const y = Math.round((spinSetup?.cy ?? 0) + Math.sin(angle) * (spinSetup?.radius ?? 100))
   await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, button: 'none', buttons: 0 })
 }
+const spinElapsed = Date.now() - spinStart
+check('合成画圈跑得比时间窗快（否则累计会被整轮作废）', spinElapsed < SPIN_WINDOW_MS * 0.8,
+  '画了 ' + Math.ceil(steps * turns) + ' 步用了 ' + spinElapsed + 'ms，窗口 ' + SPIN_WINDOW_MS + 'ms')
 const spinLine = await ev('JSON.stringify(window.__dshLive2dPet.effectiveLines().spin)')
 const spun = await until(async () => {
   const text = await bubble()
@@ -408,6 +431,6 @@ check('页面里没有未捕获异常', errors.length === 0, JSON.stringify(erro
 const bad = results.filter((r) => !r.ok)
 console.log((bad.length === 0 ? 'OK' : 'FAILED') + '  ' + (results.length - bad.length) + '/' + results.length + ' checks passed')
 ws.close()
-edge.kill()
+killBrowser(edge)
 await sleep(300)
 process.exit(bad.length === 0 ? 0 : 1)

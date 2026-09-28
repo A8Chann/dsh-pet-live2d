@@ -42,6 +42,11 @@
       },
       "OpenCase": {
         "hold": true
+      },
+      "Selfie": {
+        "ignoreKeptParams": [
+          "phone5"
+        ]
       }
     },
     "expressionSlots": [

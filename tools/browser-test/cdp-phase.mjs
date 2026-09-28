@@ -1,8 +1,9 @@
 import { spawn } from 'node:child_process'
 import { rmSync } from 'node:fs'
 import { browserPath, PROFILES, BASE } from './paths.mjs'
-import { waitReady } from './ready.mjs'
+import { waitReady, killBrowser } from './ready.mjs'
 import { join } from 'node:path'
+import { waitForBoot } from './wait-for.mjs'
 const EDGE = browserPath()
 const PORT = 9363
 const PROFILE = join(PROFILES, '_cdp-phase')
@@ -28,7 +29,7 @@ const send = (a, p = {}) => new Promise(r => { const id = ++nextId; pending.set(
 const ev = async (e) => (await send('Runtime.evaluate', { expression: e, awaitPromise: true, returnByValue: true })).result?.result?.value
 await send('Runtime.enable'); await send('Page.enable')
 await send('Page.navigate', { url: BASE + '/' })
-for (let i = 0; i < 240; i++) { await sleep(500); if (await ev('document.title') === 'done') break }
+await waitForBoot(ev)
 await waitReady(ev)
 
 // Log every SSE frame the page receives.
@@ -61,4 +62,4 @@ for (const p of ['thinking', 'tool', 'failed', 'done']) {
 await nudge('idle'); await sleep(600)
 console.log('final:', JSON.stringify(await read()))
 console.log('logs:', JSON.stringify(logs.slice(0, 6)))
-ws.close(); edge.kill(); process.exit(0)
+ws.close(); killBrowser(edge); process.exit(0)

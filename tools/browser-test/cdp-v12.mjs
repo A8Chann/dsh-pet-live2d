@@ -6,8 +6,9 @@ import { spawn } from 'node:child_process'
 import { rmSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { browserPath, PROFILES, BASE, SHOTS } from './paths.mjs'
-import { waitReady, openPanel, closePanel } from './ready.mjs'
+import { waitReady, openPanel, closePanel, killBrowser } from './ready.mjs'
 import { join } from 'node:path'
+import { waitForBoot } from './wait-for.mjs'
 
 const EDGE = browserPath()
 const PORT = 9360
@@ -39,7 +40,7 @@ const shot = async (n) => { const s = await send('Page.captureScreenshot', { for
 
 await send('Runtime.enable'); await send('Page.enable')
 await send('Page.navigate', { url: BASE + '/' })
-for (let i = 0; i < 240; i++) { await sleep(500); if (await ev('document.title') === 'done') break }
+await waitForBoot(ev)
 await waitReady(ev)
 const sleep2 = sleep
 const out = {}
@@ -220,4 +221,4 @@ out.fidgetReleased = out.afterFidget === 'idle'
 
 out.logs = logs.slice(0, 5)
 console.log(JSON.stringify(out, null, 1))
-ws.close(); edge.kill(); process.exit(0)
+ws.close(); killBrowser(edge); process.exit(0)

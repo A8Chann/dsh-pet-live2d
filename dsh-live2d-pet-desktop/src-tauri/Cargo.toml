@@ -1,0 +1,36 @@
+[package]
+name = "dsh-pet-live2d-desktop"
+version = "0.1.0"
+description = "DSH Live2D 桌宠的桌面端外壳（单文件 exe：透明常驻窗 + 逐像素穿透 + 托盘）"
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "dsh_pet_live2d_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+serde = { version = "1", features = ["derive"] }
+# `preserve_order`：**JSON 对象的键顺序必须与文件里的顺序一致**。
+# serde_json 默认用 BTreeMap（字典序），于是 `FileReferences.Motions` 会变成
+# BubbleGum / Hammer / Idle…，而 JS 的 `Object.entries()` 给的是文件里的声明顺序
+# （Idle 在前）—— 右键面板的「动作」页签是按这个顺序排的，用户看到的第一项会不一样。
+# 对拍就是靠这一条抓出来的。
+serde_json = { version = "1", features = ["preserve_order"] }
+# 随包宠物的内容指纹（.synced.json 的判定靠它）。
+sha2 = "0.10"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+
+# 单文件分发：体积与启动速度都算钱。strip 掉符号，LTO 拉满，按体积优化。
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+opt-level = "s"
+panic = "abort"

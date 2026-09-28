@@ -3,10 +3,10 @@
 // + a fake __ModuleLoader__). Nothing here ships; it exists so the plugin can
 // be driven end-to-end from a headless browser.
 import { createServer } from 'node:http'
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { HERE, PLUGIN } from './paths.mjs'
+import { HERE, PLUGIN, PROFILES } from './paths.mjs'
 
 const PORT = Number(process.argv[2] ?? 8793)
 
@@ -44,7 +44,26 @@ const emit = async (event, ...args) => {
 const hub = new ActivityHub()
 attachActivityEvents(bus, hub)
 
-const routes = buildRoutes(hub)
+// 显示层路由也要挂上：客户端每秒问一次 `/api/live2d-pet/layer`，而**没有路由的 harness
+// 会让它 404**，于是 `cdp-exp` 那条"没有失败的插件请求"断言会红（实测 5 个 404）。
+// 用**真的** `createDisplayLayer`（不是假响应）：这样"设置页读到的显示层状态"走的也是
+// 产品代码，顺手把 `/layer` 这条链在宿主侧也验了。
+//
+// home 指向一个可丢弃目录：绝不能让它读写用户真正的 `%DSH_HOME%\pet-desktop.json`。
+const { createDisplayLayer } = await import(pathToFileURL(join(PLUGIN, 'lib', 'display.js')).href)
+const displayHome = join(PROFILES, '_layer-home')
+mkdirSync(displayHome, { recursive: true })
+const displayLayer = createDisplayLayer({
+  home: displayHome,
+  hint: 'harness: 没有桌面端二进制',
+  resolveBinary: () => undefined,
+  log: () => {},
+})
+displayLayer.binaryInfo = () => ({ found: false, path: null, source: null, supported: true, hint: 'harness' })
+
+// 共享设置也挂上：driver 要能验证"宿主是权威、另一个窗口改了会同步过来"。
+// home 用同一个可丢弃目录 —— 绝不能碰用户真正的 `%DSH_HOME%\pet-settings.json`。
+const routes = buildRoutes(hub, displayLayer, displayHome)
 const byPath = new Map(routes.filter((r) => r.kind === 'exact').map((r) => [r.path, r]))
 const prefixes = routes.filter((r) => r.kind === 'prefix').sort((a, b) => b.path.length - a.path.length)
 

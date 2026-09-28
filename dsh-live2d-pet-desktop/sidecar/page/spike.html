@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="zh">
+
+<head>
+  <meta charset="utf-8">
+  <title>desktop spike</title>
+  <style>
+    /* 透明窗的第一步就是**页面自己也不能有底色**：body 上任何一抹颜色都会让整块
+       窗口实心，看起来像"透明没生效"，而其实是 CSS 的锅。 */
+    html,
+    body {
+      margin: 0;
+      height: 100%;
+      background: transparent;
+      overflow: hidden;
+      /* 桌面上的宠物不该能选中文字、也不该有滚动条。 */
+      user-select: none;
+      cursor: default;
+    }
+
+    /* 气球：用来验"透明 + 穿透 + 性能"。
+       刻意做成**不规则形状**——圆角矩形太容易被"看着像"骗过去，圆形的四个角必须
+       真的是桌面才行。 */
+    #balloon {
+      position: fixed;
+      left: 320px;
+      top: 220px;
+      width: 280px;
+      height: 340px;
+      border-radius: 50% 50% 46% 46%/54% 54% 42% 42%;
+      background: radial-gradient(circle at 38% 30%, #7fd4ff 0%, #3f8bff 42%, #23408f 100%);
+      box-shadow: 0 18px 60px rgba(20, 40, 90, .35), inset -18px -24px 60px rgba(0, 0, 0, .25);
+      animation: bob 3.4s ease-in-out infinite;
+    }
+
+    @keyframes bob {
+      0%,
+      100% {
+        transform: translateY(0) rotate(-1.2deg)
+      }
+      50% {
+        transform: translateY(-18px) rotate(1.2deg)
+      }
+    }
+
+    #balloon::after {
+      content: "";
+      position: absolute;
+      left: 50%;
+      bottom: -34px;
+      width: 2px;
+      height: 34px;
+      background: rgba(60, 70, 90, .55);
+      transform: translateX(-50%);
+    }
+
+    /* 诊断面板：壳与 driver 的读口，平时就摆在那儿，出问题一眼能看到判定结果。 */
+    #hud {
+      position: fixed;
+      right: 18px;
+      bottom: 18px;
+      width: 300px;
+      padding: 10px 12px;
+      border-radius: 12px;
+      background: rgba(16, 22, 34, .86);
+      color: #d8e3ff;
+      font: 12px/1.6 ui-monospace, Consolas, monospace;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, .4);
+      white-space: pre-wrap;
+    }
+
+    #hud b {
+      color: #7fd4ff;
+      font-weight: 600;
+    }
+
+    /* 开关按钮：给 M0 "关掉透明层，确认没挡住桌面"那条判据用的。 */
+    #controls {
+      position: fixed;
+      left: 18px;
+      bottom: 18px;
+      display: flex;
+      gap: 8px;
+    }
+
+    #controls button {
+      border: 0;
+      border-radius: 8px;
+      padding: 6px 10px;
+      background: rgba(16, 22, 34, .86);
+      color: #d8e3ff;
+      font: 12px/1 ui-monospace, Consolas, monospace;
+      cursor: pointer;
+    }
+  </style>
+</head>
+
+<body>
+  <!-- data-spike-hit: hover.js 认这个属性，只有它和 #hud / #controls 吃鼠标事件。 -->
+  <div id="balloon" data-spike-hit></div>
+  <div id="hud">spike 未启动</div>
+  <div id="controls">
+    <button id="probe-once">判定一次</button>
+    <button id="toggle-ignore">手动切忽略</button>
+  </div>
+
+  <script src="/page/hover.js"></script>
+  <script src="/page/desktop.js"></script>
+  <script type="module">
+    // 诊断面板：每 250ms 刷新一次，显示壳报过来的坐标与判定结果。
+    const hud = document.getElementById('hud')
+    const spike = window.__petDesktop
+
+    function render() {
+      const h = spike.hover
+      hud.textContent = [
+        '判定 = ' + (h.interactive ? '吃事件' : '穿透'),
+        '依据 = ' + h.reason,
+        '坐标 = ' + Math.round(h.x) + ',' + Math.round(h.y),
+        '命中元素 = ' + (h.tag ?? '-') + ' ' + (h.cls ?? ''),
+        '忽略光标事件 = ' + String(spike.ignore),
+        '样本 = ' + spike.samples.length,
+        '',
+        '透明：桌面透过来 = 通过',
+        '穿透：气球外点击落到桌面 = 通过',
+        '性能：肉眼看抖动/风扇 = 主观',
+      ].join('\n')
+    }
+    setInterval(render, 250)
+    render()
+
+    document.getElementById('probe-once').addEventListener('click', () => {
+      spike.probe({ x: spike.hover.x, y: spike.hover.y })
+      render()
+    })
+    document.getElementById('toggle-ignore').addEventListener('click', () => {
+      // 手动翻转：用来验"忽略状态下页面还收不收鼠标"这件事本身。
+      spike.ignore = !spike.ignore
+      render()
+    })
+  </script>
+</body>
+
+</html>

@@ -94,15 +94,78 @@ GIT_CONFIG_SYSTEM=<空配置> GIT_CONFIG_GLOBAL=<临时配置>
 ## 常用命令
 
 - 日常验证：`cd tools/browser-test && npm run dev -- <关键字>`（单个 driver 约 7 秒）
-- 提交前：`npm run suite`（18 个 driver/测试并发，约 4 分钟）；机器吃力时 `node run-suite.mjs --jobs 3`
+- 提交前：`npm run suite`（19 个 driver/测试，约 4 分钟）；机器吃力时 `node run-suite.mjs --jobs 3`
 - 改了 `lib/client.js` **或 `lib/index.js`** 都要重启 `dsh web`：客户端 bundle 不做热重载，
   宿主半区是启动时 import 的（`InstallBundledPets` 这类启动代码不会自己重跑）
 
-## 并发下的已知不稳定
+## 设置正文的渲染有一个专门的 driver（别再省）
+
+`cdp-settings-render.mjs` 是 2026-09 补的，它堵的是一个**真的漏过一次的盲点**：
+
+其它 driver 只验"设置那一节**注册**上了"（`window.__pluginSections['pet-settings']` 存在），
+**没有一个真的调用它的 render**。于是下面这种崩法能一路绿灯：
+
+```
+ReferenceError: layerRef is not defined
+    at LayerControls (client.js)
+```
+
+症状是**"宠物一切正常，只有设置页打不开"** —— 因为设置页那一节渲染在**宠物组件之外**
+（它挂在 DSH 设置页上），读到组件内的 ref / state 就立刻炸。
+
+规矩：**往设置正文里加组件之后必须跑 `cdp-settings-render`**。它真的 render 一次、数卡片、
+数控件、并断言页面里没有未捕获异常。加完顺手验一下"把 bug 放回去它会不会红"
+（这次验过：2/7，异常信息直指那一行）。
+
+## 并发：现在是**两条车道**（别再"全都 N 并发"）
+
+2026-09 把调度改成两车道，起因是一次实测：**6 并发跑出 260 秒（比串行还慢）、红 6 条**；
+同样这批 driver 串行时全绿。headless Edge 用 SwiftShader 软件渲染模型，是纯 CPU 的，
+所以并发在这台机器上是**双向亏**：抢 CPU 让每条都变慢，掉帧又让"睡固定时间再读"的断言
+读到半途的值。
+
+现在 `run-suite.mjs` 分两车道：
+
+| 车道 | 谁 | 怎么跑 |
+|---|---|---|
+| 并发 | `suite-manifest.mjs` 的 `PARALLEL_SAFE`（断言读**终值**：几何、命中、DOM 数量、状态机终态） | 最多 6 并发 |
+| 独占 | 其余（靠 sleep 等缓动的） | **一条一条独占整机** |
+
+独占不是牺牲速度换稳定 —— 那 10 条反而更快了（`cdp-motion` 81s → 18.8s，
+`cdp-bubble` 66s → 31s），因为没人跟它抢 CPU。
+
+**`PARALLEL_SAFE` 是用失败换来的名单，别凭感觉往里加**：6 并发那一轮红的 6 条里，
+`cdp-interact`（摸尾巴的几何断言）与 `cdp-react-defaults` 就是这样被挪出来的。
+
+## 等待：能轮询就别睡（这是套件慢的主因）
+
+同一轮改造里最大的一笔不是调度，是**等待方式**。套件里曾有几百处固定 `sleep`，
+它们既慢又脆（条件早就成立也白等；负载一高又不够）—— 同一行代码两头都亏。
+
+现成的工具在 `tools/browser-test/wait-for.mjs`：
+
+| 工具 | 用途 |
+|---|---|
+| `waitForBoot(ev)` | 等 harness 自报就绪（`title=done`），100ms 轮询 / 30s 上限。**替换掉了 17 个 driver 里各自复制的那段 `for (i<240) sleep(400~500)`**（最坏 96-120 秒） |
+| `waitFor(probe, opts)` | 通用条件轮询；超时**返回 false 而不是抛**，由调用方按语义断言 |
+| `createWaiter(ev)` | 绑定到某个求值函数的等待器：`waitForIdle` / `waitForSelector` / `waitForParam` … |
+| `checkEventually(read, check)` | **"睡一会儿再断言"合成一个轮询** —— 终值类断言的正确形态 |
+| `mustElapse(ms)` | **明确标记"这里必须真的等满"**：阈值类契约（转圈窗口、定格撑 9 秒、相位持续播放）。换成轮询等于把测试改掉 |
+
+效果（串行同一台机器）：`cdp-gaze` 260s → 135s、`cdp-v12` 218s → 176s、
+`cdp-sharp` 92s → 63s、`cdp-mask` 13.8s → **2.4s**（首屏就绪那处的 500ms 轮询）。
+
+**还没做完**：`cdp-gaze` 里"sleep 之后紧跟 check"的形态还有 **91 处、共 54.6 秒**。
+机器能识别它们（`tools/` 下的正则统计），但**不能机械全改** —— 里面混着故意的采样：
+行 145-147 的 `sleep(900)/sleep(70)/sleep(900)` 是在**采缓动过程**（断"缓动而不是瞬移"），
+行 797 的 3500ms 是等动作定格。批量替换会静默改掉这些语义。
+正解是**一处一处判**：终值类 → `checkEventually`；过程/阈值类 → `mustElapse` 并加注释。
+
+## 旧的失败记录（保留，根因已由上面的车道解决）
 
 - `cdp-motion.mjs` 单独跑通过（~26s），6 并发时**状态全零**失败。
   症状值得注意：**不是超时，是参数真的全 0**——说明动作压根没启动，
-  而不是启动了没等到。还没查到根因。（2026-09 复现一次：这次是 `掏出手机` 的
+  而不是启动了没等到。（2026-09 复现一次：这次是 `掏出手机` 的
   `phone` 全 0、同一轮其它动作正常，同样是"动作没启动"。）
 - **红了先单独跑一遍再判断是不是回归。** 6 并发那一轮 cdp-gaze / cdp-motion /
   cdp-passthrough 三个红、cdp-idle-return 直接崩（Edge 起不来），
