@@ -29,6 +29,7 @@ import { fileURLToPath } from 'node:url'
 
 import { createDisplayLayer } from './display.js'
 import { desktopHint, desktopSupported, resolveDesktopBinary } from './desktop.js'
+import { readSettings, writeSettings } from './settings.js'
 
 export const name = 'live2d-pet'
 
@@ -1407,10 +1408,58 @@ function layerRoute(display) {
   }
 }
 
+/**
+ * 共享设置路由（`GET|POST /api/live2d-pet/settings`）。
+ *
+ * 为什么需要它：桌面端页面与 DSH 页面**不是同一个 origin**（壳有自己的随机端口），
+ * localStorage 按 origin 隔离 ⇒ 两边各存一份、永不互见（用户报的"桌面的设置与 DSH 里的
+ * 设置没有同步"）。所以设置要放到两端都能读的地方：`%DSH_HOME%\pet-settings.json`。
+ *
+ * 只同步三类**共享**项（tuning / overrides / outfit）；窗口自己的位置与大小不在这里。
+ */
+function settingsRoute(home) {
+  return {
+    kind: 'exact',
+    path: API + '/settings',
+    handler: async (request, response) => {
+      if (!loopbackOnly(request)) {
+        response.writeHead(403)
+        response.end()
+        return
+      }
+      if (request.method === 'POST') {
+        let body = ''
+        try {
+          for await (const chunk of request) body += chunk
+          const parsed = JSON.parse(body === '' ? '{}' : body)
+          const written = writeSettings(home, parsed)
+          if (written === null) {
+            sendJson(response, 500, { ok: false, error: 'write-failed' })
+            return
+          }
+          sendJson(response, 200, { ok: true, ...written })
+          return
+        } catch {
+          sendJson(response, 400, { ok: false, error: 'bad-body' })
+          return
+        }
+      }
+      if (request.method !== 'GET' && request.method !== 'HEAD') {
+        response.writeHead(405, { allow: 'GET, HEAD, POST' })
+        response.end()
+        return
+      }
+      sendJson(response, 200, { ok: true, ...readSettings(home) })
+    },
+  }
+}
+
 /** The complete route table this plugin owns. */
-export function buildRoutes(hub, display) {
+export function buildRoutes(hub, display, home) {
   const routes = [catalogRoute(), assetRoute(), runtimeRoute(), eventsRoute(hub)]
   if (display !== undefined) routes.push(layerRoute(display))
+  // 共享设置：不依赖显示层（测试里也可能只给 home）。
+  if (typeof home === 'string' && home !== '') routes.push(settingsRoute(home))
   return routes
 }
 
@@ -1452,7 +1501,7 @@ export function apply(ctx) {
   }, 'live2d-pet: display layer')
 
   ctx.inject(['webServer'], (host) => {
-    for (const route of buildRoutes(hub, display)) {
+    for (const route of buildRoutes(hub, display, dshHome())) {
       try {
         host.effect(() => host.webServer.register(route), 'live2d-pet: route ' + route.path)
       } catch (error) {

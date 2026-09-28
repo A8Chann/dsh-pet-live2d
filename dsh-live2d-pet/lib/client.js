@@ -3527,6 +3527,146 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   /** 装扮存档的 key。放这里是因为开关（applyFlag）也要用它清存档。 */
   const OUTFIT_KEY = "dsh-pet-live2d:outfit";
 
+  // ---------------------------------------------------------------------------
+  // 共享设置：**宿主优先，localStorage 兜底**
+  //
+  // 用户报的"桌面的设置与 DSH 里的设置没有同步"。根因不是"同步没写"，而是**两边根本
+  // 不共享存储**：桌面端页面是 `http://127.0.0.1:<壳的随机端口>`，DSH 是
+  // `http://127.0.0.1:3080` —— localStorage 按 origin 隔离，各存一份、永不互见。
+  //
+  // 所以三类**跨窗口该一致**的设置（可调项 / 相位池子覆盖+开关 / 装扮）走宿主：
+  // 插件宿主半区把它们落在 `%DSH_HOME%\pet-settings.json`，两个页面都读它。
+  // 窗口自己的东西（位置、大小）仍然留在 localStorage —— 那本来就该各窗口不同。
+  //
+  // 独立模式（DSH 不在）时 `/api/live2d-pet/settings` 是 404，于是自然退回 localStorage，
+  // 行为与以前一致。
+  // ---------------------------------------------------------------------------
+  const SETTINGS_URL = "/api/live2d-pet/settings";
+  /** 轮询间隔：跨窗口同步靠它（localStorage 的 `storage` 事件不跨 origin）。 */
+  const SHARED_POLL_MS = 3000;
+  /** 轮询定时器（模块级一份 —— 热重载/重复 apply 不该堆出好几个）。 */
+  let sharedPoll = 0;
+  /**
+   * 把"宿主拉回来的装扮"应用到画面上的回调。
+   *
+   * **必须是模块级的桥**：槽位选择与 pin 都在 `Pet` 组件里（`slotSelectionsRef` /
+   * `commitPinsRef`），而拉取/轮询是模块级的 `apply()` 起的 —— 直接引用会 ReferenceError，
+   * 而且是**静默**的那种（client-state skill 里那几次都是这个）。所以由 `Pet` 挂上来。
+   */
+  const applyOutfitRef = { current: null };
+  /**
+   * 宿主存档里的键 → localStorage 键。
+   *
+   * ⚠️ **必须惰性构造**：`OVERRIDE_KEY` 在下面（和 `saveOverrides` 挨着）才声明，
+   * 在模块加载期直接写一个对象字面量会撞 TDZ —— 症状是**整个插件 import 失败**：
+   *   `dsh-pet-live2d: import failed: Cannot access 'OVERRIDE_KEY' before initialization`
+   * （我第一版就是这么写的，直接把页面打成 "Failed to load plugins"。）
+   */
+  const sharedKeys = () => ({ tuning: TUNING_KEY, overrides: OVERRIDE_KEY, outfit: OUTFIT_KEY });
+  /** 宿主那份的版本号；每次 POST 回来或轮询发现变化时更新。 */
+  let sharedRev = -1;
+  /** 宿主可用吗（第一次探测的结果；404 就不再问了，省得每 3 秒白跑一次）。 */
+  let hostAvailable = null;
+  /** 正在把宿主的改动往内存里灌 —— 期间不要回写宿主，否则自己写自己读打转。 */
+  let applyingHost = false;
+
+  const readLocal = (key) => {
+    try {
+      const raw = window.localStorage.getItem(key);
+      return raw === null ? null : JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  };
+  const writeLocal = (key, value) => {
+    try {
+      if (value === null || value === undefined) window.localStorage.removeItem(key);
+      else window.localStorage.setItem(key, JSON.stringify(value));
+    } catch {
+      /* 无痕模式之类：这次生效，下次不记得 */
+    }
+  };
+
+  /** 把一份宿主存档按 key 写进 localStorage 并调用方负责灌内存。 */
+  const cacheHost = (payload) => {
+    for (const [name, key] of Object.entries(sharedKeys())) {
+      const value = payload?.[name];
+      if (value === undefined) continue;
+      writeLocal(key, value === null ? null : value);
+    }
+  };
+
+  /**
+   * 三个界面（DSH 设置页 / 桌面右键面板 / 独立模式的桌面壳）共用同一份值的落点。
+   *
+   * 有宿主就写宿主（两端都能看见），同时留一份 localStorage 当"宿主不在时的兜底"。
+   */
+  const persistShared = (patch) => {
+    for (const [name, key] of Object.entries(sharedKeys())) {
+      if (patch[name] === undefined) continue;
+      writeLocal(key, patch[name]);
+    }
+    if (applyingHost) return;
+    if (hostAvailable === false) return;
+    try {
+      void fetch(SETTINGS_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(patch),
+        cache: "no-store",
+      }).then((response) => {
+        if (response.status === 404) { hostAvailable = false; return null; }
+        if (!response.ok) return null;
+        return response.json();
+      }).then((payload) => {
+        if (payload === null || payload === undefined) return;
+        hostAvailable = true;
+        if (typeof payload.rev === "number") sharedRev = payload.rev;
+      }).catch(() => { /* 宿主不在就算了，本地那份已经写好了 */ });
+    } catch {
+      /* 同上 */
+    }
+  };
+
+  /**
+   * 拉一次宿主存档；有变化就灌进内存并广播。
+   *
+   * 这是"另一个窗口改了、这个窗口跟着变"的唯一途径 —— localStorage 的 `storage` 事件
+   * **不会跨 origin 触发**，所以必须轮询（3 秒一次，代价可以忽略）。
+   */
+  const pullShared = async (apply) => {
+    if (hostAvailable === false) return false;
+    let payload = null;
+    try {
+      const response = await fetch(SETTINGS_URL, { cache: "no-store" });
+      if (response.status === 404) { hostAvailable = false; return false; }
+      if (!response.ok) return false;
+      payload = await response.json();
+    } catch {
+      return false;
+    }
+    if (payload === null || typeof payload !== "object") return false;
+    hostAvailable = true;
+    const rev = typeof payload.rev === "number" ? payload.rev : 0;
+    if (rev === sharedRev) return false;
+    sharedRev = rev;
+    cacheHost(payload);
+    applyingHost = true;
+    try {
+      apply(payload);
+    } finally {
+      applyingHost = false;
+    }
+    return true;
+  };
+
+  /** 把一份共享存档灌进内存（tuning / overrides / outfit 各自的应用由调用方给）。 */
+  const applyShared = (payload, hooks) => {
+    if (payload?.tuning !== null && payload?.tuning !== undefined) hooks.tuning(payload.tuning);
+    if (payload?.overrides !== null && payload?.overrides !== undefined) hooks.overrides(payload.overrides);
+    if (payload?.outfit !== null && payload?.outfit !== undefined) hooks.outfit(payload.outfit);
+  };
+
   /** 把存档里的值夹进合法区间 —— 坏值不能让宠物动不了。 */
   const clampSetting = (field, value) => Math.min(field.max, Math.max(field.min, value));
 
@@ -3697,11 +3837,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   const OVERRIDE_KEY = "dsh-pet-live2d.settings.v2";
 
   const saveOverrides = () => {
-    try {
-      window.localStorage.setItem(OVERRIDE_KEY, JSON.stringify(Object.assign({}, PHASE_OVERRIDES, { flags: FLAGS })));
-    } catch {
-      /* 无痕模式之类：这次生效，下次不记得 */
-    }
+    // 走共享落点（宿主优先）：相位池子覆盖与开关两个窗口共用同一份。
+    persistShared({ overrides: Object.assign({}, PHASE_OVERRIDES, { flags: FLAGS }) });
   };
 
   /** 开关类设置：存档 + 广播（装扮存档开关关掉时顺带清掉那份存档）。 */
@@ -3740,12 +3877,20 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   };
 
   /** 读回存档；值只做类型校验，范围由调用方按权重语义处理。 */
-  const restoreOverrides = () => {
-    let saved = null;
-    try {
-      saved = JSON.parse(window.localStorage.getItem(OVERRIDE_KEY) ?? "null");
-    } catch {
-      saved = null;
+  /**
+   * 读回相位池子覆盖 + 开关。
+   *
+   * `given` 传进来时用它（宿主拉回来的那份），否则读 localStorage —— 两条路的清洗逻辑
+   * 是同一份，别写第二遍（写第二遍的下场是两边清洗规则慢慢分叉）。
+   */
+  const restoreOverrides = (given) => {
+    let saved = given === undefined ? null : given;
+    if (saved === undefined || saved === null) {
+      try {
+        saved = JSON.parse(window.localStorage.getItem(OVERRIDE_KEY) ?? "null");
+      } catch {
+        saved = null;
+      }
     }
     if (saved === null || typeof saved !== "object") return;
     const phases = saved.phases;
@@ -4080,11 +4225,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       const field = TUNING_FIELDS.find((entry) => entry.key === key);
       TUNING[key] = field === undefined ? value : clampSetting(field, value);
     }
-    try {
-      window.localStorage.setItem(TUNING_KEY, JSON.stringify(TUNING));
-    } catch {
-      /* 无痕模式之类：这次改动仍然生效，只是下次不记得 */
-    }
+    // 走共享落点：有宿主就写宿主（DSH 与桌面端两个窗口都能看见），本地留一份兜底。
+    persistShared({ tuning: Object.assign({}, TUNING) });
     notifySettings();
   };
 
@@ -4093,12 +4235,14 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
    *
    * 手改坏了存档最多回到合法范围，不会出现「死区 5」这种把宠物冻住的配置。
    */
-  const restoreTuning = () => {
-    let saved = null;
-    try {
-      saved = JSON.parse(window.localStorage.getItem(TUNING_KEY) ?? "null");
-    } catch {
-      saved = null;
+  const restoreTuning = (given) => {
+    let saved = given === undefined ? null : given;
+    if (saved === undefined || saved === null) {
+      try {
+        saved = JSON.parse(window.localStorage.getItem(TUNING_KEY) ?? "null");
+      } catch {
+        saved = null;
+      }
     }
     if (saved === null || typeof saved !== "object") return;
     let restored = false;
@@ -5765,16 +5909,13 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     const saveOutfit = () => {
       // 开关关掉就既不存也不读（见设置页「装扮」那一节）。
       if (!FLAGS.outfitArchive) return;
-      try {
-        const out = {};
-        for (const id of OUTFIT_SLOTS) {
-          const label = slotSelectionsRef.current[id];
-          if (label !== undefined) out[id] = label;
-        }
-        window.localStorage.setItem(OUTFIT_KEY, JSON.stringify(out));
-      } catch {
-        /* 无痕模式之类存不下：不影响这次，只是下次不记得 */
+      const out = {};
+      for (const id of OUTFIT_SLOTS) {
+        const label = slotSelectionsRef.current[id];
+        if (label !== undefined) out[id] = label;
       }
+      // 走共享落点：宿主在就写宿主（另一个窗口也能看见），顺带留一份本地兜底。
+      persistShared({ outfit: out });
     };
     const readOutfit = () => {
       if (!FLAGS.outfitArchive) return null;
@@ -6216,12 +6357,16 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
      * 对不上就当没存过，不要凭空造一个选项出来）。
      */
     const outfitRestoredRef = useRef(false);
-    useEffect(() => {
-      if (outfitRestoredRef.current || !ready) return;
-      if (slotByIdRef.current.size === 0) return;
-      outfitRestoredRef.current = true;
-      const saved = readOutfit();
-      if (saved === null) return;
+    /**
+     * 把一份装扮存档应用到槽位上（**同一份清洗逻辑**，两个入口共用）。
+     *
+     * 两个入口：① 启动时读本地存档；② 模块级的轮询从宿主拉回"另一个窗口改的那份"。
+     * 校验必须一致 —— 写两份的话，一边校验一边不校验，就会出现"某个窗口能存进去、
+     * 另一个窗口把它丢掉"的怪现象。
+     */
+    const applyOutfit = (saved) => {
+      if (saved === null || typeof saved !== "object") return false;
+      if (slotByIdRef.current.size === 0) return false;
       const chosen = Object.assign({}, slotSelectionsRef.current);
       let restored = false;
       for (const id of OUTFIT_SLOTS) {
@@ -6231,9 +6376,19 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         chosen[id] = label;
         restored = true;
       }
-      if (!restored) return;
+      if (!restored) return false;
       slotSelectionsRef.current = chosen;
       commitPinsRef.current();
+      return true;
+    };
+    // 挂上模块级的桥：宿主的改动由轮询拉回来后走这里（见 applyOutfitRef 的注释）。
+    applyOutfitRef.current = applyOutfit;
+
+    useEffect(() => {
+      if (outfitRestoredRef.current || !ready) return;
+      if (slotByIdRef.current.size === 0) return;
+      outfitRestoredRef.current = true;
+      applyOutfit(readOutfit());
     }, [ready]);
 
     // ---- session activity (#4) -----------------------------------------
@@ -7936,9 +8091,31 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
 
   function apply(ctx) {
     ensureStyle();
-    // 设置值在模块作用域，客户端启动时读一次存档就够了。
+    // 先按本地存档起来（宿主不在时这就是全部）。
     restoreTuning();
     restoreOverrides();
+    // 再问宿主要"共享的那一份"：桌面端与 DSH 是两个 origin，localStorage 互不可见，
+    // 所以跨窗口一致只能靠宿主。拉回来会覆盖本地（宿主是权威），并广播给两个界面。
+    const applyRemote = (payload) => {
+      applyShared(payload, {
+        tuning: (value) => restoreTuning(value),
+        overrides: (value) => {
+          restoreOverrides(value);
+          notifySettings();
+        },
+        outfit: (value) => {
+          // 装扮是"槽位选择"：灌进去要顺带把 pin 重算一遍（否则画面不跟着变）。
+          // 真正的实现在 `Pet` 里（槽位状态在那边），走模块级的桥。
+          if (applyOutfitRef.current !== null) applyOutfitRef.current(value);
+          notifySettings();
+        },
+      });
+    };
+    void pullShared(applyRemote);
+    // 3 秒轮询：另一个窗口改了，这个窗口跟着变。`storage` 事件不跨 origin，只能轮询。
+    if (sharedPoll === 0) {
+      sharedPoll = window.setInterval(() => { void pullShared(applyRemote); }, SHARED_POLL_MS);
+    }
     applySettings(ctx);
     // Takeover: an earlier instance — a hot reload, or one left behind by a
     // crashed reload — must not leave a second floating pet on the page.

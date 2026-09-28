@@ -61,7 +61,9 @@ const displayLayer = createDisplayLayer({
 })
 displayLayer.binaryInfo = () => ({ found: false, path: null, source: null, supported: true, hint: 'harness' })
 
-const routes = buildRoutes(hub, displayLayer)
+// 共享设置也挂上：driver 要能验证"宿主是权威、另一个窗口改了会同步过来"。
+// home 用同一个可丢弃目录 —— 绝不能碰用户真正的 `%DSH_HOME%\pet-settings.json`。
+const routes = buildRoutes(hub, displayLayer, displayHome)
 const byPath = new Map(routes.filter((r) => r.kind === 'exact').map((r) => [r.path, r]))
 const prefixes = routes.filter((r) => r.kind === 'prefix').sort((a, b) => b.path.length - a.path.length)
 
