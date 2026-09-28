@@ -168,7 +168,7 @@ const tailProbe = await json(`(() => {
 check('摸尾巴判定与几何一致：有几何就该有命中；几何全退化（默认没戴尾巴配件）就该一个都不中',
   tailGeometry.length > 0 ? (tailProbe?.tail ?? 0) > 0 : (tailProbe?.tail ?? -1) === 0,
   '有几何的部件=' + JSON.stringify(tailGeometry) + ' tail 命中=' + tailProbe?.tail)
-check('找得到一个只在头部的点（下面那条路由断言才有意义）',
+check('找得到一个**只算头、不算尾巴**的点（下面那条路由断言才有意义）',
   tailProbe?.headPoint !== null && tailProbe?.headPoint !== undefined,
   JSON.stringify({ headPoint: tailProbe?.headPoint, both: tailProbe?.both, head: tailProbe?.head, tail: tailProbe?.tail }))
 if (tailProbe?.headPoint) {
@@ -182,7 +182,15 @@ if (tailProbe?.headPoint) {
     return text !== null && (String(patLines).includes(text) || String(tailLines).includes(text))
   }, 6000)
   const text = await bubble()
-  check('点头部给的是**摸头**的台词，不是摸尾巴的（用户报的就是这个）',
+  // 路由是**尾巴优先**（2026-09 按用户要求从"头优先"翻回来）。
+  //
+  // 历史：最早先判尾巴，用户报"摸头出的是摸尾巴的效果" → 改成先判头；那个报告的前提是
+  // `hitsTail` 把 11 块**没显形的配件**也算进去（尾鳍上 86.6% 的点同时算头）。收窄到
+  // 5 块真尾鳍之后重叠降到 **9%**，而用户看到"尾巴画在头发上面"，于是要求点在尾鳍上算摸尾巴。
+  //
+  // 所以这条断言取的是**只算头、不算尾巴**的点（上面的 headPoint 已经是这个含义）：
+  // 点头部仍然给摸头台词；重叠那一片（29/1024 格）现在归尾巴，这是有意的取舍。
+  check('点**只算头**的部位给的是摸头台词（重叠区归尾巴，见路由注释）',
     said && String(patLines).includes(text),
     'bubble=' + text + ' pat=' + String(patLines) + ' tail=' + String(tailLines))
 }

@@ -2245,6 +2245,104 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
        */
       tailBoxNow: () => measureTailBox(),
       /**
+       * 尾巴这一层要画的形状：**按轮廓那套栅格重采一遍**（舞台局部像素矩形），读不到返回 null。
+       *
+       * 为什么不是"包围盒 / 凸包 / 逐块矩形"（三种都试过）：那些都是**几何并集**，而
+       * `hitsMask` 用的静态轮廓是**栅格**（还是"一格膨胀"的保守版）。两套几何不一致，
+       * 差集就成了"能摸到、判定却不算她"的空白区 —— 实测 14 格（网格 20×20），
+       * 而**把这一层关掉，那 14 格直接变 0**。用户看到的就是"右下角明明什么都没有却能摸"。
+       *
+       * 所以这里从**模型空间的三角面**重采一份与静态轮廓同规格的栅格：
+       *   * 落在同一个模型包络盒里（归一化方式和 `hitsMaskGrid` 完全一致）；
+       *   * 格子边长与静态轮廓同量级，于是两边的贴合程度一样；
+       *   * 输出的是矩形列表，由调用方拼成 `M x y h w v h h-w Z`（和 `maskPath()` 同形）。
+       */
+      tailRectNow: () => {
+        const list = tailIndicesNow();
+        const im = model?.internalModel;
+        if (list.length === 0 || im === null || im === undefined) return null;
+        // 目标格数：静态轮廓是 26×26 那一档；这里按包络盒的长边取 30，格子约 10px。
+        const bounds = model?.getBounds?.();
+        const envelope = bounds ?? hitBox;
+        if (envelope === undefined || envelope === null) return null;
+        const width = envelope.width;
+        const height = envelope.height;
+        if (!(width > 0) || !(height > 0)) return null;
+        const cells = 30;
+        const stepX = width / cells;
+        const stepY = height / cells;
+        const cols = Math.max(1, Math.round(width / stepX));
+        const rows = Math.max(1, Math.round(height / stepY));
+        const solid = new Uint8Array(cols * rows);
+        const toStage = (x, y) => modelToStage(x, y);
+        for (const entry of list) {
+          let index = entry.index;
+          if (typeof entry.id === "string" && typeof im.getDrawableIndex === "function") {
+            const fresh = im.getDrawableIndex(entry.id);
+            if (fresh >= 0) index = fresh;
+          }
+          let verts;
+          try {
+            verts = im.getDrawableVertices(index);
+          } catch {
+            continue;
+          }
+          if (verts === undefined || verts === null || verts.length < 6) continue;
+          // 逐三角面打点：每个格心落在某个三角形里就算实心。隐藏配件会"缩放成一点"，
+          // 退化三角形由 `pointInTriangle` 直接排掉（它按面积判）。
+          const count = Math.floor(verts.length / 2);
+          for (let t = 0; t + 2 < count; t += 3) {
+            let minX = Infinity;
+            let minY = Infinity;
+            let maxX = -Infinity;
+            let maxY = -Infinity;
+            for (const k of [t, t + 1, t + 2]) {
+              const vx = verts[k * 2];
+              const vy = verts[k * 2 + 1];
+              if (vx < minX) minX = vx;
+              if (vx > maxX) maxX = vx;
+              if (vy < minY) minY = vy;
+              if (vy > maxY) maxY = vy;
+            }
+            if (!(maxX > minX) || !(maxY > minY)) continue;
+            const gx0 = Math.max(0, Math.floor(((minX - envelope.x) / width) * cols) - 1);
+            const gx1 = Math.min(cols - 1, Math.ceil(((maxX - envelope.x) / width) * cols) + 1);
+            const gy0 = Math.max(0, Math.floor(((minY - envelope.y) / height) * rows) - 1);
+            const gy1 = Math.min(rows - 1, Math.ceil(((maxY - envelope.y) / height) * rows) + 1);
+            for (let gy = gy0; gy <= gy1; gy += 1) {
+              for (let gx = gx0; gx <= gx1; gx += 1) {
+                if (solid[gy * cols + gx] === 1) continue;
+                const px = envelope.x + ((gx + 0.5) / cols) * width;
+                const py = envelope.y + ((gy + 0.5) / rows) * height;
+                if (pointInTriangle(px, py, verts, t, t + 1, t + 2) === true) solid[gy * cols + gx] = 1;
+              }
+            }
+          }
+        }
+        // 实心格 → 舞台局部矩形（外扩 1px 抵挡 120ms 的摆动采样差；静态轮廓那边也有一格膨胀，
+        // 量的口径一致）。相邻格各自成矩形没关系：`clip-path` 是并集。
+        const rects = [];
+        for (let gy = 0; gy < rows; gy += 1) {
+          for (let gx = 0; gx < cols; gx += 1) {
+            if (solid[gy * cols + gx] !== 1) continue;
+            const x0 = envelope.x + (gx / cols) * width;
+            const y0 = envelope.y + (gy / rows) * height;
+            const x1 = envelope.x + ((gx + 1) / cols) * width;
+            const y1 = envelope.y + ((gy + 1) / rows) * height;
+            const a = toStage(x0, y0);
+            const b = toStage(x1, y1);
+            if (a === null || b === null) continue;
+            rects.push({
+              x0: Math.min(a.x, b.x) - 1,
+              y0: Math.min(a.y, b.y) - 1,
+              x1: Math.max(a.x, b.x) + 1,
+              y1: Math.max(a.y, b.y) + 1,
+            });
+          }
+        }
+        return rects.length === 0 ? null : rects;
+      },
+      /**
        * 模型空间 → **舞台局部**坐标（CSS px），读不到返回 null。
        *
        * 就是 `hitsHead / hitsTail / hitsMask` 里那条映射的逆向（它们用
@@ -4392,15 +4490,6 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   const TAIL_BOX_SAMPLE_MS = 100;
 
   /**
-   * 尾巴那一块矩形在包围盒外**再放宽的比例**。
-   *
-   * 它每 120ms 跟着实时盒子重建，而尾鳍一直在摆 —— 采样时刻的位置和用户抬手那一刻
-   * 会差一点。实测（探针 `probe-tail-precise.mjs`）不留余量时会有落点掉在矩形之外、
-   * 事件穿透到页面。放宽按这一块自己的尺寸取比例，所以缩小/放大宠物都合适。
-   */
-  const TAIL_LAYER_PAD = 0.08;
-
-  /**
    * Build a coarse opacity grid of the character as actually rendered.
    *
    * Cubism hit areas cannot be used here: this model declares none (and the
@@ -5158,40 +5247,34 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         const api = motion.current;
         const stage = stageRef.current;
         if (api === null || stage === null) return;
-        const box = typeof api.tailBoxNow === "function" ? api.tailBoxNow() : null;
-        if (box === null || typeof api.modelToStage !== "function") {
+        // 诊断开关：`window.__petNoTailLayer = true` 之后这一层不再拼进 `clip-path`。
+        // 用它一次就能量出"尾巴层到底贡献了多大一片可摸区"（对比量比反复改代码猜快得多）。
+        const hull = window.__petNoTailLayer === true
+          ? null
+          : (typeof api.tailRectNow === "function" ? api.tailRectNow() : null);
+        if (hull === null || typeof api.modelToStage !== "function") {
           if (last !== "") { last = ""; setTailPath(""); }
           return;
         }
         const rect = stage.getBoundingClientRect();
         if (rect.width <= 0 || rect.height <= 0) return;
-        // 模型空间 → 舞台：`modelToStage()` 用"模型空间包络盒 ↔ 引擎自绘盒"对齐，
-        // 缩放、拖动、resize 之后都成立（比 `toStagePosition` 稳 —— 那个 API
-        // 在这层包装上直接抛异常）。
+        // **逐块一个矩形**，拼成一条 path（`clip-path` 默认 nonzero，重叠部分照样算内部）。
         //
-        // 注意**模型空间 y 向上、舞台 y 向下**：小 y 的顶点画在舞台下方。所以要把
-        // 两个对角都映射完再取 min/max —— 直接拿 minX/minY 当左上角会把这一层画到
-        // 屏幕外（第一版就是这么错的：尾巴层跑到左边去了）。
-        //
-        // 再加一圈**摆动的余量**：这一层每 120ms 更新一次，而尾鳍一直在摆，所以
-        // 采样时刻的位置和用户抬手那一刻的位置差着一个余量；不留的话就会出现
-        // "实测点在这层外面"（第一版 5 轮里有 2 轮是这样）。余量按这一块自己的
-        // 尺寸取比例，缩放之后依然合适。
-        const padX = (box.maxX - box.minX) * TAIL_LAYER_PAD;
-        const padY = (box.maxY - box.minY) * TAIL_LAYER_PAD;
-        const a = api.modelToStage(box.minX - padX, box.minY - padY);
-        const b = api.modelToStage(box.maxX + padX, box.maxY + padY);
-        if (a === null || b === null) return;
-        const left = Math.max(0, Math.min(a.x, b.x));
-        const top = Math.max(0, Math.min(a.y, b.y));
-        const right = Math.min(rect.width, Math.max(a.x, b.x));
-        const bottom = Math.min(rect.height, Math.max(a.y, b.y));
-        const width = right - left;
-        const height = bottom - top;
-        if (!(width > 0) || !(height > 0)) return;
-        // 一条矩形 = 一段 subpath，直接拼在轮廓路径后面（同一个 `clip-path`）。
-        const next = "M" + left.toFixed(1) + " " + top.toFixed(1)
-          + "h" + width.toFixed(1) + "v" + height.toFixed(1) + "h-" + width.toFixed(1) + "Z";
+        // 这里不再做空间映射：`tailRectNow()` 已经给的是**舞台局部像素**（它内部把四个角
+        // 都映射过了）。第一版在这里先并成一个大盒再映射，结果框进 43%×54% 的空白 ——
+        // 用户看到的就是"右下角明明什么都没有却能摸"。
+        let next = "";
+        for (const box of hull) {
+          const left = Math.max(0, Math.min(rect.width, box.x0));
+          const top = Math.max(0, Math.min(rect.height, box.y0));
+          const right = Math.max(0, Math.min(rect.width, box.x1));
+          const bottom = Math.max(0, Math.min(rect.height, box.y1));
+          const width = right - left;
+          const height = bottom - top;
+          if (!(width > 0) || !(height > 0)) continue;
+          next += "M" + left.toFixed(1) + " " + top.toFixed(1)
+            + "h" + width.toFixed(1) + "v" + height.toFixed(1) + "h-" + width.toFixed(1) + "Z";
+        }
         if (next === last) return;
         last = next;
         setTailPath(next);
@@ -6596,22 +6679,29 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           });
         } else if (state.onModel) {
           lastInteraction.current = Date.now();
-          // **摸头优先于摸尾巴**：两者区域可能重叠（尾巴/翅膀挂件在身后，几何上会伸到
-          // 头部附近），先判头才符合直觉 —— 用户报的"摸头出的是摸尾巴的效果"就是
-          // 原来先判尾巴造成的。隐藏配件的问题另有 isDrawableVisible 兜着。
-          if (state.onHead && FLAGS.patEnabled) {
+          // **摸尾巴优先于摸头**（2026-09 按用户要求翻回来的）。
+          //
+          // 历史：最早就是"先判尾巴"，用户报"摸头出的是摸尾巴的效果" → 改成"先判头"。
+          // 当时的原因是**失败模式**：`hitsTail` 把 16 块名字带"尾/翅"的几何全算尾巴，
+          // 其中 11 块是**可换配件**（几何一直留在原地、横跨全身），于是尾鳍上 86.6% 的
+          // 点同时算头（`cdp-interact` 里量到的），先判尾巴等于"点在头部也给尾巴反应"。
+          //
+          // 现在那个前提没了：尾鳍已按**贴图**收窄到 5 块真尾鳍（`TAIL_FIN_UV`），实测
+          // 重叠降到 **9%**（网格 32×32：只算头 262、只算尾巴 17、两者都算 29）。而用户
+          // 看到的是"尾巴画在头发上面"—— 点在**看得见的尾鳍**上时，他要的是摸尾巴。
+          // 取舍：那 29 格（头部区域里的一小片）现在会给尾巴反应；换来的是可见尾鳍上的
+          // 点击行为与画面一致。改回去只需把这两个分支换回来。
+          if (state.onTail && FLAGS.tailEnabled) {
+            const list = interactionReactions("tailReactions");
+            if (list.length > 0) runReactionRef.current(pick(list));
+            say(pick(linesNow().tail));
+          } else if (state.onHead && FLAGS.patEnabled) {
             // 摸头：从 `patReactions` 里随机挑一个（默认是 重锤出击 / 问号 / 星星眼），
             // 并且**故意不脸红**。表情类反应是"闪一下"，到点由自动清理收走，
             // 所以摸头不会在用户选的槽位上留下永久表情。
             const list = interactionReactions("patReactions");
             if (list.length > 0) runReactionRef.current(pick(list));
             say(pick(linesNow().pat));
-          } else if (state.onTail && FLAGS.tailEnabled) {
-            // 摸尾巴：判据和摸头同一套（模型自己的三角面），部件集合是 cdi3 里
-            // 命名为尾/鳍/翅/翼 的那些。反应从 pet.json 的 `tailReactions` 里随机。
-            const list = interactionReactions("tailReactions");
-            if (list.length > 0) runReactionRef.current(pick(list));
-            say(pick(linesNow().tail));
           } else {
             // Anywhere else on the character is a lighter acknowledgement —
             // deliberately WITHOUT 重锤出击, which now belongs to the head only.
