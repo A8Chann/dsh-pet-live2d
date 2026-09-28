@@ -1,4 +1,4 @@
-# Publish this package to npm.
+﻿# Publish this package to npm.
 #
 # The token is read from a file OUTSIDE the repo (%USERPROFILE%\.dsh\npm-token.txt) and passed
 # via the NPM_TOKEN environment variable: the .npmrc we generate only holds the ${NPM_TOKEN}
