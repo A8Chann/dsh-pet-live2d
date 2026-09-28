@@ -170,6 +170,10 @@ const saved = snapshot(entry.params, preset)   // readParameter → 帧外基线
 | `prepend` | 先播一个前置动作（`{ "prepend": "OpenCase" }`） |
 | `preset` | 开播前把某些参数写死（喷水前先让鲸鱼出现） |
 
+**`persist` 只加在"用户选的装扮"上**：`BubbleGum` / `Selfie` 有，`OpenCase` **没有** ——
+`OpenCase` 是"到点自己放手"的临时动作，`cdp-idle-return` 钉的就是这条契约（11 条断言）。
+给 `OpenCase` 加 `persist` 会让它永远不放手，那两条立刻红（我踩过）。
+
 两个坑：
 
 - **`loop: false` 必须显式传**。这只模型每个 `motion3.json` 都写着 `"Loop": true`，
@@ -180,6 +184,51 @@ const saved = snapshot(entry.params, preset)   // readParameter → 帧外基线
 
 **收口只有一个**：`resetToRest()` —— 清 sustain、还参数、回待机循环。
 手动点的表情有 `EXPRESSION_HOLD_MS` = 12s 上限，会话相位的表情跟相位同寿。
+
+## "自拍没有举手"：三条独立的坑叠在一起（2026-09 实测）
+
+用户报"自拍动画没有举手"。这一条**查了四轮**，因为它其实是三件事叠在一起，每一件都能
+单独让它失败。记录完整链条，下次一条条对照：
+
+### ① 前提只是一道闸门，**从来不是前置动作**
+
+`motionRequiresFor(group)` 原来只喂给守卫（"前提不满足就别播"），而 pet.json 里
+**没有** `prepend` 声明 —— 所以"掏出手机 → 自拍"这条链**在代码里根本不存在**
+（注释里写着、代码里没有）。自拍直接开演，而 `Selfie` **故意不写 `phone2`**
+（抬手臂那一条），手就永远抬不起来。
+
+修法：`syncSlotMotion()` 里把前提**解析成真正的前置动作组**（前提槽位当前选的选项若带
+`motion`，那就是它），作为 `prepend` 传给 `playOnce`。
+
+### ② 录像读的是"改过的画面"，于是每帧自我喂食
+
+`recordPose` 原来读传进来的 `values` —— 那是 `applyKeptPoses` 之后的数组。于是
+`applyKeptPoses`（重放旧帧）→ `recordPose`（把重放结果录回去）**互相喂**：值一旦塌成 0
+就再也回不来。
+
+修法：在 `saveParameters` 钩子的**最前面**记一份 `lastMotionOutput`（那一刻 `values`
+还是动作自己的输出），录像与"跨动作携带"都从它取。
+
+### ③ 打断前置动作会拿到"初值帧"
+
+`chooseSlotOption` 补前提时先播 OpenCase，紧接着又切到主动作 —— 前置动作只演了 2 帧，
+交接到的 `phone4=0.069` 是它的**初值**（终值 1.92）。所以"跳过重播"只在
+**前置动作已经停稳**时才允许（判据是"这一帧的输出和上一帧一样"，
+见 `isMotionStillMoving`；不能按"值够大"判 —— `phone2` 3ms 冲到 0.545 又回 0，
+那是"掏出来又收回"的关键帧，值大不代表演完）。
+
+**怎么量**：`tools/probe-arm-raise.mjs`。判据由**动作自己声明的参数**决定
+（从 `motion3.json` 的 `Curves` 读），不是猜某个参数名 —— 我前两轮一直盯 `phone`
+（"手机在不在手里"），而抬手臂的是 **`phone2`**：
+
+| 参数 | `OpenCase` | `Selfie` |
+|---|---|---|
+| `phone2` | 0…1（抬手） | **不写**（靠前置动作定格撑着） |
+| `phone4` | 0…2 | -1.86…7 |
+| `phone6` | -10…1 | -4…3.3 |
+
+**量法也要对**：必须在**帧内**逐帧采样（`requestAnimationFrame` 装进页面）。从外面每
+60ms 读一次，量到的是"一堆 0"——`phone2` 的 0.545 只存在 4ms。
 
 ## 身体只有一个动作，但姿势可以同时存在
 
@@ -193,6 +242,12 @@ const saved = snapshot(entry.params, preset)   // readParameter → 帧外基线
   `recordPose` 永远录当前动作写过的那一帧（按 group 存），`applyKeptPoses` 在轮到
   "别的槽位还选着它、但它不是当前动作"时把那一帧写回去（写在 `applyRelease` **之后**，
   否则会被还原表顶掉）。清掉那个槽位 = 从名单里去掉。
+- **前置动作的姿势要跨过主动作**（`carryFrom`）：主动作不写的那些参数，逐帧钉在
+  "前置动作跑完那一刻"的值上（走 `releasedOverrides`）。这一步**必须在 `start()` 之后** ——
+  `start` 会把主动作自己写的参数从覆盖层删掉，之前带进去的白带。
+
+**上一页读到的是"解释器"里的值，不是"存档"里的值**：`applyKeptPoses` → `recordPose`
+的先后顺序决定了录像会被自己污染。凡是"要拿去做后续判断"的帧，都得在缝隙最前面读。
 
 ## 表情：别用引擎的表情管理器
 

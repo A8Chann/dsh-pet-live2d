@@ -32,6 +32,40 @@ core.update = () => {
 
 确定性、不受动画相位影响。所有"某效果是否真的生效"的断言都应该落到这里。
 
+## 瞬时效果必须**帧内逐帧**采样，外面读只能量到 0
+
+"这一条也是踩了多次的"：`drawn(id)` 给的是**上一帧 update() 那一刻**的值，而**从外面**
+（CDP，每几十毫秒一次）读，采到的是一堆离散点。`phone2`（抬手臂）的峰值 **0.545 只存在
+4ms** —— 外面每 60ms 读一次，量到的全是 0，于是得出了"参数根本没动"的错误结论，白查两轮。
+
+做法：把采样器**装进页面**，用 `requestAnimationFrame` 收每一帧：
+
+```js
+// 经 CDP 求值；注意用 awaitPromise，且**不要**在外面套 JSON.stringify（见下）
+return new Promise(function (resolve) {
+  const peak = {}, low = {};
+  const started = performance.now();
+  function tick() {
+    for (const id of list) { const v = api.drawn(id); /* 记 peak / low */ }
+    if (performance.now() - started < ms) requestAnimationFrame(tick);
+    else resolve({ peak, low });
+  }
+  requestAnimationFrame(tick);
+});
+```
+
+顺带三条"工具自己骗人"的坑（都是这一轮踩的）：
+
+| 症状 | 原因 |
+|---|---|
+| 拿到 `undefined` / `{}` | `awaitPromise: true` 要的是**表达式本身**求值成 promise；外面套一层 `JSON.stringify(...)` 会立刻返回 `{}` |
+| 页面里抛异常却只看得到 `undefined` | 只取 `message.result.result.value`；要同时读 `exceptionDetails` |
+| 断言"12 秒后还是抬起"却红了 | 会话相位在那之前接管（`kind` 变 `phase`）是**合法覆盖**；判据要限定"她自己演的那一段" |
+
+**判据要由"对象自己声明的清单"决定**，不要挑一个参数名盯死：量"自拍有没有举手"时，判据取
+各动作 `motion3.json` 的 `Curves`（动作自己说它写哪些参数），而不是猜 `phone` ——
+`phone` 是"手机在不在手里"，抬手臂的是 `phone2`，两回事。
+
 ## 断言"点得到"要断三层，只断一层必漏
 
 点击这一条链上有三处会各自静默失败，而且**症状长得一模一样**（"点了没反应"）：

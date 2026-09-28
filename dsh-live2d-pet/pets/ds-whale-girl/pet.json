@@ -42,6 +42,10 @@
       },
       "OpenCase": {
         "hold": true
+      },
+      "Selfie": {
+        "hold": true,
+        "persist": true
       }
     },
     "expressionSlots": [
