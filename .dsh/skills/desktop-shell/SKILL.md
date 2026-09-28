@@ -419,6 +419,34 @@ DSH 那边，不是第二份实现）。连不上不是错误：宠物照样站�
 顺带：挂载时**不要**再跑本机的相位桥（`PET_DESKTOP_DSH=none`）、**不要**解包随包宠物
 （宠物归 DSH 那边的插件管），否则两个壳会去写同一个 `%DSH_HOME%\pets`。
 
+### ⚠️ 挂载模式只转发 **API**，页面的 `client.js` 仍是 exe 内嵌的那份
+
+**这是最容易误判的一条**，我为此把"设置不同步"查到了错方向：
+
+```
+挂载模式的数据流：
+  /api/live2d-pet/*                 → 转发给 DSH（宿主的 JS 实现说了算）
+  /plugins/dsh-pet-live2d/client.js → **serve_embed("client.js")**，exe 里那份
+                                       （host/http.rs 里那一行是硬编码的）
+```
+
+后果：**改了 `lib/client.js` 之后，只让页面 F5 是没用的 —— 必须重建 exe**。
+不重建的话，DSH 页面跑新代码、桌面端跑上次构建时的旧代码，症状是"同一份代码、
+两个界面行为不一样"，而人会本能地去桌面端找"它特有的 bug"。
+
+**查法**（很好用，一眼看出它发的是哪一份）：
+
+```js
+fetch('/plugins/dsh-pet-live2d/client.js', { cache: 'no-store' })
+  .then(r => r.text())
+  .then(t => JSON.stringify({ bytes: t.length, hasNewCode: t.includes('新写的函数名') }))
+// bytes 与磁盘上那份（Get-Item lib/client.js）对不上 ⇒ 发的是旧的
+```
+
+**踩过的实例**：用户报"桌面的设置与 DSH 里的设置没有同步"。共享存档那部分改对了，
+但端到端验证一直红 —— 因为桌面端页面拿到的 `client.js` 里**根本没有**新写的
+`persistShared`。重建 exe 之后立刻通过。
+
 验证在 `tools/probe-attach.mjs`（15/15）：catalog / 模型描述 / Cubism Core / vendor 与上游
 **逐字节相同**、SSE 相位转发得到、页面渲染正常、上游不可达时 502 且 `mode=attach`。
 

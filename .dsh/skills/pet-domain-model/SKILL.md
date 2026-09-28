@@ -169,5 +169,39 @@ whenToUse: >
   甚至让"关系指向一个不存在的槽位"、配对再也点不亮。
 - 装扮存档读回来时要**校验 label 在当前 `pet.json` 里还存在**，对不上就当没存过 ——
   换模型或改配置之后存档可能对不上，不能凭空造一个选项出来。
-- 设置界面两个入口（DSH 设置页那一节）共用**模块作用域的 store** + 订阅广播，
-  所以值永远是一份。
+- 设置界面两个入口（DSH 设置页那一节 + 桌面右键面板）共用**模块作用域的 store** + 订阅广播，
+  所以**同一个页面内**值永远是一份。
+
+## 但这三个键**不能只待在 localStorage 里**（跨 origin 会各存一份）
+
+用户报的"桌面的设置与 DSH 里的设置没有同步"，根因不是"同步没写"，而是**根本没有共享存储**：
+
+```
+桌面端页面：http://127.0.0.1:<壳的随机端口>
+DSH 页面：  http://127.0.0.1:3080
+```
+
+浏览器按 **origin** 隔离 `localStorage`，两个界面各一份、永不互见。所以这三类
+**跨窗口该一致**的状态要放进宿主存档：
+
+```
+%DSH_HOME%\pet-settings.json          ← lib/settings.js（宿主半区）
+  { tuning, overrides, outfit, rev, at }
+GET|POST /api/live2d-pet/settings     ← 合并写；rev 每次 +1
+```
+
+客户端：写走 `persistShared({tuning|overrides|outfit})`（**宿主优先、localStorage 兜底**），
+读是启动拉一次 + **每 3 秒轮询**（`storage` 事件不跨 origin，指望不上）。
+
+四条边界：
+
+* **位置与大小不进去**（`dsh-live2d-pet.state.v1`）：那本来就该每个窗口不同 ——
+  贴屏幕右下角还是贴面板右下角是两件事。
+* **合并写**：只动传进来的那几项，否则一个窗口保存调参会把另一个窗口的装扮擦掉。
+* **空写不推进 `rev`**：不然两边会互相推着写（我的单元测试先红在这里，才补上这条规则）。
+* **清洗逻辑只有一份**：`restoreTuning` / `restoreOverrides` / `applyOutfit` 都接受
+  "外部传进来的那份"，宿主存档复用它 —— 写第二份的下场是两边校验规则慢慢分叉，
+  表现为"某个窗口能存进去、另一个窗口把它丢掉"。
+
+新增一类跨窗口状态：`settings.js` 加键 → 客户端 `persistShared` 写 + `applyShared` 读 →
+跑 `tools/probe-cross-origin-sync.mjs`（真实两个 origin，不是 mock）。
