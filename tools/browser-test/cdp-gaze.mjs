@@ -243,8 +243,13 @@ const mouthUp = await mouthAtFull(0.5, 0.5 - (probeRadiusY * 0.6) / geo[3])
 const mouthDown = await mouthAtFull(0.5, 0.5 + (probeRadiusY * 0.6) / geo[3])
 // Shape follows the pointer VERTICALLY: up leans it the way the author's own
 // open-mouth keyframes do, down leans it the other way.
+//
+// ⚠️ 阈值别写死成"旧契约下的幅度"：跟随改成**椭圆**判据之后，竖直分量也会被归一化压一道
+// （实测 ±0.34 → ±0.18）。这条断言要钉的是**方向与可见幅度**，不是某个历史数值。
+// 幅度与 `target.y` 的**精确比例**由下面那条"the mouth equals …"全量法则负责。
 check('the mouth shape leans with the pointer height',
-  mouthUp.dbg.form > 0.2 && mouthDown.dbg.form < -0.2,
+  mouthUp.dbg.form > 0.1 && mouthDown.dbg.form < -0.1
+  && mouthUp.dbg.form > 0 && mouthDown.dbg.form < 0,
   'up ' + JSON.stringify(mouthUp.dbg) + ' ny=' + mouthUp.target.y.toFixed(3)
   + '  down ' + JSON.stringify(mouthDown.dbg) + ' ny=' + mouthDown.target.y.toFixed(3))
 // The full law, asserted against the offset the plugin computed rather than

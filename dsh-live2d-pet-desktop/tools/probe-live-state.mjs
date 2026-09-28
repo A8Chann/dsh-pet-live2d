@@ -109,13 +109,21 @@ const originRaw = execFileSync('powershell.exe', ['-NoProfile', '-Command',
   + "$p = Get-Process 'DSH桌宠','dsh-pet-live2d-desktop' -ErrorAction SilentlyContinue | Select-Object -First 1;"
   + "if ($p) { $r = New-Object P.N+RECT; [void][P.N]::GetWindowRect($p.MainWindowHandle, [ref]$r); \"$($r.Left),$($r.Top)\" } else { 'none' }; exit 0",
 ], { encoding: 'utf8' })
-const [originX] = String(originRaw).trim().split(',').map((v) => Number(v))
-console.log('\n--- 距离曲线（真实光标，往左）')
-console.log('  窗口原点 x=' + originX + '，她的中心（屏幕）= ' + Math.round(originX + info.cx))
+const [originX, originY] = String(originRaw).trim().split(',').map((v) => Number(v))
+// 往**左下斜着**采（沿一条从她出发的射线）。
+//
+// 为什么不固定 y：她贴在屏幕底边、页面正中本身就比她高 ~520px，固定 y 采样量到的是
+// "竖直方向那一大截"而不是横向距离 —— 这一轮我为此算错过两次（先把判据写成欧氏距离、
+// 又把椭圆竖直半径取小了，两次的症状都是"曲线全是 0 或全是很小"）。
+const cos = Math.cos((150 * Math.PI) / 180)
+const sin = Math.sin((150 * Math.PI) / 180)
+console.log('\n--- 距离曲线（真实光标，沿左下 150° 射线）')
+console.log('  窗口原点 ' + originX + ',' + originY + '，她的中心（屏幕）= '
+  + Math.round(originX + info.cx) + ',' + Math.round(originY + info.cy))
 const rows = []
-for (const dx of [0, 60, 150, 220, 300, 600, 1200, 2400]) {
-  const x = Math.round(originX + info.cx - dx)
-  const y = Math.round((await evaluate('window.innerHeight')) / 2)
+for (const distance of [0, 60, 150, 220, 300, 600, 1200, 2400]) {
+  const x = Math.round(originX + info.cx + cos * distance)
+  const y = Math.round(originY + info.cy + sin * distance)
   execFileSync('powershell.exe', ['-NoProfile', '-Command',
     "Add-Type -Namespace P2 -Name N2 -MemberDefinition '[DllImport(\"user32.dll\")] public static extern bool SetCursorPos(int X, int Y);' -ErrorAction SilentlyContinue;"
     + ' [void][P2.N2]::SetCursorPos(' + x + ',' + y + '); exit 0'], { stdio: 'ignore' })
@@ -124,7 +132,8 @@ for (const dx of [0, 60, 150, 220, 300, 600, 1200, 2400]) {
   const traceRaw = await evaluate('JSON.stringify(window.__dshLive2dPet?.gazeTrace?.() ?? null)')
   const gaze = gazeRaw === 'null' ? null : JSON.parse(gazeRaw)
   const trace = traceRaw === 'null' ? null : JSON.parse(traceRaw)
-  rows.push({ dx, gazeX: gaze?.x ?? null, range: trace?.range ?? null, source: trace?.source ?? null, trace, sentX: x, sentY: y })
+  rows.push({ dx: distance, gazeX: gaze?.x ?? null, gazeY: gaze?.y ?? null,
+    range: trace?.range ?? null, source: trace?.source ?? null, trace, sentX: x, sentY: y })
 }
 // 壳体喂进来的到底是哪一点：和"我们让它去哪"对一下，差多少一眼看得出。
 const fed = rows[0]?.trace
@@ -133,20 +142,27 @@ if (fed !== undefined) {
   console.log('  页面算出的中心 ' + JSON.stringify(fed.centre) + '   盒子里量到的中心 ' + rect.cx + ',' + rect.cy)
 }
 for (const row of rows) {
-  console.log('  离她 ' + String(row.dx).padStart(5) + 'px  →  注视 x = '
-    + (row.gazeX === null ? '(无)' : row.gazeX.toFixed(3).padStart(7))
-    + '   满偏 ' + (row.trace?.range ?? '?')
-    + '   收回 ' + (row.trace?.watching ?? '?')
+  console.log('  离她 ' + String(row.dx).padStart(5) + 'px  →  注视 ('
+    + (row.gazeX === null ? '?' : row.gazeX.toFixed(3)) + ', '
+    + (row.gazeY === null ? '?' : row.gazeY.toFixed(3)) + ')'
+    + '   满偏 ' + (row.trace?.range ?? '?') + '/' + (row.trace?.rangeY ?? '?')
+    + '   椭圆距离 ' + (row.trace?.ellipsis ?? '?')
+    + '   强度 ' + (row.trace?.strength ?? 1)
     + '   来源 ' + (row.source ?? '?')
     + (row.trace?.skipped === undefined ? '' : '   **' + row.trace.skipped + '**'))
 }
-// 三条断言：近处成比例、到满偏半径贴边、**太远要回正**（最后这条是用户两次投诉的点）。
-const gazeAtDistance = (dx) => rows.find((r) => r.dx === dx)?.gazeX ?? null
-const near = gazeAtDistance(60)
-const mid = gazeAtDistance(150)
-const edge = gazeAtDistance(220)
-const far = gazeAtDistance(600)
-const veryFar = gazeAtDistance(2400)
+// 断言按**新契约**（一道连续的椭圆距离曲线，不是硬边界）：
+//   近处成比例 → 到满偏那一圈接近满偏 → 再远**单调衰减** → 更远回正。
+// 旧的"220px 必须恰好 1.0""600px 必须已经回正"是硬边界时代的写法，现在不该再要求它们。
+const at = (distance) => rows.find((r) => r.dx === distance)
+const gazeX = (distance) => at(distance)?.gazeX ?? null
+const strength = (distance) => at(distance)?.trace?.strength ?? null
+const near = gazeX(60)
+const mid = gazeX(150)
+const edge = gazeX(300)
+const fading = gazeX(600)
+const recovered = gazeX(1200)
+const veryFar = gazeX(2400)
 const check = (label, ok, detail) => {
   console.log((ok === true ? 'PASS ' : 'FAIL ') + label + (detail === undefined ? '' : '  [' + detail + ']'))
   return ok === true
@@ -155,9 +171,15 @@ console.log('')
 let allOk = true
 allOk = check('近处成比例偏转（60px 有反应、150px 更大）',
   Math.abs(near ?? 0) > 0.05 && Math.abs(mid ?? 0) > Math.abs(near ?? 0), near + ' → ' + mid) && allOk
-allOk = check('到满偏半径贴边（220px ≈ 1）', Math.abs(edge ?? 0) > 0.9, String(edge)) && allOk
-allOk = check('**太远就回正**（600px 时视线回中，不再贴边斜眼盯着）',
-  Math.abs(far ?? 9) < 0.05, String(far)) && allOk
+allOk = check('到满偏那一圈接近满偏（300px ≈ 1）', Math.abs(edge ?? 0) > 0.85, String(edge)) && allOk
+allOk = check('再远是**衰减**而不是贴边（600px 介于两者之间）',
+  Math.abs(fading ?? 9) < Math.abs(edge ?? 0) && Math.abs(fading ?? 0) > 0.02,
+  String(fading) + '  强度 ' + strength(600)) && allOk
+allOk = check('强度随距离单调下降',
+  (strength(60) ?? 0) >= (strength(300) ?? 0) && (strength(300) ?? 0) > (strength(600) ?? 0),
+  [strength(60), strength(300), strength(600)].join(' >= ') + ' > ' + strength(600)) && allOk
+allOk = check('**足够远就回正**（1200px 视线回中，不再斜眼盯着）',
+  Math.abs(recovered ?? 9) < 0.05, String(recovered)) && allOk
 allOk = check('跨屏更远也回正（2400px）', Math.abs(veryFar ?? 9) < 0.05, String(veryFar)) && allOk
 console.log('---')
 console.log('LIVE-STATE ' + (allOk ? 'PASS' : 'FAIL'))

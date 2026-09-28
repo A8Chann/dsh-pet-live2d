@@ -1994,12 +1994,27 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
        * 现在偏移归偏移、半径归半径，`rangePx` 就是"离她多远算看到最边上"。桌面端与网页端
        * 共用这一条，差别只在调用方给的半径。
        */
-      updatePointer(dx, dy, rangePx) {
+      /**
+       * 把"指针相对她中心的偏移"翻成注视方向。
+       *
+       * 接口是**偏移量**（`dx/dy` 相对她中心）加**满偏半径**（`rangePx`），不是"指针坐标 +
+       * 一个假盒子"。早先的写法是 `(x, y, width, height)`、内部拿 `width/2` 当中心，
+       * 而调用方给的是**视口坐标** —— 两个坐标系混在一句话里，结果 `nx` 恒为满偏（实测：
+       * 她中心 2386 配 width 640，`(2386-320)/320` 直接夹到 1）。实参读口一打出来就露了。
+       *
+       * **偏转强度用椭圆范数**（`rangeYPx` 可以给竖直方向一个更大的半径）：
+       * 每根轴各自除以自己的半径，再用 p-范数（p=4，比正圆略"方"、比方形圆润得多）把
+       * 合成强度压到 1 以内。为什么竖直要给更大的半径：她贴在屏幕底部，桌面端视口高 1392
+       * → 页面正中就离她 546px；用正圆的话"在屏幕中部动鼠标"会直接掉出范围，竖直方向
+       * 白白浪费。
+       */
+      updatePointer(dx, dy, rangePx, rangeYPx) {
         if (model === null) return;
         const range = Math.max(40, Number.isFinite(rangePx) ? rangePx : 320);
+        const rangeY = Math.max(40, Number.isFinite(rangeYPx) ? rangeYPx : range);
         // 诊断：把**进函数的实参**记下来（算错与传错是两回事，只看结果分不出来）。
         gazeTrace.current = Object.assign(gazeTrace.current ?? {}, {
-          callIn: { dx: Math.round(dx), dy: Math.round(dy), range: Math.round(range) },
+          callIn: { dx: Math.round(dx), dy: Math.round(dy), range: Math.round(range), rangeY: Math.round(rangeY) },
         });
         const shape = (value) => {
           // A small dead zone, so hand tremor near the centre does not make the
@@ -2009,8 +2024,17 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           const t = Math.min(1, (size - TUNING.gazeDeadzone) / (1 - TUNING.gazeDeadzone));
           return value < 0 ? -t : t;
         };
-        const nx = shape(dx / range);
-        const ny = shape(dy / range);
+        const shapedX = shape(dx / range);
+        const shapedY = shape(dy / rangeY);
+        // 椭圆范数（p=4）：`nx/ny` 各自保留方向，但**合成长度**被压到 1 以内，
+        // 于是等距线是椭圆 —— 斜着看也跟得动，不会像方形判据那样四个角突然到顶。
+        const norm = Math.pow(
+          Math.pow(Math.abs(shapedX), 4) + Math.pow(Math.abs(shapedY), 4),
+          0.25,
+        );
+        const scale = norm > 1 ? 1 / norm : 1;
+        const nx = shapedX * scale;
+        const ny = shapedY * scale;
         gazeTarget = { x: nx, y: ny };
         // How far the pointer is, on the SAME normalized scale the gaze uses, so
         // the mouth and the eyes agree about how far away it is.
@@ -3263,26 +3287,38 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
    */
   const TUNING = {
     /**
-     * **注视满偏半径**，px：离她中心多远算"看到最边上"（视线到这儿就贴边）。
+     * **注视满偏半径**，px：离她中心多远算"看到最边上"（视线到这儿就满偏）。
      *
-     * 它**只是"贴边距离"，不是"还看不看她"**（那个是下面的 `gazeWatchingPx`）。
-     * 两个参数分工：
-     *   * 到 `gazeRangePx` 为止：视线按距离成比例偏转，到这儿满偏；
-     *   * 超过 `gazeWatchingPx`：当她没在看，视线**回正**。
-     * 早先只有前一个，于是 220px 之外一律"贴边斜眼" —— 鼠标跑到别的屏上就变成
-     * "全屏都在追"（用户两次报的就是这个）。只贴边不回正，等于一直在盯着你。
+     * 它只是**满偏那一圈**，不是"还看不看她"（那是下面 `gazeWatchingRatio` 的倍数）。
+     * 两者合起来是一条连续的曲线：
+     *   * 椭圆距离 0 → `gazeRangePx`：视线按距离成比例偏转，到这儿满偏；
+     *   * 再往外到 `gazeRangePx × gazeWatchingRatio`：强度缓动衰减到 0；
+     *   * 更远：当她没在看，视线回正。
+     * 早先只有"贴边"没有"衰减/回正"，于是 220px 之外一律"贴边斜眼" —— 鼠标跑到别的屏上
+     * 就变成"全屏都在追"（用户两次报的就是这个）。只贴边不回正，等于一直在盯着你。
      *
      * 实际用的半径还会夹一下：下限绑在她自己的大小上（她很大时一动就贴边不好看），
      * 上限不超过视口（超过视野的半径没有意义）。
      */
     gazeRangePx: 220,
     /**
-     * **还看多远**，px：超出这个距离就当她没在看，视线缓动回中位并标成 `center`。
+     * **视线能跟多远**（相对满偏半径的倍数）。
      *
-     * 要比 `gazeRangePx` 大一点，否则视线还没拉满就被回正（中间那段"半偏转"会消失）。
-     * 桌面端全屏时这个值决定了"她会不会盯着半个屏幕外的东西看" —— 420 大致是"一个臂展"。
+     * 跟随强度由**到她的椭圆距离**决定，只有一处曲线，没有硬边界：
+     *
+     *   椭圆距离 0 → `gazeRangePx`（=1）        强度 0 → 1（成比例，到这儿满偏）
+     *   =1 … `gazeWatchingRatio`                强度 1 → 0（缓动衰减）
+     *   ≥ 倍数                                   强度 0：当她没在看，视线回正
+     *
+     * 为什么不要硬边界：早先写成"超过阈值立刻回正"，于是她要么满偏斜眼盯着、要么啪一下
+     * 回正，中间没有过渡 —— 用户看到的就是"全屏都在追踪"（贴边）或"突然不看了"。衰减
+     * 让远处"渐渐不感兴趣"，这也更像活物。
+     *
+     * 2.7 是按实际几何定的：她贴屏幕底边，桌面端视口高 1392 → 页面正中就离她 546px，
+     * 而满偏半径 220 × 2.7 ≈ 594 > 546，所以"在屏幕中部动鼠标"仍在范围内（只是强度很弱）。
+     * 小于 2.5 的话竖直方向会白白浪费掉半屏。
      */
-    gazeWatchingPx: 420,
+    gazeWatchingRatio: 2.7,
     /** 中心附近被忽略的比例（死区）：没有它，手抖一像素眼珠就动。 */
     gazeDeadzone: 0.12,
     /** 嘴部：跟随强度 / 形状强度 / 缓动时间常数（ms）。 */
@@ -3315,11 +3351,10 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
    */
   const TUNING_FIELDS = [
     { key: "gazeDeadzone", label: "注视死区", min: 0, max: 0.6, step: 0.01 },
-    // 「满偏半径」：离她多远算"看到最边上"。**调大 = 范围更大**（220 是"一个巴掌"）；
-    // 调到 300+ 就会变成"处处满偏"。
+    // 「满偏半径」：离她多远算"看到最边上"。**调大 = 范围更大**（220 是"一个巴掌"）。
     { key: "gazeRangePx", label: "注视满偏 px", min: 80, max: 900, step: 20 },
-    // 「还看多远」：超出就当没在看、视线回正。要 >= 满偏半径，否则中间那段半偏转会消失。
-    { key: "gazeWatchingPx", label: "注视收回 px", min: 100, max: 2000, step: 20 },
+    // 「收回倍数」：满偏的多大倍数之外当她没在看（中间那段是缓动衰减，不是硬边界）。
+    { key: "gazeWatchingRatio", label: "收回倍数", min: 1.2, max: 6, step: 0.1 },
     { key: "mouthFollow", label: "嘴跟随意", min: 0, max: 1, step: 0.05 },
     { key: "mouthDrop", label: "嘴形强度", min: -1, max: 1, step: 0.05 },
     { key: "mouthEaseMs", label: "嘴缓动 ms", min: 30, max: 800, step: 10 },
@@ -5271,25 +5306,40 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         // 的移动都落在"盒子外的死区"里，一离开她那个方块就不跟了（用户报的"跟随范围有问题"）。
         // 像素契约修好了那一段，但**范围要给对**：见 `gazeRangePx` 的注释 —— 它是"从多远
         // 开始贴边"，调大了就成了"全屏都在跟且处处满偏"。
+        // 满偏半径：**按像素算，不按盒子算**。
+        //
+        // 旧契约是"偏移 ÷ 她盒子的一半"，缺点在桌面端很明显：盒子是 300px，于是**全屏**
+        // 的移动都落在"盒子外的死区"里，一离开她那个方块就不跟了（用户报的"跟随范围有问题"）。
+        // 像素契约修好了那一段，但**范围要给对**：见 `gazeRangePx` 的注释。
+        //
+        // **竖直半径按视口高度给**（1/3 屏，至少与横向相等）：她贴在屏幕底边，横向"一个
+        // 巴掌"就够，竖直要覆盖到屏幕中部以上 —— 否则"在屏幕中间动鼠标"整片都在衰减区
+        // （实测：竖直半径 286 时，页面正中比她高 523px，那里几乎不跟）。横向半径仍由
+        // `gazeRangePx` 决定。两圈（满偏 / 收回）用同一个倍率，所以仍是同心椭圆。
         const range = Math.max(
           Math.min(rect.width, rect.height) / 2,
           Math.min(TUNING.gazeRangePx, Math.min(window.innerWidth, window.innerHeight)),
         );
-        // ---- 太远就当她没在看 ----------------------------------------------
+        const rangeY = Math.max(range, Math.min(window.innerHeight, window.innerWidth) / 3);
+        // ---- 太远就当她没在看（衰减，不是硬边界）-----------------------------
         //
-        // **两道阈值分工**，缺一个都会出问题：
-        //   * `range`：到这儿为止，视线按距离成比例偏转（贴边距离）；
-        //   * `watching`：超出就回正 —— 没有它，鼠标跑到别的屏上她会一直"贴边斜眼盯着"，
-        //     看起来就是"全屏都在追踪"（用户两次报的都是这个）。
-        // `watching` 强制不小于 `range`：否则视线还没拉满就被回正，中间那段半偏转消失。
+        // 判据是**到她的椭圆距离** `u`（横竖各自除以自己的半径）：
+        //   * `u ≤ 1`：在满偏椭圆内，强度 1；
+        //   * `1 < u < ratio`：强度从 1 缓动衰减到 0 —— 她"渐渐不感兴趣"；
+        //   * `u ≥ ratio`：当她没在看，视线回正。
         //
-        // ⚠️ 判据**分横竖**，不要用欧氏距离：她贴在屏幕底部，而在桌面端"页面正中"本身
-        // 就离她 546px（视口高 1392）。用 `hypot` 的话，一个横向只偏 200px 的位置也会被
-        // 判成"太远"而回正 —— 实测就是整条曲线全是 0。竖直方向给足余量（`range * 2.5`，
-        // 至少 400），横向用 `gazeWatchingPx`。
-        const watching = Math.max(range, TUNING.gazeWatchingPx);
-        const watchingY = Math.max(400, range * 2.5);
-        if (Math.abs(dx) > watching || Math.abs(dy) > watchingY) {
+        // 为什么是椭圆而不是方形/正圆：方形四个角"比看上去更远"（斜着走会提前掉出范围），
+        // 正圆则在竖直方向白白浪费（她贴屏幕底边，页面正中就离她 546px）。
+        //
+        // 竖直半径比横向大（`倍率`）：她贴屏幕底边，横向"一个巴掌"就够，竖直要覆盖到
+        // 屏幕中部 —— 两圈用同一个倍率，所以仍是同心椭圆。
+        const watching = range * TUNING.gazeWatchingRatio;
+        const watchingY = rangeY * TUNING.gazeWatchingRatio;
+        // 椭圆距离：横竖各自归一化后取欧氏长度（不是分别比较 —— 那是方形）。
+        // 注意 `range`/`rangeY` 是**满偏**半径，所以 u=1 就是满偏那一圈。
+        const u = Math.hypot(dx / range, dy / rangeY);
+        const strength = u <= 1 ? 1 : (u >= TUNING.gazeWatchingRatio ? 0 : (TUNING.gazeWatchingRatio - u) / (TUNING.gazeWatchingRatio - 1));
+        if (strength <= 0) {
           // 她没在看：回中位，并把对外状态标回 `center`（驱动与用户都看得见这一点）。
           if (!resting) {
             resting = true;
@@ -5300,7 +5350,9 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
             at: { x: Math.round(clientX), y: Math.round(clientY) },
             centre: { x: Math.round(centreX), y: Math.round(centreY) },
             box: { w: Math.round(rect.width), h: Math.round(rect.height) },
-            range: Math.round(range), watching: Math.round(watching), watchingY: Math.round(watchingY),
+            range: Math.round(range), rangeY: Math.round(rangeY),
+            watching: Math.round(watching), watchingY: Math.round(watchingY),
+            ellipsis: Number(u.toFixed(3)), strength: 0,
             tuningPx: TUNING.gazeRangePx,
             source: source ?? "dom", skipped: "out-of-watching-range",
           };
@@ -5322,12 +5374,15 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           at: { x: Math.round(clientX), y: Math.round(clientY) },
           centre: { x: Math.round(centreX), y: Math.round(centreY) },
           box: { w: Math.round(rect.width), h: Math.round(rect.height) },
-          range: Math.round(range), watching: Math.round(watching), watchingY: Math.round(watchingY),
+          range: Math.round(range), rangeY: Math.round(rangeY),
+          watching: Math.round(watching), watchingY: Math.round(watchingY),
+          ellipsis: Number(u.toFixed(3)), strength: Number(strength.toFixed(3)),
           tuningPx: TUNING.gazeRangePx,
           source: source ?? "dom",
         };
         resting = false;
-        motion.current.updatePointer(dx, dy, range);
+        // 强度乘在偏移上：满偏椭圆内是 1（与原行为一致），远处按椭圆距离平滑衰减到 0。
+        motion.current.updatePointer(dx * strength, dy * strength, range, rangeY);
         reportGaze("pointer");
       };
       /**
