@@ -50,6 +50,14 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   const isDesktopShell = typeof window.__petDesktop === "object" && window.__petDesktop !== null;
 
   /**
+   * 跟随范围的诊断快照（最近一次 pointermove 的中间量）。
+   *
+   * 挂在模块级而不是组件 ref 上：它要能被**页面外的驱动**读到（经 `__dshLive2dPet.gazeTrace()`），
+   * 而"跟随范围"这类问题最难的地方就是"看着像没反应"——量出判据与参数才有得查。
+   */
+  const gazeTrace = { current: null };
+
+  /**
    * 显示层状态的**模块级 store**。
    *
    * 为什么不能放在 `Pet` 组件的 ref 里：设置页那一节（`PetSettingsBody`）渲染在**宠物组件
@@ -1948,9 +1956,24 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
        * Passing the normalized offset straight to the focus controller keeps the
        * magnitude, so the gaze is proportional to how far the pointer actually is.
        */
-      updatePointer(x, y, width, height) {
+      /**
+       * 把"指针相对她中心的偏移"翻成注视方向。
+       *
+       * 接口是**偏移量**（`dx/dy` 相对她中心）加**满偏半径**（`rangePx`），不是"指针坐标 +
+       * 一个假盒子"。早先的写法是 `(x, y, width, height)`、内部拿 `width/2` 当中心，
+       * 而调用方给的是**视口坐标** —— 两个坐标系混在一句话里，结果 `nx` 恒为满偏（实测：
+       * 她中心 2386 配 width 640，`(2386-320)/320` 直接夹到 1）。实参读口一打出来就露了。
+       *
+       * 现在偏移归偏移、半径归半径，`rangePx` 就是"离她多远算看到最边上"。桌面端与网页端
+       * 共用这一条，差别只在调用方给的半径。
+       */
+      updatePointer(dx, dy, rangePx) {
         if (model === null) return;
-        const half = { x: Math.max(1, width / 2), y: Math.max(1, height / 2) };
+        const range = Math.max(40, Number.isFinite(rangePx) ? rangePx : 320);
+        // 诊断：把**进函数的实参**记下来（算错与传错是两回事，只看结果分不出来）。
+        gazeTrace.current = Object.assign(gazeTrace.current ?? {}, {
+          callIn: { dx: Math.round(dx), dy: Math.round(dy), range: Math.round(range) },
+        });
         const shape = (value) => {
           // A small dead zone, so hand tremor near the centre does not make the
           // eyes wander, and a linear ramp beyond it up to full deflection.
@@ -1959,9 +1982,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           const t = Math.min(1, (size - TUNING.gazeDeadzone) / (1 - TUNING.gazeDeadzone));
           return value < 0 ? -t : t;
         };
-        const nx = shape((x - half.x) / half.x);
-        // Screen y grows downward; the controller wants up-positive.
-        const ny = shape((y - half.y) / half.y);
+        const nx = shape(dx / range);
+        const ny = shape(dy / range);
         gazeTarget = { x: nx, y: ny };
         // How far the pointer is, on the SAME normalized scale the gaze uses, so
         // the mouth and the eyes agree about how far away it is.
@@ -2006,6 +2028,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       }),
       /** Diagnostic: the normalized gaze target the pointer last produced. */
       gazeTarget: () => gazeTarget,
+      /** Diagnostic: 最近一次 pointermove 的跟随判据（舞台尺寸 / 满偏半径 / 是否算"在看"）。 */
+      gazeTrace: () => gazeTrace.current,
       /**
        * 别的槽位还选着动作时，替它们保住姿势（见 keptPoses 的注释）。
        *
@@ -3209,8 +3233,18 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
    * 不需要再穿一层 setter。写进去下一帧就生效。
    */
   const TUNING = {
-    /** 指针离舞台多远仍能牵引视线，px。 */
-    gazeRange: 240,
+    /**
+     * **注视满偏半径**，px：离她中心多远算"看到最边上"。
+     *
+     * 这个值取代了原来那个 `gazeRange`（"超出这个距离就当她没在看"）。那个判据本身是错的：
+     * 它是相对**她那个 300px 的盒子**算的，而 `pointermove` 是 window 级监听 ——
+     * 结果她盒子以外的移动全被判成"没在看"，桌面端全屏时尤其明显（用户报的
+     * "鼠标跟随范围有问题"）。现在指针只要还在窗口里就一直跟，视线用这个半径归一化。
+     *
+     * 实际用的半径还会夹一下：下限绑在她自己的大小上（小尺寸时一动就贴边不好看），
+     * 上限不超过视口（免得整屏落在死区里、一动就满偏）。
+     */
+    gazeRangePx: 320,
     /** 中心附近被忽略的比例（死区）：没有它，手抖一像素眼珠就动。 */
     gazeDeadzone: 0.12,
     /** 嘴部：跟随强度 / 形状强度 / 缓动时间常数（ms）。 */
@@ -3243,7 +3277,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
    */
   const TUNING_FIELDS = [
     { key: "gazeDeadzone", label: "注视死区", min: 0, max: 0.6, step: 0.01 },
-    { key: "gazeRange", label: "注视范围 px", min: 0, max: 800, step: 10 },
+    // 「满偏半径」：离她多远算"看到最边上"。调小 = 更灵敏。
+    { key: "gazeRangePx", label: "注视满偏 px", min: 80, max: 900, step: 20 },
     { key: "mouthFollow", label: "嘴跟随意", min: 0, max: 1, step: 0.05 },
     { key: "mouthDrop", label: "嘴形强度", min: -1, max: 1, step: 0.05 },
     { key: "mouthEaseMs", label: "嘴缓动 ms", min: 30, max: 800, step: 10 },
@@ -5115,10 +5150,10 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       if (stage === null) return undefined;
       // The resting target is the stage centre, i.e. where the model sits.
       focusDefaultRef.current = () => {
-        const rect = stage.getBoundingClientRect();
         // The DEFAULT resting target is the model's own centre — not the last
         // pointer position — so the pet always settles back to a neutral gaze.
-        motion.current.updatePointer(rect.width / 2, rect.height / 2, rect.width, rect.height);
+        // 偏移 0 = 正中，与"满偏半径"无关（视线回中不该受那个参数影响）。
+        motion.current.updatePointer(0, 0, 320);
         reportGaze("center");
       };
       let resting = false;
@@ -5170,26 +5205,58 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         if (list.length > 0) runReactionRef.current(pick(list));
         say(pick(linesNow().spin));
       };
+      /**
+       * 跟随一次指针移动。
+       *
+       * **坐标系是视口，不是她那个盒子。** 这里是 window 级监听，鼠标在她盒子外面移动
+       * 也会进来；原来把坐标减去 `stage.getBoundingClientRect()`，于是盒子外的点全被
+       * 当成"远得没边"（判据半径又只有 240px），整段跟随就断了 —— 实测桌面端上
+       * 离她中心 320px 就已经完全不跟（活下去的只有她那个 300px 方块以内的移动）。
+       *
+       * 现在：以她的**中心**为原点、按像素距离归一化，`gazeRangePx` 是满偏半径。
+       * 这样"在她附近动鼠标"有灵敏反应，离远了也还有明确的方向感（超出就夹住）。
+       */
       const onMove = (event) => {
         const rect = stage.getBoundingClientRect();
-        const x = event.clientX - rect.left;
-        const y = event.clientY - rect.top;
+        // 她在视口里的中心（`rect` 只用来定位她，不再用来归一化）。
+        const centreX = rect.left + rect.width / 2;
+        const centreY = rect.top + rect.height / 2;
+        const dx = event.clientX - centreX;
+        const dy = event.clientY - centreY;
+        // 满偏半径：**按像素算，不按盒子算**。
+        //
+        // 旧契约是"偏移 ÷ 她盒子的一半" —— 在那个契约下，只有盒子内的移动有意义，
+        // 而 `pointermove` 是 window 级监听，盒子外的移动被"超出 240px 就当她没在看"整段
+        // 丢掉（桌面端全屏时她只占右下角 300px，用户在别处动鼠标她毫无反应，就是用户报的
+        // "跟随范围有问题"）。改成像素契约之后：她附近（几百像素内）灵敏，远处仍有层次，
+        // 到屏幕边缘满偏，且**盒子内外的行为是连续的**（旧契约在盒子边界上是断的）。
+        //
+        // `gazeRangePx` 就是那个"几百像素"，可调，想更灵敏就调小；上限绑在视口较小边上
+        // （超过视野的半径没有意义，远处会一律贴边）。
+        const range = Math.max(
+          Math.min(rect.width, rect.height) / 2,
+          Math.min(TUNING.gazeRangePx, Math.min(window.innerWidth, window.innerHeight)),
+        );
         // ---- 鼠标围着转圈 → 转晕 ------------------------------------------
         // 判定的是"围绕舞台中心的**累计转角**"：每次移动取与上一次的夹角增量
         // （归一化到 ±180°），在一段时间窗内累计；够 spinTurns 圈就触发一次。
         // 用累计角而不是"位置绕了几圈"，是因为前者对半径不敏感 —— 贴着角色转
         // 小圈和远远地转大圈都算，符合"逗她"的直觉。
-        spinTrack(rect, x, y);
-        const near = x >= -TUNING.gazeRange && y >= -TUNING.gazeRange
-          && x <= rect.width + TUNING.gazeRange && y <= rect.height + TUNING.gazeRange;
-        if (near) {
-          resting = false;
-          motion.current.updatePointer(x, y, rect.width, rect.height);
-          reportGaze("pointer");
-        } else if (!resting) {
-          resting = true;
-          focusDefault();
-        }
+        // ⚠️ `spinTrack` 要的是**盒子内的坐标**（它围绕舞台中心算累计转角），而事件给的是
+        // 视口坐标 —— 必须转回去。直接传视口坐标的后果是"围绕一个远处的点转小角"，
+        // 累计转角小到永远够不着阈值（实测 103 次移动只累计 0.13 弧度，阈值 12.57）。
+        spinTrack(rect, event.clientX - rect.left, event.clientY - rect.top);
+        // 诊断读口：跟随范围这一块最容易"看着像没反应"，把中间量挂出来，
+        // 驱动量到异常时一眼能看出是判据错了还是参数没生效（只读，不影响行为）。
+        gazeTrace.current = {
+          dx: Math.round(dx), dy: Math.round(dy),
+          centre: { x: Math.round(centreX), y: Math.round(centreY) },
+          box: { w: Math.round(rect.width), h: Math.round(rect.height) },
+          range: Math.round(range), tuningPx: TUNING.gazeRangePx,
+        };
+        resting = false;
+        motion.current.updatePointer(dx, dy, range);
+        reportGaze("pointer");
       };
       /**
        * 指针「不在场」了：回正。

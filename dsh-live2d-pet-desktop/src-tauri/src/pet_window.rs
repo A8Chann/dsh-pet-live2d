@@ -9,20 +9,67 @@
 // "忽略光标事件"，由穿透轮询把它打开（见 lib.rs 的 spawn_hover_loop）——失败时默认
 // 是"不挡桌面"，而不是"挡住桌面"。
 use tauri::utils::config::Color;
-use tauri::{AppHandle, Manager, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager, Monitor, PhysicalPosition, PhysicalSize, WebviewWindowBuilder};
 
 pub const PET_WINDOW: &str = "pet";
+
+/// 光标（虚拟桌面坐标）落在哪块显示器上。
+fn monitor_containing(app: &AppHandle, x: i32, y: i32) -> Option<Monitor> {
+    let monitors = app.available_monitors().ok()?;
+    monitors.into_iter().find(|monitor| {
+        let position = monitor.position();
+        let size = monitor.size();
+        x >= position.x
+            && y >= position.y
+            && x < position.x + size.width as i32
+            && y < position.y + size.height as i32
+    })
+}
+
+/// 把窗口搬到"光标所在那块显示器"的工作区上。
+///
+/// 只有在**真的换了屏**时才动（返回 `true`），否则每 33ms 一次 `set_position` 会让窗口
+/// 一直重排、页面那边 `ResizeObserver` 也就一直重抓轮廓。
+///
+/// 为什么是"工作区"而不是整块屏：宠物跑到任务栏底下就点不到了。
+pub fn focus_monitor_at(app: &AppHandle, x: i32, y: i32) -> bool {
+    let Some(window) = app.get_webview_window(PET_WINDOW) else {
+        return false;
+    };
+    let Some(monitor) = monitor_containing(app, x, y) else {
+        return false;
+    };
+    let area = *monitor.work_area();
+    let already = window
+        .outer_position()
+        .ok()
+        .map(|position| position.x == area.position.x && position.y == area.position.y)
+        .unwrap_or(false);
+    if already {
+        return false;
+    }
+    let _ = window.set_position(PhysicalPosition::new(area.position.x, area.position.y));
+    let _ = window.set_size(PhysicalSize::new(area.size.width, area.size.height));
+    true
+}
 
 /// 建桌宠窗口。
 ///
 /// 翻成同进程宿主之后这个函数不再接管子进程（以前要 `app.manage(sidecar)` 让它的 Drop
 /// 负责收尸），只负责窗口。
 pub fn create_pet_window(app: &AppHandle, url: &str) -> Result<(), Box<dyn std::error::Error>> {
-    // 工作区（不含任务栏）：宠物在任务栏底下就没法点了。
-    let area = app
-        .primary_monitor()
-        .ok()
-        .flatten()
+    // 起手尺寸用**光标当前所在那块屏的工作区**，而不是"整个虚拟桌面"。
+    //
+    // 试过铺满虚拟桌面（8560×1440 + 负坐标），结果进程**直接崩掉**：事件日志里是
+    // `0xc0000409`（fail-fast / 栈缓冲越界），模块就是 exe 自己。那个尺寸/负原点会踩到
+    // WebView2 或窗口创建路径里的某个边界，而全屏透明层本来就不需要铺满 ——
+    // 跟随循环（`focus_monitor_at`）会把窗口搬到光标所在的那块屏上。
+    //
+    // 顺序很关键：**先按光标的屏幕定位，再决定尺寸**，否则用户在多屏环境里看到的她
+    // 永远在主屏（那就是"无法移动到别的屏幕"的另一半）。
+    let target = crate::cursor_screen_pos()
+        .and_then(|(x, y)| monitor_containing(app, x, y))
+        .or_else(|| app.primary_monitor().ok().flatten())
         .map(|monitor| *monitor.work_area());
 
     let mut builder = WebviewWindowBuilder::new(app, PET_WINDOW, tauri::WebviewUrl::External(url.parse()?))
@@ -47,9 +94,9 @@ pub fn create_pet_window(app: &AppHandle, url: &str) -> Result<(), Box<dyn std::
 
     let window = builder.build()?;
 
-    if let Some(area) = area {
-        let _ = window.set_position(tauri::PhysicalPosition::new(area.position.x, area.position.y));
-        let _ = window.set_size(tauri::PhysicalSize::new(area.size.width, area.size.height));
+    if let Some(area) = target {
+        let _ = window.set_position(PhysicalPosition::new(area.position.x, area.position.y));
+        let _ = window.set_size(PhysicalSize::new(area.size.width, area.size.height));
     }
 
     // 默认忽略光标事件：判定跑起来之前，宁可"她点不到"，也不要"挡住整个桌面"。
