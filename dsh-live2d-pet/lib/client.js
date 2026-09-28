@@ -2057,6 +2057,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       gazeTarget: () => gazeTarget,
       /** Diagnostic: 最近一次 pointermove 的跟随判据（舞台尺寸 / 满偏半径 / 是否算"在看"）。 */
       gazeTrace: () => gazeTrace.current,
+      /** Diagnostic: 当前生效的可调项快照（排查"改了没生效"时先看它）。 */
+      tuning: () => Object.assign({}, TUNING),
       /**
        * 别的槽位还选着动作时，替它们保住姿势（见 keptPoses 的注释）。
        *
@@ -3261,17 +3263,26 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
    */
   const TUNING = {
     /**
-     * **注视满偏半径**，px：离她中心多远算"看到最边上"。
+     * **注视满偏半径**，px：离她中心多远算"看到最边上"（视线到这儿就贴边）。
      *
-     * 这是"跟随范围"那唯一一个旋钮，别把它调大：它决定"从多远开始视线就贴边不再变化"。
-     * 调大了会变成"全屏都在跟、而且到处都是满偏"（用户的原话：**范围不存在限制了，全屏都在
-     * 跟踪**）—— 实测 320 就是这样，收到 220 之后才回到"她附近一个巴掌大的范围里跟得灵、
-     * 再远就基本贴边"的手感。
+     * 它**只是"贴边距离"，不是"还看不看她"**（那个是下面的 `gazeWatchingPx`）。
+     * 两个参数分工：
+     *   * 到 `gazeRangePx` 为止：视线按距离成比例偏转，到这儿满偏；
+     *   * 超过 `gazeWatchingPx`：当她没在看，视线**回正**。
+     * 早先只有前一个，于是 220px 之外一律"贴边斜眼" —— 鼠标跑到别的屏上就变成
+     * "全屏都在追"（用户两次报的就是这个）。只贴边不回正，等于一直在盯着你。
      *
      * 实际用的半径还会夹一下：下限绑在她自己的大小上（她很大时一动就贴边不好看），
      * 上限不超过视口（超过视野的半径没有意义）。
      */
     gazeRangePx: 220,
+    /**
+     * **还看多远**，px：超出这个距离就当她没在看，视线缓动回中位并标成 `center`。
+     *
+     * 要比 `gazeRangePx` 大一点，否则视线还没拉满就被回正（中间那段"半偏转"会消失）。
+     * 桌面端全屏时这个值决定了"她会不会盯着半个屏幕外的东西看" —— 420 大致是"一个臂展"。
+     */
+    gazeWatchingPx: 420,
     /** 中心附近被忽略的比例（死区）：没有它，手抖一像素眼珠就动。 */
     gazeDeadzone: 0.12,
     /** 嘴部：跟随强度 / 形状强度 / 缓动时间常数（ms）。 */
@@ -3304,9 +3315,11 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
    */
   const TUNING_FIELDS = [
     { key: "gazeDeadzone", label: "注视死区", min: 0, max: 0.6, step: 0.01 },
-    // 「满偏半径」：离她多远算"看到最边上"。**调大 = 范围更大**（220 是"一个巴掌"的手感；
-    // 调到 300+ 就会变成"全屏都在跟、处处满偏"，试过）。
+    // 「满偏半径」：离她多远算"看到最边上"。**调大 = 范围更大**（220 是"一个巴掌"）；
+    // 调到 300+ 就会变成"处处满偏"。
     { key: "gazeRangePx", label: "注视满偏 px", min: 80, max: 900, step: 20 },
+    // 「还看多远」：超出就当没在看、视线回正。要 >= 满偏半径，否则中间那段半偏转会消失。
+    { key: "gazeWatchingPx", label: "注视收回 px", min: 100, max: 2000, step: 20 },
     { key: "mouthFollow", label: "嘴跟随意", min: 0, max: 1, step: 0.05 },
     { key: "mouthDrop", label: "嘴形强度", min: -1, max: 1, step: 0.05 },
     { key: "mouthEaseMs", label: "嘴缓动 ms", min: 30, max: 800, step: 10 },
@@ -5262,6 +5275,37 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           Math.min(rect.width, rect.height) / 2,
           Math.min(TUNING.gazeRangePx, Math.min(window.innerWidth, window.innerHeight)),
         );
+        // ---- 太远就当她没在看 ----------------------------------------------
+        //
+        // **两道阈值分工**，缺一个都会出问题：
+        //   * `range`：到这儿为止，视线按距离成比例偏转（贴边距离）；
+        //   * `watching`：超出就回正 —— 没有它，鼠标跑到别的屏上她会一直"贴边斜眼盯着"，
+        //     看起来就是"全屏都在追踪"（用户两次报的都是这个）。
+        // `watching` 强制不小于 `range`：否则视线还没拉满就被回正，中间那段半偏转消失。
+        //
+        // ⚠️ 判据**分横竖**，不要用欧氏距离：她贴在屏幕底部，而在桌面端"页面正中"本身
+        // 就离她 546px（视口高 1392）。用 `hypot` 的话，一个横向只偏 200px 的位置也会被
+        // 判成"太远"而回正 —— 实测就是整条曲线全是 0。竖直方向给足余量（`range * 2.5`，
+        // 至少 400），横向用 `gazeWatchingPx`。
+        const watching = Math.max(range, TUNING.gazeWatchingPx);
+        const watchingY = Math.max(400, range * 2.5);
+        if (Math.abs(dx) > watching || Math.abs(dy) > watchingY) {
+          // 她没在看：回中位，并把对外状态标回 `center`（驱动与用户都看得见这一点）。
+          if (!resting) {
+            resting = true;
+            focusDefault();
+          }
+          gazeTrace.current = {
+            dx: Math.round(dx), dy: Math.round(dy),
+            at: { x: Math.round(clientX), y: Math.round(clientY) },
+            centre: { x: Math.round(centreX), y: Math.round(centreY) },
+            box: { w: Math.round(rect.width), h: Math.round(rect.height) },
+            range: Math.round(range), watching: Math.round(watching), watchingY: Math.round(watchingY),
+            tuningPx: TUNING.gazeRangePx,
+            source: source ?? "dom", skipped: "out-of-watching-range",
+          };
+          return;
+        }
         // ---- 鼠标围着转圈 → 转晕 ------------------------------------------
         // 判定的是"围绕舞台中心的**累计转角**"：每次移动取与上一次的夹角增量
         // （归一化到 ±180°），在一段时间窗内累计；够 spinTurns 圈就触发一次。
@@ -5278,7 +5322,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           at: { x: Math.round(clientX), y: Math.round(clientY) },
           centre: { x: Math.round(centreX), y: Math.round(centreY) },
           box: { w: Math.round(rect.width), h: Math.round(rect.height) },
-          range: Math.round(range), tuningPx: TUNING.gazeRangePx,
+          range: Math.round(range), watching: Math.round(watching), watchingY: Math.round(watchingY),
+          tuningPx: TUNING.gazeRangePx,
           source: source ?? "dom",
         };
         resting = false;
