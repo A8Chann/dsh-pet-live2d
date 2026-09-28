@@ -1050,24 +1050,30 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
      *
      * 写在 applyRelease **之后**（否则会被还原表顶掉），表达式层之前（表情仍然最大）。
      *
-     * ⚠️ **当前动作自己写的参数不能覆盖**（这一条修的是用户报的"装扮里的自拍右手不抬"）：
-     * 自拍（`Selfie`）驱动 `phone5`（抬手，在干净试验台里确认过：推 `phone5` 会让
-     * `看手机/ArtMesh26` 那块几何变形），但"掏出手机"定格时录下的那一帧里 `phone5=0`，
+     * ⚠️ **动作驱动的参数不能被保姿势录像压住**（这一条修的是用户报的"装扮里的自拍右手不抬"）：
+     * 自拍（`Selfie`）驱动 `phone5`（抬手；干净试验台实测：推 `phone5` 会让
+     * `看手机/ArtMesh26` 那块几何变形），但「掏出手机」定格时录下的那一帧里 `phone5=0`，
      * 于是这一层每帧把它写回 0 —— 写在动作更新之后，**曲线被压住**。干净环境实测：
      * 自拍里 `phone5` 涨到 9.713，而手那块几何一动不动（盒完全相同）。
      *
-     * 所以：录像里那些**当前动作也在写**的参数跳过不写，让动作说了算；
-     * 其余（掏出手机自己的 `phone`/`phone2`/`phone4`/`phone6` 之类）照旧保姿势。
+     * 判据**由宠物声明**（`motionOptions.<组>.ignoreKeptParams`），不在这里猜：
+     * 我试过"`currentEntry.params` 里有的就跳过"，那是**宿主按曲线生成的清单**，
+     * 可能含动作文件根本没写的参数（实测 `OpenCase` 的清单含 `phone5`，曲线却不写它）——
+     * 结果把相位/别的槽位那套保姿势一起打断了（`cdp-head`「no single hand option
+     * dominates」、`cdp-host-events`「tool phase sustains」当场红，A/B 撤回那一处即全绿）。
+     * 声明式的名单面窄、看得见、改 pet.json 就能调，不会误伤别的路径。
      */
     const applyKeptPoses = (core, values) => {
       if (keptPoses.length === 0 || values === null) return;
-      const owned = currentEntry === null ? null : currentEntry.params;
-      const ownedSet = owned === null || owned === undefined ? null : new Set(owned);
+      const skip = currentEntry === null
+        ? null
+        : optionsFor(currentEntry.group)?.ignoreKeptParams ?? null;
+      const skipSet = Array.isArray(skip) ? new Set(skip) : null;
       for (const group of keptPoses) {
         const frame = poseSnapshots.get(group);
         if (frame === undefined) continue;
         for (const id of Object.keys(frame)) {
-          if (ownedSet !== null && ownedSet.has(id)) continue;
+          if (skipSet !== null && skipSet.has(id)) continue;
           const at = parameterIndex(core, id);
           if (at >= 0) values[at] = frame[id];
         }
