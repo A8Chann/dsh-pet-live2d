@@ -393,6 +393,31 @@ fn route(
         send_json(stream, 200, &payload)?;
         return Ok(true);
     }
+    // **全局光标**：页面每 33ms 问一次，用来驱动跟随。
+    //
+    // 为什么不塞进 `/probe/pending`：那个只在指针**落在窗口内**时才有任务，而这里要解决的
+    // 恰恰是"指针在别的程序上"那一半 —— 塞进去的话，指针一出窗口位置就冻住了。
+    //
+    // 坐标是**本窗口的 CSS 像素**（= `clientX/clientY`）：壳读到的是虚拟桌面物理像素，
+    // 先减窗口原点再除缩放。落在窗口外时会是负数/超出，那正是我们要的方向信息。
+    if path == "/__desktop/cursor" {
+        let guard = state.shared.lock().unwrap_or_else(|p| p.into_inner());
+        let scale = if guard.scale > 0.0 { guard.scale } else { 1.0 };
+        let origin = guard.window_origin.unwrap_or((0.0, 0.0));
+        let payload = match guard.cursor {
+            Some((x, y)) => json!({
+                "ok": true,
+                "x": (x as f64 - origin.0) / scale,
+                "y": (y as f64 - origin.1) / scale,
+                "screenX": x,
+                "screenY": y,
+            }),
+            None => json!({ "ok": false, "reason": "no-cursor-yet" }),
+        };
+        drop(guard);
+        send_json(stream, 200, &payload)?;
+        return Ok(true);
+    }
     if path == "/__desktop/probe/answer" && method == "POST" {
         let parsed: Value = serde_json::from_str(body).unwrap_or(Value::Null);
         let seq = parsed.get("seq").and_then(Value::as_u64).unwrap_or(0);

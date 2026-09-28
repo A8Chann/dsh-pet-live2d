@@ -15,6 +15,7 @@
 (function () {
   const PENDING_URL = '/__desktop/probe/pending'
   const ANSWER_URL = '/__desktop/probe/answer'
+  const CURSOR_URL = '/__desktop/cursor'
   const IDLE_MS = 20
   let inflight = false
   let rounds = 0
@@ -33,6 +34,19 @@
     inflight = true
     let wait = IDLE_MS
     try {
+      // **先问全局光标**（每轮都问，跟有没有判定任务无关）。
+      //
+      // 为什么必须由壳喂：`pointermove` 只在指针落在这个窗口上时才由浏览器送来，所以用户
+      // 一操作别的程序，页面就**一个事件都收不到** —— 唯一的症状就是"只有焦点在宠物上才有
+      // 跟随"。壳每 33ms 本来就在读全局光标（穿透判定要用），这份数据现成的。
+      try {
+        const cursor = await fetch(CURSOR_URL, { cache: 'no-store' }).then((r) => r.json())
+        if (cursor && cursor.ok === true && typeof window.__petPointer === 'function') {
+          window.__petPointer(cursor.x, cursor.y)
+        }
+      } catch {
+        /* 读不到就不喂：跟随退回 DOM 事件那条路 */
+      }
       const pending = await fetch(PENDING_URL, { cache: 'no-store' }).then((r) => r.json())
       if (pending && pending.ok === true && pending.seq !== undefined) {
         lastAt = Date.now()

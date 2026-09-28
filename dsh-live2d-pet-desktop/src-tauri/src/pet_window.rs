@@ -9,34 +9,30 @@
 // "忽略光标事件"，由穿透轮询把它打开（见 lib.rs 的 spawn_hover_loop）——失败时默认
 // 是"不挡桌面"，而不是"挡住桌面"。
 use tauri::utils::config::Color;
-use tauri::{AppHandle, Manager, Monitor, PhysicalPosition, PhysicalSize, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, WebviewWindowBuilder};
 
 pub const PET_WINDOW: &str = "pet";
 
-/// 光标（虚拟桌面坐标）落在哪块显示器上。
-fn monitor_containing(app: &AppHandle, x: i32, y: i32) -> Option<Monitor> {
-    let monitors = app.available_monitors().ok()?;
-    monitors.into_iter().find(|monitor| {
-        let position = monitor.position();
-        let size = monitor.size();
-        x >= position.x
-            && y >= position.y
-            && x < position.x + size.width as i32
-            && y < position.y + size.height as i32
-    })
-}
-
-/// 把窗口搬到"光标所在那块显示器"的工作区上。
+/// 把窗口放到**第 `index` 块屏幕**的工作区上；已经在那一块就不动（返回 `false`）。
 ///
-/// 只有在**真的换了屏**时才动（返回 `true`），否则每 33ms 一次 `set_position` 会让窗口
-/// 一直重排、页面那边 `ResizeObserver` 也就一直重抓轮廓。
+/// 什么时候调它：
+///   * **启动时一次** —— 默认落在光标当时所在的那块屏（用户在哪块屏上工作，她就出现在哪）；
+///   * **用户在托盘里指定屏幕**时。
+///
+/// 什么时候**不要**调：跟随循环里每帧调。那是我犯过的错 —— 她于是"跟着鼠标所在的屏幕跑"
+/// （用户的原话："宠物应该是在固定位置，现在我鼠标在不同屏幕上宠物居然会跟随我的鼠标所在的
+/// 屏幕"）。她是桌面上的宠物，位置属于**她**，不属于鼠标。指针移到别的屏时她应该待在原地，
+/// 只是视线到屏幕边缘就贴边（`gazeRangePx` 收紧之后自然如此）。
 ///
 /// 为什么是"工作区"而不是整块屏：宠物跑到任务栏底下就点不到了。
-pub fn focus_monitor_at(app: &AppHandle, x: i32, y: i32) -> bool {
+pub fn place_on_monitor(app: &AppHandle, index: usize) -> bool {
     let Some(window) = app.get_webview_window(PET_WINDOW) else {
         return false;
     };
-    let Some(monitor) = monitor_containing(app, x, y) else {
+    let Ok(monitors) = app.available_monitors() else {
+        return false;
+    };
+    let Some(monitor) = monitors.get(index) else {
         return false;
     };
     let area = *monitor.work_area();
@@ -53,6 +49,25 @@ pub fn focus_monitor_at(app: &AppHandle, x: i32, y: i32) -> bool {
     true
 }
 
+/// 光标（虚拟桌面坐标）所在那块屏幕的序号（找不到就给 0 = 第一块）。
+pub fn monitor_index_at(app: &AppHandle, x: i32, y: i32) -> usize {
+    let Ok(monitors) = app.available_monitors() else {
+        return 0;
+    };
+    for (index, monitor) in monitors.iter().enumerate() {
+        let position = monitor.position();
+        let size = monitor.size();
+        if x >= position.x
+            && y >= position.y
+            && x < position.x + size.width as i32
+            && y < position.y + size.height as i32
+        {
+            return index;
+        }
+    }
+    0
+}
+
 /// 建桌宠窗口。
 ///
 /// 翻成同进程宿主之后这个函数不再接管子进程（以前要 `app.manage(sidecar)` 让它的 Drop
@@ -62,15 +77,15 @@ pub fn create_pet_window(app: &AppHandle, url: &str) -> Result<(), Box<dyn std::
     //
     // 试过铺满虚拟桌面（8560×1440 + 负坐标），结果进程**直接崩掉**：事件日志里是
     // `0xc0000409`（fail-fast / 栈缓冲越界），模块就是 exe 自己。那个尺寸/负原点会踩到
-    // WebView2 或窗口创建路径里的某个边界，而全屏透明层本来就不需要铺满 ——
-    // 跟随循环（`focus_monitor_at`）会把窗口搬到光标所在的那块屏上。
-    //
-    // 顺序很关键：**先按光标的屏幕定位，再决定尺寸**，否则用户在多屏环境里看到的她
-    // 永远在主屏（那就是"无法移动到别的屏幕"的另一半）。
-    let target = crate::cursor_screen_pos()
-        .and_then(|(x, y)| monitor_containing(app, x, y))
-        .or_else(|| app.primary_monitor().ok().flatten())
-        .map(|monitor| *monitor.work_area());
+    // WebView2 或窗口创建路径里的某个边界，而全屏透明层本来就不需要铺满。
+    let monitor_index = crate::cursor_screen_pos()
+        .map(|(x, y)| monitor_index_at(app, x, y))
+        .unwrap_or(0);
+    let target = app
+        .available_monitors()
+        .ok()
+        .and_then(|monitors| monitors.get(monitor_index).map(|monitor| *monitor.work_area()))
+        .or_else(|| app.primary_monitor().ok().flatten().map(|monitor| *monitor.work_area()));
 
     let mut builder = WebviewWindowBuilder::new(app, PET_WINDOW, tauri::WebviewUrl::External(url.parse()?))
         .title("DSH 桌宠")

@@ -41,6 +41,33 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   const LAYER_POLL_MS = 1000;
 
   /**
+   * 桌面端注册进来的"跟随处理器"。
+   *
+   * 为什么需要这条通道：`pointermove` 只在指针**落在窗口内**时才由浏览器送来 —— 用户在
+   * 别的程序里动鼠标时，落点不在我们这个窗口上，页面**一个事件都收不到**（全屏透明层也
+   * 帮不上忙：事件不是被挡住，而是压根没发生在这个窗口上）。
+   *
+   * 而壳本来就在**每 33ms 读一次全局光标**（穿透判定必须知道指针在哪，见它的 hover 循环），
+   * 所以把那个坐标顺手喂进来就够了 —— 不需要新的轮询，也不需要原生鼠标钩子。
+   */
+  const externalPointer = { handler: null, lastX: null, lastY: null };
+
+  /**
+   * 壳调用的入口：`window.__petPointer(x, y)`（`clientX/clientY`，逻辑像素）。
+   *
+   * 位置没变就什么都不做 —— 壳 33ms 喂一次，光标的静止不该被当成"一直在动"。
+   */
+  function applyExternalPointer(clientX, clientY) {
+    if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return;
+    if (externalPointer.handler === null) return;
+    if (externalPointer.lastX === clientX && externalPointer.lastY === clientY) return;
+    externalPointer.lastX = clientX;
+    externalPointer.lastY = clientY;
+    externalPointer.handler(clientX, clientY);
+  }
+  if (typeof window !== "undefined") window.__petPointer = applyExternalPointer;
+
+  /**
    * 这一份客户端跑在**哪里**。
    *
    * 桌面壳（`sidecar/page/runtime.js`）会建 `window.__petDesktop`，DSH 页面里没有。
@@ -3236,15 +3263,15 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     /**
      * **注视满偏半径**，px：离她中心多远算"看到最边上"。
      *
-     * 这个值取代了原来那个 `gazeRange`（"超出这个距离就当她没在看"）。那个判据本身是错的：
-     * 它是相对**她那个 300px 的盒子**算的，而 `pointermove` 是 window 级监听 ——
-     * 结果她盒子以外的移动全被判成"没在看"，桌面端全屏时尤其明显（用户报的
-     * "鼠标跟随范围有问题"）。现在指针只要还在窗口里就一直跟，视线用这个半径归一化。
+     * 这是"跟随范围"那唯一一个旋钮，别把它调大：它决定"从多远开始视线就贴边不再变化"。
+     * 调大了会变成"全屏都在跟、而且到处都是满偏"（用户的原话：**范围不存在限制了，全屏都在
+     * 跟踪**）—— 实测 320 就是这样，收到 220 之后才回到"她附近一个巴掌大的范围里跟得灵、
+     * 再远就基本贴边"的手感。
      *
-     * 实际用的半径还会夹一下：下限绑在她自己的大小上（小尺寸时一动就贴边不好看），
-     * 上限不超过视口（免得整屏落在死区里、一动就满偏）。
+     * 实际用的半径还会夹一下：下限绑在她自己的大小上（她很大时一动就贴边不好看），
+     * 上限不超过视口（超过视野的半径没有意义）。
      */
-    gazeRangePx: 320,
+    gazeRangePx: 220,
     /** 中心附近被忽略的比例（死区）：没有它，手抖一像素眼珠就动。 */
     gazeDeadzone: 0.12,
     /** 嘴部：跟随强度 / 形状强度 / 缓动时间常数（ms）。 */
@@ -3277,7 +3304,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
    */
   const TUNING_FIELDS = [
     { key: "gazeDeadzone", label: "注视死区", min: 0, max: 0.6, step: 0.01 },
-    // 「满偏半径」：离她多远算"看到最边上"。调小 = 更灵敏。
+    // 「满偏半径」：离她多远算"看到最边上"。**调大 = 范围更大**（220 是"一个巴掌"的手感；
+    // 调到 300+ 就会变成"全屏都在跟、处处满偏"，试过）。
     { key: "gazeRangePx", label: "注视满偏 px", min: 80, max: 900, step: 20 },
     { key: "mouthFollow", label: "嘴跟随意", min: 0, max: 1, step: 0.05 },
     { key: "mouthDrop", label: "嘴形强度", min: -1, max: 1, step: 0.05 },
@@ -5206,33 +5234,30 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         say(pick(linesNow().spin));
       };
       /**
-       * 跟随一次指针移动。
+       * 跟随一次指针位置（**视口坐标**）。
        *
-       * **坐标系是视口，不是她那个盒子。** 这里是 window 级监听，鼠标在她盒子外面移动
-       * 也会进来；原来把坐标减去 `stage.getBoundingClientRect()`，于是盒子外的点全被
-       * 当成"远得没边"（判据半径又只有 240px），整段跟随就断了 —— 实测桌面端上
-       * 离她中心 320px 就已经完全不跟（活下去的只有她那个 300px 方块以内的移动）。
+       * 两个来源，同一条逻辑：
+       *   * 网页端 / 指针在窗口内时 —— DOM 的 `pointermove`（浏览器只在落点位于本窗口时送来）；
+       *   * **桌面端 + 指针在别的程序上** —— 由壳喂进来（`window.__petPointer`）。
+       *     没有这条通道时，用户一离开宠物窗口她就不跟了（这正是"只有焦点在宠物上才有跟随"）。
        *
+       * **坐标系是视口，不是她那个盒子。** 原来把坐标减去 `stage.getBoundingClientRect()`，
+       * 于是盒子外的点全被当成"远得没边"（判据半径又只有 240px），整段跟随就断了。
        * 现在：以她的**中心**为原点、按像素距离归一化，`gazeRangePx` 是满偏半径。
-       * 这样"在她附近动鼠标"有灵敏反应，离远了也还有明确的方向感（超出就夹住）。
        */
-      const onMove = (event) => {
+      const onMove = (clientX, clientY, source) => {
         const rect = stage.getBoundingClientRect();
         // 她在视口里的中心（`rect` 只用来定位她，不再用来归一化）。
         const centreX = rect.left + rect.width / 2;
         const centreY = rect.top + rect.height / 2;
-        const dx = event.clientX - centreX;
-        const dy = event.clientY - centreY;
+        const dx = clientX - centreX;
+        const dy = clientY - centreY;
         // 满偏半径：**按像素算，不按盒子算**。
         //
-        // 旧契约是"偏移 ÷ 她盒子的一半" —— 在那个契约下，只有盒子内的移动有意义，
-        // 而 `pointermove` 是 window 级监听，盒子外的移动被"超出 240px 就当她没在看"整段
-        // 丢掉（桌面端全屏时她只占右下角 300px，用户在别处动鼠标她毫无反应，就是用户报的
-        // "跟随范围有问题"）。改成像素契约之后：她附近（几百像素内）灵敏，远处仍有层次，
-        // 到屏幕边缘满偏，且**盒子内外的行为是连续的**（旧契约在盒子边界上是断的）。
-        //
-        // `gazeRangePx` 就是那个"几百像素"，可调，想更灵敏就调小；上限绑在视口较小边上
-        // （超过视野的半径没有意义，远处会一律贴边）。
+        // 旧契约是"偏移 ÷ 她盒子的一半"，缺点在桌面端很明显：盒子是 300px，于是**全屏**
+        // 的移动都落在"盒子外的死区"里，一离开她那个方块就不跟了（用户报的"跟随范围有问题"）。
+        // 像素契约修好了那一段，但**范围要给对**：见 `gazeRangePx` 的注释 —— 它是"从多远
+        // 开始贴边"，调大了就成了"全屏都在跟且处处满偏"。
         const range = Math.max(
           Math.min(rect.width, rect.height) / 2,
           Math.min(TUNING.gazeRangePx, Math.min(window.innerWidth, window.innerHeight)),
@@ -5242,17 +5267,19 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         // （归一化到 ±180°），在一段时间窗内累计；够 spinTurns 圈就触发一次。
         // 用累计角而不是"位置绕了几圈"，是因为前者对半径不敏感 —— 贴着角色转
         // 小圈和远远地转大圈都算，符合"逗她"的直觉。
-        // ⚠️ `spinTrack` 要的是**盒子内的坐标**（它围绕舞台中心算累计转角），而事件给的是
+        // ⚠️ `spinTrack` 要的是**盒子内的坐标**（它围绕舞台中心算累计转角），这里给的是
         // 视口坐标 —— 必须转回去。直接传视口坐标的后果是"围绕一个远处的点转小角"，
         // 累计转角小到永远够不着阈值（实测 103 次移动只累计 0.13 弧度，阈值 12.57）。
-        spinTrack(rect, event.clientX - rect.left, event.clientY - rect.top);
+        spinTrack(rect, clientX - rect.left, clientY - rect.top);
         // 诊断读口：跟随范围这一块最容易"看着像没反应"，把中间量挂出来，
         // 驱动量到异常时一眼能看出是判据错了还是参数没生效（只读，不影响行为）。
         gazeTrace.current = {
           dx: Math.round(dx), dy: Math.round(dy),
+          at: { x: Math.round(clientX), y: Math.round(clientY) },
           centre: { x: Math.round(centreX), y: Math.round(centreY) },
           box: { w: Math.round(rect.width), h: Math.round(rect.height) },
           range: Math.round(range), tuningPx: TUNING.gazeRangePx,
+          source: source ?? "dom",
         };
         resting = false;
         motion.current.updatePointer(dx, dy, range);
@@ -5261,12 +5288,16 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       /**
        * 指针「不在场」了：回正。
        *
-       * 鼠标一旦移出窗口，pointermove 就不再发来，宠物会**僵在最后一个注视方向**上
-       * （用户报的就是这个）。页面拿不到窗口外的指针位置——那需要原生钩子，浏览器
-       * 里没有这个能力——所以这里能做的是回正：离开窗口 / 窗口失焦 / 切标签页，
-       * 都当成指针不在场，视线与嘴一起缓动回中位。
+       * 网页端：鼠标移出窗口后 `pointermove` 不再发来，宠物会僵在最后一个注视方向上，
+       * 所以离开窗口 / 失焦 / 切标签页都当成"指针不在场"，视线与嘴缓动回中位。
+       *
+       * **桌面端不要走这条**：那边由壳持续喂全局光标位置（`window.__petPointer`），指针
+       * "离开窗口"根本不代表它不存在 —— 恰恰相反，用户在别的程序里动鼠标时她**应该**跟着。
+       * 所以桌面端把 `mouseleave`/`blur` 的回正效果压掉，只在壳明确说"指针不在场"时回正
+       * （壳那边有 `outside` 判定）。
        */
       const onLeave = () => {
+        if (isDesktopShell) return;
         if (resting) return;
         resting = true;
         focusDefault();
@@ -5275,12 +5306,22 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       root.addEventListener("mouseleave", onLeave);
       window.addEventListener("blur", onLeave);
       document.addEventListener("visibilitychange", onLeave);
-      window.addEventListener("pointermove", onMove, { passive: true });
-      return () => {
-        window.removeEventListener("pointermove", onMove);
+      // DOM 路径：指针落在本窗口内时走它（网页端全部走它；桌面端在窗口内也走它）。
+      const onDomMove = (event) => onMove(event.clientX, event.clientY, "dom");
+      window.addEventListener("pointermove", onDomMove, { passive: true });
+      // 壳路径：**桌面端专有** —— 指针在别的程序上时 DOM 一个事件都不会有，只有壳知道它在哪。
+      if (isDesktopShell) {
+        externalPointer.handler = (x, y) => {
+          onMove(x, y, "shell");
+          // 壳喂进来的位置说明指针在场（它是在读全局光标），把"回正"的状态解除掉。
+          resting = false;
+        };
+      }      return () => {
+        window.removeEventListener("pointermove", onDomMove);
         root.removeEventListener("mouseleave", onLeave);
         window.removeEventListener("blur", onLeave);
         document.removeEventListener("visibilitychange", onLeave);
+        if (isDesktopShell) externalPointer.handler = null;
         focusDefaultRef.current = () => {};
       };
     }, [ready]);

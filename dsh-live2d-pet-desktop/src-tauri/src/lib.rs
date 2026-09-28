@@ -118,22 +118,12 @@ fn spawn_hover_loop(app: AppHandle, shared: Arc<Mutex<Shared>>) {
             let Some((cx, cy)) = cursor_screen_pos() else {
                 continue;
             };
-            // ---- 跟着光标的屏幕走 ------------------------------------------
+            // ⚠️ 这里**不要**按光标所在屏幕搬窗口。
             //
-            // 窗口只覆盖**一块**屏的工作区（全屏透明层要逐像素判定，铺满所有屏没有意义，
-            // 而且"任务栏底下点不到"是硬约束）。所以光标换屏时这里把它搬过去。
-            //
-            // `focus_monitor_at` 自己会判断"是不是真的换了屏"，没换就什么都不做 ——
-            // 每 33ms 无脑 `set_position` 会让窗口一直重排、页面那边 `ResizeObserver`
-            // 也就一直重抓轮廓（那会让命中判定永远处于"刚变过"的状态）。
-            if pet_window::focus_monitor_at(&app, cx, cy) {
-                // 刚换过屏：这一帧的轮廓快照可能还是按旧窗口尺寸抓的，先别判"她"，
-                // 让这 33ms 的判定走"穿透"（安全的一侧）。下一帧起窗口与页面就一致了。
-                std::thread::sleep(Duration::from_millis(60));
-            }
+            // 试过：她于是"跟着鼠标所在的屏幕跑"（用户的原话是"宠物应该是在固定位置"）。
+            // 她是桌面上的宠物，位置属于她自己 —— 指针移到别的屏时她待在原地，只是视线
+            // 到屏幕边缘就贴边。换屏只有两个入口：启动时落到光标所在屏、用户在托盘里指定。
             let (origin, size, scale) = {
-                // ⚠️ 原点要在**可能移动之后**读：先读再移的话，换屏那一帧的局部坐标会
-                // 差出一整块屏的距离（表现是"换屏瞬间穿透判定乱掉"）。
                 let position = window.outer_position().ok().map(|p| (p.x as f64, p.y as f64));
                 let size = window.inner_size().ok().map(|s| (s.width, s.height));
                 let scale = window.scale_factor().unwrap_or(1.0);
