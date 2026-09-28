@@ -1049,13 +1049,25 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
      * 把"别的槽位还选着的动作"的姿势写回去 —— 右手拿着手机的同时嘴部吹泡泡糖。
      *
      * 写在 applyRelease **之后**（否则会被还原表顶掉），表达式层之前（表情仍然最大）。
+     *
+     * ⚠️ **当前动作自己写的参数不能覆盖**（这一条修的是用户报的"装扮里的自拍右手不抬"）：
+     * 自拍（`Selfie`）驱动 `phone5`（抬手，在干净试验台里确认过：推 `phone5` 会让
+     * `看手机/ArtMesh26` 那块几何变形），但"掏出手机"定格时录下的那一帧里 `phone5=0`，
+     * 于是这一层每帧把它写回 0 —— 写在动作更新之后，**曲线被压住**。干净环境实测：
+     * 自拍里 `phone5` 涨到 9.713，而手那块几何一动不动（盒完全相同）。
+     *
+     * 所以：录像里那些**当前动作也在写**的参数跳过不写，让动作说了算；
+     * 其余（掏出手机自己的 `phone`/`phone2`/`phone4`/`phone6` 之类）照旧保姿势。
      */
     const applyKeptPoses = (core, values) => {
       if (keptPoses.length === 0 || values === null) return;
+      const owned = currentEntry === null ? null : currentEntry.params;
+      const ownedSet = owned === null || owned === undefined ? null : new Set(owned);
       for (const group of keptPoses) {
         const frame = poseSnapshots.get(group);
         if (frame === undefined) continue;
         for (const id of Object.keys(frame)) {
+          if (ownedSet !== null && ownedSet.has(id)) continue;
           const at = parameterIndex(core, id);
           if (at >= 0) values[at] = frame[id];
         }
@@ -2108,6 +2120,16 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       },
       /** Diagnostic: 正在替哪些动作保姿势。 */
       keptPoseDebug: () => ({ kept: keptPoses.slice(), snapshots: Array.from(poseSnapshots.keys()) }),
+      /**
+       * **诊断专用**：把某几个参数每帧强制写成给定值（传 `null` 清除）。
+       *
+       * 用途：量"某个参数到底驱动画面上哪一块几何" —— 把它推满量程，看哪几块 drawable
+       * 在动。**不要用它当产品功能**：我上一轮拿它（和 `pin`）去"修"动作，把手机盖钉死、
+       * 手机都打不开了（用户报的）。它只该出现在探针里。
+       */
+      forceParams: (map) => {
+        forcedParams = map === null || map === undefined ? null : Object.assign({}, map);
+      },
       /**
        * 让下一段临时表演**跑完接回**这里给的动作（`null` = 不接，回待机）。
        *
