@@ -121,7 +121,10 @@ console.log('\n--- 距离曲线（真实光标，沿左下 150° 射线）')
 console.log('  窗口原点 ' + originX + ',' + originY + '，她的中心（屏幕）= '
   + Math.round(originX + info.cx) + ',' + Math.round(originY + info.cy))
 const rows = []
-for (const distance of [0, 60, 150, 220, 300, 600, 1200, 2400]) {
+// 采样点直接对着**满偏半径**取（220 = 满偏那一圈、595 = 衰减到 0 那一圈），
+// 这样"圆在哪儿、衰减到哪儿"是可以逐点核对的，而不是靠猜几个数。
+const RANGE = 220
+for (const distance of [0, 60, 150, RANGE, 300, 600, 1200, 2400]) {
   const x = Math.round(originX + info.cx + cos * distance)
   const y = Math.round(originY + info.cy + sin * distance)
   execFileSync('powershell.exe', ['-NoProfile', '-Command',
@@ -145,8 +148,8 @@ for (const row of rows) {
   console.log('  离她 ' + String(row.dx).padStart(5) + 'px  →  注视 ('
     + (row.gazeX === null ? '?' : row.gazeX.toFixed(3)) + ', '
     + (row.gazeY === null ? '?' : row.gazeY.toFixed(3)) + ')'
-    + '   满偏 ' + (row.trace?.range ?? '?') + '/' + (row.trace?.rangeY ?? '?')
-    + '   椭圆距离 ' + (row.trace?.ellipsis ?? '?')
+    + '   满偏半径 ' + (row.trace?.range ?? '?')
+    + '   距离比 ' + (row.trace?.distanceRatio ?? '?')
     + '   强度 ' + (row.trace?.strength ?? 1)
     + '   来源 ' + (row.source ?? '?')
     + (row.trace?.skipped === undefined ? '' : '   **' + row.trace.skipped + '**'))
@@ -171,13 +174,20 @@ console.log('')
 let allOk = true
 allOk = check('近处成比例偏转（60px 有反应、150px 更大）',
   Math.abs(near ?? 0) > 0.05 && Math.abs(mid ?? 0) > Math.abs(near ?? 0), near + ' → ' + mid) && allOk
-allOk = check('到满偏那一圈接近满偏（300px ≈ 1）', Math.abs(edge ?? 0) > 0.85, String(edge)) && allOk
+// 满偏半径处：距离比 ≈ 1、强度 ≈ 1，而**注视幅度 ≈ 0.85 而不是 1.0** —— 那是死区
+// （`gazeDeadzone` 0.12）造成的理论值：`shape(1.0) = (1 - 0.12) / 0.88 = 0.852`。
+// 断言别按"应该是 1.0"写，否则会把正确行为判成失败。
+allOk = check('到满偏半径就是满偏（' + RANGE + 'px：距离比 ≈ 1、强度 ≈ 1）',
+  Math.abs((at(RANGE)?.trace?.distanceRatio ?? 0) - 1) < 0.05
+  && (at(RANGE)?.trace?.strength ?? 0) > 0.95
+  && Math.abs(gazeX(RANGE) ?? 0) > 0.8,
+  '比值 ' + at(RANGE)?.trace?.distanceRatio + '  强度 ' + at(RANGE)?.trace?.strength + '  注视 ' + gazeX(RANGE)) && allOk
 allOk = check('再远是**衰减**而不是贴边（600px 介于两者之间）',
-  Math.abs(fading ?? 9) < Math.abs(edge ?? 0) && Math.abs(fading ?? 0) > 0.02,
+  Math.abs(fading ?? 9) < Math.abs(gazeX(RANGE) ?? 0) && Math.abs(fading ?? 0) > 0.02,
   String(fading) + '  强度 ' + strength(600)) && allOk
 allOk = check('强度随距离单调下降',
-  (strength(60) ?? 0) >= (strength(300) ?? 0) && (strength(300) ?? 0) > (strength(600) ?? 0),
-  [strength(60), strength(300), strength(600)].join(' >= ') + ' > ' + strength(600)) && allOk
+  (strength(60) ?? 0) >= (strength(RANGE) ?? 0) && (strength(RANGE) ?? 0) > (strength(600) ?? 0),
+  [strength(60), strength(RANGE), strength(600)].join(' >= ') + ' > ' + strength(600)) && allOk
 allOk = check('**足够远就回正**（1200px 视线回中，不再斜眼盯着）',
   Math.abs(recovered ?? 9) < 0.05, String(recovered)) && allOk
 allOk = check('跨屏更远也回正（2400px）', Math.abs(veryFar ?? 9) < 0.05, String(veryFar)) && allOk
