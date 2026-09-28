@@ -16,6 +16,7 @@
   const PENDING_URL = '/__desktop/probe/pending'
   const ANSWER_URL = '/__desktop/probe/answer'
   const CURSOR_URL = '/__desktop/cursor'
+  const COMMANDS_URL = '/__desktop/commands'
   const IDLE_MS = 20
   let inflight = false
   let rounds = 0
@@ -34,6 +35,20 @@
     inflight = true
     let wait = IDLE_MS
     try {
+      // **托盘菜单进来的命令**（设置 / 归位 / …）。
+      //
+      // 走 HTTP 而不是 Tauri 的 `window.emit()`：那个**不发 DOM 事件**、只走 IPC，而外部
+      // 页面没有 `window.__TAURI__`（`withGlobalTauri: false`）—— 页面里
+      // `addEventListener("pet://settings")` 永远收不到东西，菜单项于是"点了没效果"。
+      try {
+        const queued = await fetch(COMMANDS_URL, { cache: 'no-store' }).then((r) => r.json())
+        if (queued && Array.isArray(queued.commands) && queued.commands.length > 0
+          && typeof window.__petCommand === 'function') {
+          for (const command of queued.commands) window.__petCommand(command)
+        }
+      } catch {
+        /* 读不到就算了：命令是"锦上添花"，不该拖垮判定循环 */
+      }
       // **先问全局光标**（每轮都问，跟有没有判定任务无关）。
       //
       // 为什么必须由壳喂：`pointermove` 只在指针落在这个窗口上时才由浏览器送来，所以用户

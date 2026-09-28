@@ -6505,12 +6505,18 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
      * 桌面端专属：**托盘菜单**驱动的两个动作。
      *
      * 桌宠没有任务栏按钮（壳把窗口设成不进任务栏），托盘是唯一的常驻入口。所以
-     * "设置…"和"归位"这两项由壳发窗口事件过来，这里接住：
+     * "设置…"和"归位"这两项要把动作送到页面里来：
      *
-     *   * `pet://settings` → 打开面板并切到设置页签（等于替用户点开它）；
-     *   * `pet://reset`    → 位置与大小回到默认，并演一下"归位"的反应。
+     *   * `settings` → 打开面板并切到设置页签（等于替用户点开它）；
+     *   * `reset`    → 位置与大小回到默认，并演一下"归位"的反应。
      *
-     * 网页端没有这两个事件，这个 effect 注册了也永远不会被触发。
+     * **两条通道都接**：
+     *   * `window.__petCommand(name)` —— 桌面壳的**命令队列**（页面每 33ms 取一次）；
+     *   * `pet://reset` / `pet://settings` DOM 事件 —— 网页端与将来可能有的桥。
+     *
+     * 为什么命令走 HTTP 而不是 Tauri 的窗口事件：`window.emit()` **不发 DOM 事件**、
+     * 只走 IPC，而外部页面没有 `window.__TAURI__`（壳里 `withGlobalTauri: false`）。
+     * 原来只监听 DOM 事件，于是托盘里"设置""归位"点了**永远没反应**（用户报过）。
      */
     useEffect(() => {
       if (!desktopNow()) return undefined;
@@ -6526,9 +6532,16 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         setTab("settings");
         setPanelOpen(true);
       };
+      /** 壳的命令队列入口：名字与 DOM 事件同一套。 */
+      const onCommand = (command) => {
+        if (command === "reset") onReset();
+        else if (command === "settings") onSettings();
+      };
+      window.__petCommand = onCommand;
       window.addEventListener("pet://reset", onReset);
       window.addEventListener("pet://settings", onSettings);
       return () => {
+        if (window.__petCommand === onCommand) delete window.__petCommand;
         window.removeEventListener("pet://reset", onReset);
         window.removeEventListener("pet://settings", onSettings);
       };

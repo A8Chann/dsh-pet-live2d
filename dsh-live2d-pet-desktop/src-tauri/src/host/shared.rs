@@ -69,6 +69,17 @@ pub struct Shared {
     pub layer_mode: String,
     /// 桌面端窗口当前显示着没有（`--dsh inline` 或用户选了页面内时为 false）。
     pub window_visible: bool,
+    /// **用户在托盘里明确藏起来了**。
+    ///
+    /// 和 `window_visible` 分开记：那个是"按显示层规则该不该显示"的结果，这个是用户的意图。
+    /// 早先只有前者，于是"藏起来"过一会儿就被显示循环重新显示出来（用户报的 bug）。
+    pub hidden_by_user: bool,
+    /// 给页面的命令队列（托盘菜单进来，页面每 33ms 取走）。
+    ///
+    /// 为什么不用 Tauri 的 `window.emit()`：**它不发 DOM 事件**，只走 IPC，而外部页面
+    /// 没有 `window.__TAURI__`（`withGlobalTauri: false`）。原来"设置""归位"两项就是这么
+    /// 静默失效的 —— 事件发出来了，页面从来没收到。现在走已有的 HTTP 通道。
+    pub commands: Vec<String>,
 }
 
 impl Shared {
@@ -98,7 +109,22 @@ impl Shared {
             owner: "inline".to_string(),
             layer_mode: "auto".to_string(),
             window_visible: true,
+            hidden_by_user: false,
+            commands: Vec::new(),
         }))
+    }
+
+    /// 托盘菜单进来一条命令，等页面来取。
+    pub fn push_command(&mut self, command: &str) {
+        // 同样的命令连着点两次只留一条：页面每 33ms 取一次，队列没必要堆积。
+        if self.commands.last().map(String::as_str) != Some(command) {
+            self.commands.push(command.to_string());
+        }
+    }
+
+    /// 页面取走全部待办命令（取走即清空）。
+    pub fn take_commands(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.commands)
     }
 
     /// 壳问一次："光标在 (x, y) 时，窗口要不要忽略光标事件？"

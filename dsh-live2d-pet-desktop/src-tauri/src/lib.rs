@@ -217,14 +217,26 @@ fn spawn_display_loop(app: AppHandle, shared: Arc<Mutex<Shared>>, home: std::pat
         let mode = host::display::normalise_mode(preference.get("mode"));
         let should_show = host::display::compute_owner(&mode, true) == "desktop";
         if let Some(window) = app.get_webview_window(pet_window::PET_WINDOW) {
+            // **用户明确藏起来的时候不要把她显示回来。**
+            //
+            // 这是"藏起来过一会儿又自己出来"的根因：这个循环按显示层规则每帧决定显隐，
+            // 而"用户在托盘里点了藏起来"是**另一件事**（意图，不是规则）—— 不分开记的话，
+            // 一秒后她就被 `should_show` 显示回来了。
+            let hidden_by_user = shared
+                .lock()
+                .map(|guard| guard.hidden_by_user)
+                .unwrap_or(false);
+            let want_visible = should_show && !hidden_by_user;
             match window.is_visible() {
-                Ok(visible) if visible == should_show => {}
+                Ok(visible) if visible == want_visible => {}
                 _ => {
-                    if should_show {
+                    if want_visible {
                         let _ = window.show();
                     } else {
                         let _ = window.hide();
                     }
+                    // 窗口可见性变了：菜单里"显示/藏起来"的可用状态要跟着变。
+                    crate::tray::refresh(&app);
                 }
             }
         }

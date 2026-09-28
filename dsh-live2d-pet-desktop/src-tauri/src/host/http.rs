@@ -393,6 +393,18 @@ fn route(
         send_json(stream, 200, &payload)?;
         return Ok(true);
     }
+    // **待办命令**：托盘菜单进来，页面每 33ms 取走（取走即清空）。
+    //
+    // 为什么不用 Tauri 的 `window.emit()`：它**不发 DOM 事件**、只走 IPC，而外部页面没有
+    // `window.__TAURI__`（`withGlobalTauri: false`）—— 页面里 `addEventListener("pet://reset")`
+    // 永远收不到东西。原来"设置""归位"两项就是这么静默失效的（用户报"点了没效果"）。
+    if path == "/__desktop/commands" {
+        let mut guard = state.shared.lock().unwrap_or_else(|p| p.into_inner());
+        let commands = guard.take_commands();
+        drop(guard);
+        send_json(stream, 200, &json!({ "ok": true, "commands": commands }))?;
+        return Ok(true);
+    }
     // **全局光标**：页面每 33ms 问一次，用来驱动跟随。
     //
     // 为什么不塞进 `/probe/pending`：那个只在指针**落在窗口内**时才有任务，而这里要解决的

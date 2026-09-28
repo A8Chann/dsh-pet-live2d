@@ -50,6 +50,9 @@ pub fn place_on_monitor(app: &AppHandle, index: usize) -> bool {
 }
 
 /// 光标（虚拟桌面坐标）所在那块屏幕的序号（找不到就给 0 = 第一块）。
+///
+/// 收窄到具体运行时（不用泛型）：托盘那边要拿它算"当前选的是哪块屏"，而托盘用的是
+/// 具体类型，`&AppHandle<R>` 上这个泛型版本调不通（编译期就报 E0308）。
 pub fn monitor_index_at(app: &AppHandle, x: i32, y: i32) -> usize {
     let Ok(monitors) = app.available_monitors() else {
         return 0;
