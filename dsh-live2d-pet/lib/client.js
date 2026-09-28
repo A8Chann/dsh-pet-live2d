@@ -293,6 +293,17 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
      * different from the idle loop.
      */
     let settled = false;
+    /**
+     * **反应跑完之后要回到哪个动作**（`{group, index, options}`，`null` = 回待机）。
+     *
+     * 由来：摸头 / 摸尾巴是一段"临时表演"，但它结束时 `finishAction` 会 `playIdle()` ——
+     * 于是用户刚选好的槽位动作（掏出手机 / 吹泡泡糖）**被整个还原**掉了
+     * （用户报的"摸头和摸尾巴不要还原当前动作啊"）。
+     *
+     * 这里记住"开演之前她在演什么"，反应一结束就把它接回去。接的时候用的是**同一个选项**
+     * （`persist`/`hold` 原样带过去），所以举着的手还是举着、泡还是那个泡。
+     */
+    let resumeAfterAction = null;
     /** Downsampled opacity grid of the rendered character (null = unknown). */
     let hitMask = null;
     /** The stage-local box the grid spans (the model's bounding box). */
@@ -1615,6 +1626,14 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         }, ACTION_HOLD_MAX_MS);
         return;
       }
+      // **把开演之前的动作接回去**（摸头/摸尾巴是一段临时表演，不该把用户的槽位动作还原）。
+      // 检查顺序放在最后：`hold` 那条分支自己会 park（槽位动作在演），不需要接。
+      if (resumeAfterAction !== null) {
+        const resume = resumeAfterAction;
+        resumeAfterAction = null;
+        // 相位在这期间接管了就不接：相位优先，接了会跟它抢身体。
+        if (sustainPhase === null && playOnce(resume.group, resume.index, resume.options)) return;
+      }
       playIdle();
     };
 
@@ -2089,6 +2108,17 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       },
       /** Diagnostic: 正在替哪些动作保姿势。 */
       keptPoseDebug: () => ({ kept: keptPoses.slice(), snapshots: Array.from(poseSnapshots.keys()) }),
+      /**
+       * 让下一段临时表演**跑完接回**这里给的动作（`null` = 不接，回待机）。
+       *
+       * 用途：摸头 / 摸尾巴只是一段反应，不该把用户选好的槽位动作还原掉
+       * （用户报的"摸头和摸尾巴不要还原当前动作"）。
+       */
+      resumeAfter: (plan) => {
+        resumeAfterAction = plan === null || plan === undefined ? null : plan;
+      },
+      /** Diagnostic: 现在记着要接回哪个动作。 */
+      resumeDebug: () => resumeAfterAction,
       setExpressionApplier(fn) {
         applyExpression = typeof fn === "function" ? fn : null;
       },
@@ -5765,13 +5795,34 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     }, [armExpressionClear]);
 
     /**
-     * 跑一条互动反应（点击 / 转圈触发）。
+     * 跑一条互动反应（摸头 / 摸尾巴 / 转圈转晕）。
      *
-     * 标签先当**动作组**找（宠物在 catalog.json 里给动作起了中文名），找不到就当
-     * **表达式**闪一下（闪完由 EXPRESSION_HOLD_MS 自动收，不会永久占着槽位）。
+     * **反应不该还原当前动作**：开演之前先记下她在演什么（`resumeAfter`），演完由
+     * `finishAction` 接回去 —— 于是摸一下头，举着的手还举着、泡泡还在。
+     *
+     * 反应本身优先走"**随机换一个槽位里的选项**"（`chooseSlotOption` 那条路）：抽中的标签
+     * 是某个装扮槽位的选项时，换的就是**那一格**，别的槽位与当前动作都不受影响 ——
+     * 这正是用户要的"随机到哪一个插槽里的就放哪一个插槽里的"。
+     *
+     * 兜底两级，都不能变成"这个互动没反应"：
+     *   ① 是某个槽位的选项 → 换那一格；
+     *   ② 不是选项 → 当**动作组**播一次（播完接回原动作）；
+     *   ③ 再不是 → 当**表达式**闪一下（闪完自动收，不占槽位）。
      */
     const runReaction = useCallback((label) => {
       if (typeof label !== "string" || label === "") return false;
+      // ① 抽中的标签落在某个装扮槽位里：换掉那一格。
+      for (const slot of petRef.current?.expressionSlots ?? []) {
+        const option = (slot.options ?? []).find((candidate) => candidate.label === label);
+        if (option !== undefined) {
+          // `satisfy = true`：手动互动等同于用户自己点它（前提由插件补齐，比如点自拍会
+          // 先把手机掏出来）。自动路径（摸鱼/相位）才不能补。
+          chooseSlotOption(slot, option, true);
+          return true;
+        }
+      }
+      // ②③ 不是槽位选项：**这一段是临时表演**，记下当前动作、演完接回去。
+      motion.current.resumeAfter(previousMotionPlan());
       const groups = motion.current.groups();
       const entry = (petRef.current?.motions ?? []).find((item) => item.label === label);
       const group = entry !== undefined && Array.isArray(groups[entry.group]) ? entry.group : undefined;
@@ -5783,9 +5834,37 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         motion.current.playOnce(label, 0, { kind: "tap" });
         return true;
       }
+      // ③ 当成表达式闪一下。表达式不碰身体，所以刚才那份"接回"要撤掉（否则会空接一次）。
+      motion.current.resumeAfter(null);
       flashExpression(label);
       return true;
-    }, [flashExpression]);
+    }, [chooseSlotOption, flashExpression]);
+
+    /**
+     * 她现在演的是什么（用于"反应演完接回来"）。
+     *
+     * 只认**槽位动作**：`currentGroup` 是引擎当前的动作组，而它的选项在 `expressionSlots`
+     * 里按标签反查 —— 拿到**同一个选项**才能把 `persist` / `hold` 原样带回去（举着的手
+     * 靠 `persist` 才不会被看门狗放下）。查不到就返回 null（回待机，和以前一样）。
+     *
+     * ⚠️ 刻意用**函数声明**：`runReaction` 在上面就要用它，`const` 会 TDZ（和
+     * `chooseSlotOption` 同一个理由）。
+     */
+    function previousMotionPlan() {
+      const group = motion.current.currentGroup();
+      if (typeof group !== "string" || group === "" || group === "Idle") return null;
+      for (const slot of petRef.current?.expressionSlots ?? []) {
+        for (const option of slot.options ?? []) {
+          if (option.motion !== group) continue;
+          return {
+            group,
+            index: 0,
+            options: { kind: "slot", hold: true, persist: true },
+          };
+        }
+      }
+      return null;
+    }
     runReactionRef.current = runReaction;
 
     /**
@@ -5804,8 +5883,12 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
      * @param {boolean} satisfy 手动点选时传 true：前提由插件补齐（点自拍会先把手机
      *   掏出来）。摸鱼/相位这些自动路径**不能**传 —— 那会绕过用户配的权重，
      *   变成"她自己去掏手机再拍照"。
+     *
+     * ⚠️ 这里刻意用**函数声明**（不是 `const … = useCallback`）：`runReaction` 在上面、
+     * 又要调它（互动反应 = 换一个槽位的选项）。`const` 有 TDZ，首次渲染就会
+     * "Cannot access before initialization"；函数声明会提升，所以顺序随便放。
      */
-    const chooseSlotOption = useCallback((slot, option, satisfy) => {
+    function chooseSlotOption(slot, option, satisfy) {
       // 关系（同时 / 前提）是按**选项**生效的：用户在这里改过的内容必须对面板点选、
       // 摸鱼抽中、相位抽中同时成立，所以统一在这一个入口合成。
       option = effectiveOption(slot.id, option);
@@ -5967,7 +6050,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       // choice the user reverses from this panel (or with 归位), and expiring it
       // after a few seconds would make the panel feel broken.
       window.clearTimeout(expressionTimer.current);
-    }, [applyExpressions]);
+    }
 
     // The fidget effect below subscribes on a different dependency list, so it
     // reaches the chooser through a ref. Without this assignment the ref keeps
