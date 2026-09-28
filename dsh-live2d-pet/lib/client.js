@@ -260,30 +260,6 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
      */
     let keptPoses = [];
     const poseSnapshots = new Map();
-    /**
-     * **每个动作组此刻真实写到画面上的一帧**（逐帧更新，不是"录一次"）。
-     *
-     * 和 `poseSnapshots` 的区别很重要：那个是"给别的槽位回放用的录像"，它在
-     * `applyKeptPoses` **之后**录 —— 于是"重放 → 再录"会自己喂自己，值一旦塌下去就再也
-     * 回不来（"自拍没有举手"就是这么来的：抬手臂的 `phone2` 塌成 0 之后被录进录像）。
-     *
-     * 这个是**动作自己写出来的那一刻**的原始值，所以可以安全地拿它做"跨动作携带"。
-     */
-    const lastFrameByGroup = new Map();
-    /** 每帧在缝隙最前面读到的**动作原始输出**（key: 动作组）。见 noteMotionOutput。 */
-    const lastMotionOutput = new Map();
-    /**
-     * 每个动作组"上一帧的输出"（只在缝隙里更新，用来判**动作演完了没有**）。
-     *
-     * 为什么要它：`open-case` 这类动作**不是单调的** —— 实测 `phone2` 在 3ms 内从 0 冲到
-     * 0.545 又回到 0（那应该是"掏出来又收回"的关键帧），所以"当前值够大"判不出"演完了"。
-     * 可靠的判据是**这一帧的输出和上一帧一样**（动作停了，定格在最后一帧）。
-     */
-    const motionPrevOutput = new Map();
-    /** 每个动作组此刻是否还在动（见 isMotionStillMoving）。 */
-    const motionStillMoving = new Map();
-    /** 诊断：最近一次"前置动作 → 主动作"交接了什么（`carryTrace()` 读）。 */
-    let carryTrace = null;
     /** 参数名 -> 下标 的缓存（见 parameterIndex）。 */
     const paramIndexCache = new Map();
     /** ~5 秒 @60fps，够盖住这只模型 4 秒的待机循环。 */
@@ -1056,70 +1032,17 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
      * 在帧内读的是**上一帧**的输出（我们的缝在动作更新之前），差一帧无所谓 ——
      * 定格的动作本来就在最后一帧停着。
      */
-    /**
-     * 录下**动作自己此刻写出来的**参数值（我们这一帧的覆盖层动手**之前**）。
-     *
-     * 必须在缝隙最前面调用：`values` 到了后面会被 `applyRelease` / `applyKeptPoses` /
-     * 表情层改掉，而"前置动作的最后一帧"要的是**动作的输出**，不是被我们改过的画面。
-     * 踩过的坑（"自拍没有举手"）：录像读的是改过之后的 `values`，于是抬手臂的 `phone2`
-     * 在 OpenCase 被换掉的那一帧就塌成 0，而"重放 → 再录"每帧自我喂食，永远回不到抬起的那一帧。
-     */
-    const noteMotionOutput = (core) => {
-      const entry = currentEntry;
-      if (entry === null || core === null || core === undefined) return;
-      const values = core._model?.parameters?.values;
-      if (values === undefined) return;
-      const live = {};
-      for (const id of entry.params ?? []) {
-        const at = parameterIndex(core, id);
-        if (at >= 0) live[id] = values[at];
-      }
-      const previous = motionPrevOutput.get(entry.group);
-      const still = previous !== undefined && sameFrame(previous, live);
-      motionPrevOutput.set(entry.group, live);
-      motionStillMoving.set(entry.group, !still);
-      lastMotionOutput.set(entry.group, live);
-      // 录像（给别的槽位回放用）也**以这份原始输出为准** —— 它是动作写出来的那一刻，
-      // 不含我们这一帧的覆盖层。用改过的 `values` 录会让"重放 → 再录"自我喂食，
-      // 值一旦塌下去就再也回不来（"自拍没有举手"的根因）。
-      poseSnapshots.set(entry.group, live);
-      lastFrameByGroup.set(entry.group, live);
-    };
-
-    /** 两帧的输出是否完全相同（1e-4 以内算一样 —— 浮点噪声不该被当成"还在动"）。 */
-    const sameFrame = (a, b) => {
-      const keys = Object.keys(a);
-      if (keys.length !== Object.keys(b).length) return false;
-      for (const id of keys) {
-        if (b[id] === undefined) return false;
-        if (Math.abs(a[id] - b[id]) > 1e-4) return false;
-      }
-      return true;
-    };
-
-    /** 这个动作组此刻**还在动**吗（没在动 = 已经定格在最后一帧）。 */
-    const isMotionStillMoving = (group) => motionStillMoving.get(group) === true;
-
     const recordPose = (core, values) => {
       const entry = currentEntry;
       if (entry === null) return;
       // **永远录当前动作**，不能等"有人要保"才录：先播的那个动作（掏出手机）在后一个
       // 动作开始时就停了，那时再录已经是空的。
-      //
-      // 值统一从 `motionOutput`（缝隙最前面读的原始输出）取，不读这里传进来的 `values` ——
-      // 那个已经被这一帧的覆盖层改过（见 noteMotionOutput 的注释）。
       const frame = poseSnapshots.get(entry.group) ?? {};
-      const live = lastFrameByGroup.get(entry.group) ?? {};
       for (const id of entry.params ?? []) {
         const at = parameterIndex(core, id);
-        if (at < 0) continue;
-        const raw = (lastMotionOutput.get(entry.group) ?? {})[id];
-        const value = raw === undefined ? values[at] : raw;
-        frame[id] = value;
-        live[id] = value;
+        if (at >= 0) frame[id] = values[at];
       }
       poseSnapshots.set(entry.group, frame);
-      lastFrameByGroup.set(entry.group, live);
     };
 
     /**
@@ -1405,9 +1328,6 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           } catch {
             values = null;
           }
-          // **先记下动作自己的输出**（此刻 `values` 还是动作写的，我们的覆盖层还没动手）——
-          // "前置动作的最后一帧"要的是它，不是被我们改过的画面（见 noteMotionOutput）。
-          if (values !== null) noteMotionOutput(core);
           // Sample the release table's first entry on both sides of the pass.
           const probeId = releasedOverrides === null ? null : Object.keys(releasedOverrides)[0];
           const probeAt = probeId === null || values === null ? -1 : parameterIndex(core, probeId);
@@ -1752,115 +1672,32 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       // A prerequisite action (掏出手机 before 拍照) runs first and chains into
       // the real motion. The snapshot is taken BEFORE the prerequisite so that
       // retiring the whole chain puts the phone back down.
-      //
-      // **但这个前置动作可能已经正在演了**：`chooseSlotOption` 补前提时会先把「掏出手机」
-      // 选上并播起来，紧接着就切到主动作（自拍）。那时再"重播一遍前置动作"会把它**从头**
-      // 再演一次 —— 而前置动作的**起始帧**手还没抬起来，于是抬手那一条曲线（`phone2`）
-      // 永远停在 0：实测自拍时 `phone2 ≈ 0`（单独点掏出手机是 0.546）。
-      // 所以"前置动作就是当前正在演的那个"时**跳过前置段**，直接演主动作。
-      const prependPlaying = opts.prepend !== undefined
-        && currentGroup === opts.prepend
-        && currentEntry !== null
-        && settled === false
-        // **而且它得已经抬到位了**：`open-case` 的关键帧是"掏出来又收回"，中途打断会拿到
-        // 一个没抬手的中间值（实测 `phone4=0.069` 是它的初值，而终值是 1.92）。
-        // 没抬到位就让链条按原样重播前置段，别跳。
-        && isMotionStillMoving(opts.prepend) === false;
-      // 诊断：这一轮走的是哪条路（"自拍没有举手"就是靠它把范围缩到"没走交接"的）。
-      carryTrace = {
-        event: 'plan',
-        group: group,
-        prepend: opts.prepend ?? null,
-        currentGroup: currentGroup,
-        currentEntry: currentEntry === null ? null : currentEntry.group,
-        settled: settled,
-        stillMoving: opts.prepend === undefined ? null : isMotionStillMoving(opts.prepend),
-        prependPlaying: prependPlaying,
-        carried: [],
-      };
-      const prepend = opts.prepend === undefined || prependPlaying ? null : entryFor(opts.prepend, 0);
+      const prepend = opts.prepend === undefined ? null : entryFor(opts.prepend, 0);
       const first = prepend ?? entry;
       const cycleCount = typeof opts.cycles === "number" && opts.cycles > 0 ? opts.cycles : 1;
       const ms = (item) => (item.duration > 0 ? item.duration : REACTION_FALLBACK_MS);
       if (!start(first, vendor.MotionPriority.FORCE, opts)) return false;
       const chainSnapshot = heldParams === null ? null : heldParams.saved;
-      // 链式动作（掏出手机 → 自拍）的**收尾语义要按整条链算**：
-      //   * `hold`：前置动作要让位给主动作继续演，所以链上只要有一步要 hold 就 hold；
-      //   * `persist`：**只有主动作说了算** —— `persist` 的语义是"停在最后一帧别放下"，
-      //     而链的最后一帧是**主动作**的。前置动作写了 persist（掏出手机就是）、主动作
-      //     没写（Selfie 没写）时，用前置那份会让链一结束就把手机放下去 ——
-      //     实测"自拍期间手机还在（phone=1），收尾后变 0"，用户看到的就是"自拍没有举手"。
-      const chainHold = opts.hold === true || (prepend !== null && optionsFor(opts.prepend).hold === true);
-      const chainPersist = opts.persist === true;
 
       kind = opts.kind || "action";
       notify();
 
-      // **把前置动作已经写出来的姿势交接给主动作**（`releasedOverrides` 是逐帧覆盖层）。
-      //
-      // 起因（用户报的"自拍动画没有举手"）：`Selfie` **故意不写 `phone2`**（抬手臂那一条：
-      // `OpenCase` 把它从 0 抬到 1，自拍时手就该保持举起），于是主动作一开演就没人写它了。
-      // 而 `applyKeptPoses` 只重放**别的槽位**的录像（主动作一接手，前置动作就不在名单里），
-      // `recordPose` 又把塌回基线的 0 录进录像 —— 两者每帧"重放→再录"自己喂自己，
-      // 抬手的值**永远回不到画面上**。实测：单独点「掏出手机」`phone2` 峰值 0.546；
-      // 走自拍链时 ≈ 0。
-      //
-      // 只带**主动作不写**的参数：主动作自己写的那些让它说了算。
-      const carryFrom = (group) => {
-        if (group === null) return;
-        const liveFrame = lastFrameByGroup.get(group);
-        if (liveFrame === null || liveFrame === undefined) return;
-        const owned = new Set(entry.params ?? []);
-        const carriedIds = [];
-        for (const [id, value] of Object.entries(liveFrame)) {
-          if (owned.has(id)) continue;
-          releasedOverrides = Object.assign({}, releasedOverrides, { [id]: value });
-          carriedIds.push(id + '=' + value);
-        }
-        // 诊断：这一轮到底交接了什么（"自拍没有举手"就是靠看它定位的）。
-        carryTrace = {
-          event: 'carry',
-          group: group,
-          at: Date.now(),
-          available: Object.keys(liveFrame),
-          carried: carriedIds,
-        };
-      };
-
       // Every motion in this model declares Loop, so none of them terminate on
       // their own and the controller always owns the lifetime.
       const holdMs = (prepend === null ? ms(entry) * cycleCount : PREPEND_HOLD_MS) + REACTION_TAIL_MS;
-      // 跳过前置段那条路：`first` 就是主动作，上面的 `start()` 已经把它演起来了，
-      // 它的收尾在下面这个计时器里。
-      // **携带必须在 `start()` 之后**：`start` 会把主动作自己写的那批参数从覆盖层里删掉，
-      // 之前带进去的会被一起清掉（白带）。
-      if (prependPlaying) carryFrom(opts.prepend);
-      if (prependPlaying) {
-        timer = window.setTimeout(() => {
-          timer = 0;
-          if (mine !== token) return;
-          finishAction(opts);
-        }, holdMs);
-        return true;
-      }
       timer = window.setTimeout(() => {
         timer = 0;
         if (mine !== token) return;
         // The prerequisite is done; run the action it was preparing for.
         if (prepend !== null) {
-          // 主动作也要按整条链的语义演：`hold` 让"掏出手机"那一帧留到主动作接上
-          // （否则前置动作会被 settleHeld 判定为"停住了"，手在自拍前一刻放下）。
-          const chainOpts = Object.assign({}, opts, { hold: chainHold, persist: chainPersist });
-          if (!start(entry, vendor.MotionPriority.FORCE, chainOpts, chainSnapshot)) { finishAction(chainOpts); return; }
-          // 前置动作跑完了：把它写出来的姿势交接过去（同上，顺序在 `start` 之后）。
-          carryFrom(prepend.group);
+          if (!start(entry, vendor.MotionPriority.FORCE, opts, chainSnapshot)) { finishAction(opts); return; }
           // The chip and data-motion follow the committed action, so the second
           // half of a chain has to announce itself just like the first half.
           notify();
           timer = window.setTimeout(() => {
             timer = 0;
             if (mine !== token) return;
-            finishAction(chainOpts);
+            finishAction(opts);
           }, ms(entry) * cycleCount + REACTION_TAIL_MS);
           return;
         }
@@ -2282,15 +2119,6 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       },
       /** Diagnostic: 现在记着要接回哪个动作。 */
       resumeDebug: () => resumeAfterAction,
-      /**
-       * Diagnostic: 最近一次"前置动作 → 主动作"交接了什么。
-       *
-       * 用来分清两种失败：①**没交接**（`carried` 空，说明前置动作的录像里就没这些参数）；
-       * ②交接了但**值是错的**（比如带的是前置动作的第 0 帧）。"自拍没有举手"就是靠它定位的。
-       */
-      carryTrace: () => carryTrace,
-      /** Diagnostic: 每个动作组此刻的最新一帧（交接的来源）。 */
-      liveFrames: () => Object.fromEntries(Array.from(lastFrameByGroup.entries()).map(([group, frame]) => [group, Object.assign({}, frame)])),
       setExpressionApplier(fn) {
         applyExpression = typeof fn === "function" ? fn : null;
       },
@@ -5814,26 +5642,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       // 1（手机已在手里），于是"还原"忠实地把手机举着不放。
       // 用户报的"掏出手机切不到其他状态"就是这个。
       if (desired !== null && desired !== previous) {
-        // **前提要变成真正的前置动作**（掏出手机 → 自拍）。
-        //
-        // 原来 `motionRequiresFor` 只喂给守卫（"前提不满足就别播"），从来没人把它变成
-        // `prepend` —— 于是面板里给「自拍」配的前提只是在**拦**，而 pet.json 又没声明
-        // `prepend`，那条链在代码里**根本不存在**：自拍直接开演，而 `Selfie` **故意不写
-        // `phone2`**（抬手臂那一条），手就永远抬不起来（用户报的"自拍动画没有举手"）。
-        //
-        // 这里把前提解析成"该前置哪个动作组"：前提槽位当前选的选项若带 motion，就是它。
-        const prependGroup = motionRequiresFor(desired)
-          .map((need) => {
-            const chosen = effectiveSlotChoice(need.slot);
-            const slot = (petRef.current?.expressionSlots ?? []).find((candidate) => candidate.id === need.slot);
-            const option = (slot?.options ?? []).find((candidate) => candidate.label === chosen);
-            return option !== undefined && typeof option.motion === "string" ? option.motion : null;
-          })
-          .find((group) => typeof group === "string" && group !== desired) ?? null;
-        motion.current.playOnce(desired, 0, {
-          kind: "slot", hold: true, persist: true,
-          ...(prependGroup === null ? {} : { prepend: prependGroup }),
-        });
+        motion.current.playOnce(desired, 0, { kind: "slot", hold: true, persist: true });
       } else if (desired === null && previous !== null) {
         // The slot gave up its motion: hand the body back. Other slots' pins
         // are untouched, so their look survives.
@@ -6009,6 +5818,21 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       armExpressionClear();
     }, [armExpressionClear]);
 
+    /**
+     * 跑一条互动反应（摸头 / 摸尾巴 / 转圈转晕）。
+     *
+     * **反应不该还原当前动作**：开演之前先记下她在演什么（`resumeAfter`），演完由
+     * `finishAction` 接回去 —— 于是摸一下头，举着的手还举着、泡泡还在。
+     *
+     * 反应本身优先走"**随机换一个槽位里的选项**"（`chooseSlotOption` 那条路）：抽中的标签
+     * 是某个装扮槽位的选项时，换的就是**那一格**，别的槽位与当前动作都不受影响 ——
+     * 这正是用户要的"随机到哪一个插槽里的就放哪一个插槽里的"。
+     *
+     * 兜底两级，都不能变成"这个互动没反应"：
+     *   ① 是某个槽位的选项 → 换那一格；
+     *   ② 不是选项 → 当**动作组**播一次（播完接回原动作）；
+     *   ③ 再不是 → 当**表达式**闪一下（闪完自动收，不占槽位）。
+     */
     /**
      * 这次反应改过哪些槽位（收回默认时只动它们）。
      *
