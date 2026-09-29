@@ -127,35 +127,76 @@ fn install_panic_hook() {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let home = resolve_home();
-        let journal = logbook::log_path(&home);
-        logbook::log(&home, &format!("[shell] **起不来**：{info}"));
-        logbook::log(&home, &format!("[shell] 完整日志：{}", journal.display()));
+        // 日志**写不进去也要说**：用户 2026-09 第二次报的那次，弹框指的日志文件压根没生成
+        // （那个进程写不进 %DSH_HOME%），而我们把失败吞掉了 —— 于是连"为什么没日志"都查不到。
+        let journal = match logbook::log(&home, &format!("[shell] **起不来**：{info}")) {
+            Ok(path) => {
+                let _ = logbook::log(&home, &format!("[shell] 完整日志：{}", path.display()));
+                format!("完整日志：\n{}", path.display())
+            }
+            Err(error) => format!("（日志也没写进去：{error}）"),
+        };
+        // 带上**是哪个文件**：同一台机器上可能有 Release 下的、dist/ 里刚构建的、
+        // 插件管的那份 —— 不写清楚就得靠猜（这一次就猜了很久）。
         #[cfg(windows)]
-        show_error_box(
-            "DSH 桌宠没能启动",
-            &format!("{info}\n\n完整日志：\n{}", journal.display()),
-        );
+        {
+            let exe = std::env::current_exe()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|_| "(拿不到 exe 路径)".to_string());
+            show_error_box(
+                "DSH 桌宠没能启动",
+                &format!("{info}\n\n程序：{exe}\n{journal}"),
+            );
+        }
         previous(info);
     }));
+}
+
+/// 「已经有一只了」的提示框（不是错误，别用红色图标吓人）。
+#[cfg(windows)]
+fn show_info_box(title: &str, body: &str) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONINFORMATION, MB_OK, MB_TOPMOST};
+    message_box(title, body, MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
+}
+
+/// 一只只能跑一份 —— 已经有另一只在跑吗？返回那一只的 pid。
+///
+/// WebView2 的 user-data-dir 是**独占**的，第二个实例只会撞上
+/// `0x800700AA 请求的资源在使用中`。以前那个错误被 panic 成"起不来"，用户看到的是
+/// 一个报错的框，而真正该说的是"她已经在了"。判据用**心跳**（pid 会被系统重用，
+/// 不能只看 pid 在不在 —— 这条规则两端共用，见 `host::display`）。
+fn another_instance_running(home: &std::path::Path) -> Option<u64> {
+    let preference = host::display::read_preference(home);
+    let pid = preference
+        .get("desktopPid")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    if pid == 0 || pid == std::process::id() as u64 {
+        return None;
+    }
+    if host::display::heartbeat_fresh(&preference, host::display::now_ms()) {
+        Some(pid)
+    } else {
+        None
+    }
 }
 
 /// Windows 上的致命错误弹窗。用系统的 `MessageBoxW`（不引额外依赖）—— 双击场景里，
 /// 这是唯一能把"为什么没反应"告诉用户的地方。
 #[cfg(windows)]
 fn show_error_box(title: &str, body: &str) {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        MessageBoxW, MB_ICONERROR, MB_OK, MB_SETFOREGROUND, MB_TOPMOST,
-    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MB_SETFOREGROUND, MB_TOPMOST};
+    message_box(title, body, MB_OK | MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST);
+}
+
+#[cfg(windows)]
+fn message_box(title: &str, body: &str, flags: u32) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW;
     let wide = |text: &str| -> Vec<u16> { text.encode_utf16().chain(std::iter::once(0)).collect() };
     let title = wide(title);
     let body = wide(body);
     unsafe {
-        MessageBoxW(
-            std::ptr::null_mut(),
-            body.as_ptr(),
-            title.as_ptr(),
-            MB_OK | MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST,
-        );
+        MessageBoxW(std::ptr::null_mut(), body.as_ptr(), title.as_ptr(), flags);
     }
 }
 
@@ -405,7 +446,7 @@ fn spawn_display_loop(app: AppHandle, shared: Arc<Mutex<Shared>>, home: std::pat
                 } else {
                     format!("按偏好让位（mode={mode}）—— 想让她留在桌面上：DSH 设置里选「桌面」")
                 };
-                logbook::log(&home, &format!("[shell] 显示层决定：{why}"));
+                let _ = logbook::log(&home, &format!("[shell] 显示层决定：{why}"));
             }
             match window.is_visible() {
                 Ok(visible) if visible == want_visible => {}
@@ -445,7 +486,7 @@ pub fn run() {
                 &home,
                 serde_json::json!({ "mode": "inline" }),
             );
-            logbook::log(&home, "[shell] 显示层偏好已设为 inline（桌面端不让位）");
+            let _ = logbook::log(&home, "[shell] 显示层偏好已设为 inline（桌面端不让位）");
         } else {
             std::env::set_var("PET_DESKTOP_DSH", dsh);
         }
@@ -465,7 +506,29 @@ pub fn run() {
             // 日志要落 `%DSH_HOME%\pet-desktop.log`（GUI 程序没有控制台），所以先定 home。
             // `say` 同时打 stderr 与日志文件 —— 开发时照旧看终端，用户双击时只看得到文件。
             let home = resolve_home();
-            let say = |line: String| logbook::log(&home, &line);
+            let say = |line: String| {
+                let _ = logbook::log(&home, &line);
+            };
+
+            // ---- 已经有一只了就不要再开一只 ----
+            //
+            // WebView2 的 user-data-dir 独占，第二个实例只会撞 `0x800700AA 资源在使用中`。
+            // 那种失败以前被 panic 成"起不来"（用户 2026-09 第二次报的那个框），而真正该说的
+            // 是"她已经在了"。手动双击时提示一下（插件那条路自己会先查 `running()`）。
+            if let Some(pid) = another_instance_running(&home) {
+                say(format!(
+                    "[shell] 已经有一只桌宠在跑（pid {pid}）—— 本次不再开第二只（一只只能跑一份）"
+                ));
+                if !launched_by_plugin() {
+                    #[cfg(windows)]
+                    show_info_box(
+                        "DSH 桌宠已经在跑了",
+                        "她已经站在桌面上了（Windows 11 的托盘图标默认收在溢出区里，点任务栏的 ^ 能看到）。\n\n\
+                         想换一只：先在那只的托盘菜单里选「退出」再启动这个文件。",
+                    );
+                }
+                std::process::exit(0);
+            }
 
             // ---- macOS：她不该出现在程序坞 / Cmd-Tab 里 ----
             //
@@ -485,7 +548,10 @@ pub fn run() {
             let runtime = resolve_runtime_dir(&handle);
             let pets_root = resolve_pets_root();
             say(format!(
-                "[shell] 起手：pid {}，{}",
+                "[shell] 起手：{}（pid {}，{}）",
+                std::env::current_exe()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|_| "(拿不到 exe 路径)".to_string()),
                 std::process::id(),
                 if launched_by_plugin() { "插件拉起" } else { "手动启动" }
             ));
@@ -537,8 +603,30 @@ pub fn run() {
             // 每一步都**带上自己的上下文**：setup 里任何一步失败，Tauri 只会把它包成
             // "Failed to setup app: ... <错误本身>"，而裸的 io 错误（比如 `拒绝访问。
             // (os error 5)`）根本不说是哪一步 —— 这一轮为了定位它绕了很久。
-            pet_window::create_pet_window(&handle, &host::page_url(&host))
-                .map_err(|error| std::io::Error::other(format!("建桌宠窗口失败：{error}")))?;
+            //
+            // **建窗失败要重试**：`0x800700AA 请求的资源在使用中` 多半是上一只刚退、
+            // WebView2 的 user-data-dir 还没放开（任务管理器里强杀、或插件收进程时留下的
+            // 子进程都会这样）。等一会儿通常就好了，没必要让用户看一个报错框。
+            let mut attempt = 0u32;
+            loop {
+                attempt += 1;
+                // 上一次尝试可能留下半个窗口，先清掉再试（否则会撞"窗口已存在"）。
+                if let Some(existing) = app.get_webview_window(pet_window::PET_WINDOW) {
+                    let _ = existing.destroy();
+                }
+                match pet_window::create_pet_window(&handle, &host::page_url(&host)) {
+                    Ok(()) => break,
+                    Err(error) if attempt < 4 => {
+                        say(format!(
+                            "[shell] 建窗失败（第 {attempt} 次，1.5 秒后重试）：{error}"
+                        ));
+                        std::thread::sleep(Duration::from_millis(1500));
+                    }
+                    Err(error) => {
+                        return Err(std::io::Error::other(format!("建桌宠窗口失败：{error}")).into());
+                    }
+                }
+            }
             tray::setup(app).map_err(|error| std::io::Error::other(format!("建托盘失败：{error}")))?;
             spawn_hover_loop(handle.clone(), shared.clone());
 

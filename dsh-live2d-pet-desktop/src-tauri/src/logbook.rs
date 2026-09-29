@@ -6,6 +6,11 @@
 // 进程读了显示层偏好就自己让位了，而这件事只有 stderr 知道。
 //
 // 所以启动过程同时写一份 `%DSH_HOME%\pet-desktop.log`（stderr 照旧打，开发时不用改习惯）。
+//
+// ⚠️ **`%DSH_HOME%` 不一定写得进去**（用户 2026-09 第二次报的就是这个：弹框指的日志文件
+// 压根没生成，偏好文件也没被改写 —— 两处写盘都失败了）。所以写盘失败**不许再吞**：
+// 退到 exe 旁边那个目录（它一定可写：随包宠物就解包在那儿），并把失败原因交给调用方，
+// 让 panic 弹框能原样报出来。
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -16,23 +21,57 @@ pub fn log_path(home: &Path) -> PathBuf {
     home.join("pet-desktop.log")
 }
 
+/// exe 旁边那个兜底日志路径（拿不到 exe 路径时返回 `None`）。
+pub fn fallback_log_path() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("pet-desktop.log")))
+}
+
 /// 追加一行（带 UTC 时间戳）。
-pub fn log(home: &Path, line: &str) {
+///
+/// 返回**实际写到哪个文件**；两个候选位置都写不进去时返回错误（调用方负责报出来 ——
+/// 尤其是 panic 弹框，那是用户唯一看得见的地方）。
+pub fn log(home: &Path, line: &str) -> std::io::Result<PathBuf> {
     // 开发时（`cargo run` / 带控制台启动）照旧能在终端看到。
     eprintln!("{line}");
-    let _ = std::fs::create_dir_all(home);
-    let path = log_path(home);
-    let oversized = std::fs::metadata(&path).map(|meta| meta.len() > MAX_BYTES).unwrap_or(false);
+    let text = format!("{} {}\n", now_stamp(), line);
+
+    let mut candidates = vec![log_path(home)];
+    if let Some(fallback) = fallback_log_path() {
+        if fallback != candidates[0] {
+            candidates.push(fallback);
+        }
+    }
+
+    let mut last_error = None;
+    for path in candidates {
+        match append_line(&path, &text) {
+            Ok(()) => return Ok(path),
+            Err(error) => last_error = Some(format!("{}：{error}", path.display())),
+        }
+    }
+    Err(std::io::Error::other(
+        last_error.unwrap_or_else(|| "没有可写的日志路径".to_string()),
+    ))
+}
+
+fn append_line(path: &Path, text: &str) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let oversized = std::fs::metadata(path).map(|meta| meta.len() > MAX_BYTES).unwrap_or(false);
     let mut options = std::fs::OpenOptions::new();
     options.create(true).write(true);
-    let opened = if oversized {
-        options.truncate(true).open(&path)
+    let mut file = if oversized {
+        // 超上限：清空重来（连同一条说明）。
+        let mut file = options.truncate(true).open(path)?;
+        file.write_all("--- 日志超过上限，已截断 ---\n".as_bytes())?;
+        file
     } else {
-        options.append(true).open(&path)
+        options.append(true).open(path)?
     };
-    if let Ok(mut file) = opened {
-        let _ = writeln!(file, "{} {}", now_stamp(), line);
-    }
+    file.write_all(text.as_bytes())
 }
 
 /// 现在的时间戳（UTC）。

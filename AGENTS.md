@@ -99,9 +99,12 @@ node tools/lab.mjs raw "<一段 JS>"             # 直接在试验台页面里�
   Objective-C 的 crate，本机没有 `cc`/macOS SDK）⇒ mac 代码唯一的编译器是 CI
   （`.github/workflows/desktop-mac.yml`：`cargo test --lib` + `build-package`）。
   所以 mac 相关改动**不要声称本地验过**。
-- **在 DSH 会话里启动桌宠，一定失败**：`Failed to setup app: ... 拒绝访问 (os error 5)`
-  （建窗/建 WebView2 环境被拒）。这不是构建坏了 —— **已发布的 3.0.1 exe 在同一环境里
-  一模一样地失败**（对照实验做过）。想验 GUI 只能在真实交互会话里双击，或让用户跑。
+- **在 DSH 会话里启动桌宠，一定失败**：`Failed to setup app: ... 拒绝访问 (os error 5)`，
+  或 WebView2 的 `0x800700AA 请求的资源在使用中`（沙箱写不进 `%DSH_HOME%` 与
+  `%LOCALAPPDATA%\<id>\EBWebView`）—— 这不是构建坏了，**已发布的 3.0.1 exe 在同一环境里
+  一模一样地失败**（对照实验做过）。**要真跑 GUI，就让用户在资源管理器里双击**，或用 DSH
+  设置里的「桌面」（插件从宿主进程 spawn，沙箱外）。2026-09 用户报的"双击没显示"就有一部分
+  是这么来的 —— 先问清他是怎么启动的。
 - 因此：桌面端的 GUI 行为（透明 / 穿透 / 托盘 / 窗口）**改动后必须由人在真机确认**；
   能自动验的只有宿主机半区（`probe-catalog.mjs` 对拍）、单元测试、以及进程外读口。
 - **用户说"双击了没反应"时，第一条命令是读 `%DSH_HOME%\pet-desktop.log`**：每次启动都留了

@@ -16,7 +16,7 @@
 //
 // 为什么不走 DSH 的进程内服务：桌面端是另一个进程，拿不到 `ctx.on(...)`。一个文件加一条
 // 纯规则，是这两边唯一都能用的东西。
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -155,8 +155,20 @@ export function createDisplayLayer(options) {
   function stop() {
     if (child === null) return false
     try {
-      child.kill()
-      note('已收掉桌面端（pid ' + childPid + '）')
+      // ⚠️ Windows 上 `child.kill()` 是 TerminateProcess：**只杀壳自己**。WebView2 的
+      // `msedgewebview2.exe` 子进程会留下来继续占着 `%LOCALAPPDATA%\<id>\EBWebView`
+      // （那是独占的），于是**下一次**启动撞 `0x800700AA 请求的资源在使用中`
+      // —— 用户 2026-09 报的那个报错框就是这么来的。
+      // 所以 Windows 上连整棵进程树一起收（`/T`），别留孤儿。
+      if (process.platform === 'win32') {
+        spawnSync('taskkill', ['/pid', String(childPid), '/T', '/F'], {
+          stdio: 'ignore',
+          windowsHide: true,
+        })
+      } else {
+        child.kill()
+      }
+      note('已收掉桌面端（pid ' + childPid + '，含子进程）')
     } catch {
       /* 已经退了 */
     }
