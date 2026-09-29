@@ -93,11 +93,14 @@ jobs:
         working-directory: dsh-live2d-pet-desktop
 
       - name: 打包（zip 保留 .app 的可执行位与签名）
+        # ⚠️ 附件名用 **ASCII**：GitHub 会把上传文件名里的非 ASCII 字符直接吃掉 ——
+        # `DSH桌宠-3.1.0-mac-arm64.zip` 传上去变成 `DSH.-3.1.0-mac-arm64.zip`（实测，
+        # 用 API 的 PATCH 改名也一样）。`.app` 自己的名字保持 `DSH桌宠.app` 不受影响。
         run: |
           set -euo pipefail
           version=$(node -p "require('./dsh-live2d-pet/package.json').version")
           cd dsh-live2d-pet-desktop/dist
-          ditto -c -k --keepParent "DSH桌宠.app" "DSH桌宠-${version}-mac-arm64.zip"
+          ditto -c -k --keepParent "DSH桌宠.app" "dsh-pet-live2d-desktop-${version}-mac-arm64.zip"
           tar -czf "dsh-pet-live2d-desktop-${version}-darwin-arm64.tar.gz" dsh-pet-live2d-desktop
           shasum -a 256 *.zip *.tar.gz
           ls -l
