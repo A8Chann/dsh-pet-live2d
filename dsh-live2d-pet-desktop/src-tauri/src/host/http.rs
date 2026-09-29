@@ -316,6 +316,40 @@ fn route(
     if path == format!("{API}/events") {
         return serve_events(stream, state);
     }
+    // 显示层：**客户端只认 `{API}/layer`**（每秒一次"现在该谁管这只宠物"），页面据此决定
+    // 自己让不让位（桌面壳那一份的判据是 `owner !== "desktop"` → `visibility: hidden`）。
+    //
+    // ⚠️ 这里原来只有桌面端自己的 `/__desktop/owner`，而客户端在某一版改成读 `{API}/layer`
+    // —— 于是**独立模式**（手动双击）下页面取不到，保持默认 `owner:"inline"`，页面把自己
+    // 藏了：窗口在、canvas 在画、就是什么都看不到（用户 2026-09 报的"设置里显示桌面已接管，
+    // 但看不到宠物"）。挂载模式不受影响，因为那条路把整个 API 转发给了 DSH 里的插件。
+    // **两份宿主的路由形状必须一起改** —— AGENTS.md 的第一条纪律就是这条。
+    if path == format!("{API}/layer") {
+        if method == "POST" {
+            let parsed: Value =
+                serde_json::from_str(if body.trim().is_empty() { "{}" } else { body })
+                    .unwrap_or_else(|_| json!({}));
+            // 独立模式里"下载桌面端"没有意义：我们自己就是那只桌面端。
+            if parsed.get("action").and_then(Value::as_str) == Some("download-desktop") {
+                send_json(
+                    stream,
+                    200,
+                    &json!({ "ok": true, "download": { "started": false, "reason": "built-in" } }),
+                )?;
+                return Ok(true);
+            }
+            // 页面能改的只有"显示位置"；判定权仍在壳（它每秒按偏好摆正一次）。
+            if let Some(mode) = parsed.get("mode").and_then(Value::as_str) {
+                let mode = super::display::normalise_mode(Some(&json!(mode)));
+                let _ = super::display::write_preference(&state.home, json!({ "mode": mode }));
+            }
+        } else if method != "GET" && method != "HEAD" {
+            send_json(stream, 405, &json!({ "ok": false, "error": "method-not-allowed" }))?;
+            return Ok(true);
+        }
+        send_json(stream, 200, &layer_payload(state))?;
+        return Ok(true);
+    }
 
     // ---- 桌面端自己的接口 ----
     if path == "/__desktop/ping" {
@@ -360,18 +394,11 @@ fn route(
     //
     // 页面**只读**这里，判定权在 host（校验 mode、算心跳、必要时拉起/收掉桌面端）——
     // 页面自己不去碰偏好文件，两个写者会互相擦。
+    //
+    // 这是桌面端最早的读口名；客户端后来统一改成 `{API}/layer`（见上面那条），这里保留
+    // 是给**已有的驱动**用的（`probe-*.mjs` 直接读它）。两者载荷同形。
     if path == "/__desktop/owner" {
-        let payload = super::display::status(&state.home, false);
-        let mut payload = payload;
-        if let Some(map) = payload.as_object_mut() {
-            let spawned = state
-                .desktop_pid
-                .lock()
-                .map(|pid| *pid != 0)
-                .unwrap_or(false);
-            map.insert("desktopSpawnedByPlugin".to_string(), json!(spawned));
-        }
-        send_json(stream, 200, &payload)?;
+        send_json(stream, 200, &layer_payload(state))?;
         return Ok(true);
     }
     // 页面来领任务 / 交答案（与 Node 版**逐字段相同**，页面不用改）。
@@ -804,6 +831,42 @@ pub fn default_home() -> std::path::PathBuf {
 /// 给测试用：宠物根目录（默认 `%DSH_HOME%\pets`）。
 pub fn default_pets_root() -> std::path::PathBuf {
     default_home().join("pets")
+}
+
+/// 显示层载荷（`{API}/layer` 与 `/__desktop/owner` **同形**，与 JS 宿主逐字段对应）。
+///
+/// 页面对它的用法只有一个关键字段：`owner`（桌面壳那一份是"owner 不是我 ⇒ 让位"）。
+/// 剩下的是设置页要显示的（mode / desktopRunning / binary / download）。
+///
+/// **有意缺一个字段**：JS 那边还有 `pidStillTaken`（"心跳说没了、但那个 pid 号还占着"，
+/// 防 pid 复用的诊断）。Rust 侧要判它得去 `OpenProcess` 问系统，而这个载荷每秒被轮询一次，
+/// 不值当；客户端与驱动都不读它（只有 JS 的单元测试用）。**写在这里，免得下次对拍时
+/// 以为是漏了。**
+fn layer_payload(state: &HostState) -> Value {
+    let mut payload = super::display::status(&state.home, false);
+    let spawned = state
+        .desktop_pid
+        .lock()
+        .map(|pid| *pid != 0)
+        .unwrap_or(false);
+    if let Some(map) = payload.as_object_mut() {
+        map.insert("ok".to_string(), json!(true));
+        map.insert("desktopSpawnedByPlugin".to_string(), json!(spawned));
+        // 独立模式里"桌面端"就是本进程：二进制恒为就绪，也没有可下载的东西
+        // （挂载模式走转发，根本到不了这里）。
+        map.insert(
+            "binary".to_string(),
+            json!({
+                "found": true,
+                "path": std::env::current_exe().ok().map(|path| path.display().to_string()),
+                "source": "self",
+                "supported": true,
+                "hint": "",
+            }),
+        );
+        map.insert("download".to_string(), json!({ "state": "idle", "at": 0 }));
+    }
+    payload
 }
 
 /// 给测试用：`Path` 存在性（避免测试里到处 use std::path）。

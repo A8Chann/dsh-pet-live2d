@@ -588,6 +588,45 @@ EXITCODE=-1073740791
 WebView2/Chromium，mac 是 WKWebView/WebKit，Pixi 8 + Cubism Core 在 WebKit 上从没跑过。
 macOS runner 没有可交互窗口会话，这些在 CI 里也验不了；只有真机能回答。
 
+## 「窗口在、canvas 在画、就是看不到她」= 页面让位判据（第二个成因）
+
+用户第四次报：**设置里显示「桌面已接管」，但屏幕上没有宠物，托盘里也找不到**。
+
+读口把状态摊得很清楚（`GET /__desktop/ping` + `/__desktop/shell`）：
+
+```
+windowVisible: true   windowOrigin: [0,0]   windowSize: [2560,1392]   scale: 1.0
+probe: { asked: 2247, answered: 2254 }   ← 页面活着、在回答命中判定
+pets: [ds-whale-girl]   dsh.connected: true   probeErrors: 0
+```
+
+窗口几何正常、页面在跑、宿主一切健康 —— 那就是**页面自己把自己藏了**。
+`client.js` 的判据是：
+
+```js
+isDesktopShell ? layer.owner !== "desktop" : layer.owner !== "inline"   // → visibility: hidden
+```
+
+而 `layer` 来自 **`GET /api/live2d-pet/layer`**（`client.js` 每秒轮询）。**桌面端的 Rust 宿主
+没有这个路由** —— 它只有自己的 `/__desktop/owner`。页面取不到 ⇒ 保持默认 `owner: "inline"`
+⇒ 桌面壳那一份判定"owner 不是我" ⇒ `visibility: hidden` ⇒ 窗口还在、canvas 还在画，
+**人什么都看不到**（托盘图标又被 Win11 默认收进溢出区，连"她还在跑"都发现不了）。
+
+**为什么插件拉起的那只没事**：插件用 `--attach` 启动，挂载模式把整个 `/api/live2d-pet/*`
+**转发给 DSH 里的插件**，而插件那份 JS 宿主有 `/layer` ✓。所以症状天然是
+"插件起的桌面是好的、手动双击看不到"。
+
+**修法**：Rust 宿主补 `GET|POST {API}/layer`（载荷与 JS 宿主逐字段同形 —— `owner` 是页面唯一
+真正读的字段，其余给设置页看）；`/__desktop/owner` 保留成同形别名，免得已有的驱动挂掉。
+
+**教训（这是项目第一条纪律的实例）**：客户端把读口从 `/__desktop/owner` 改成 `{API}/layer`
+时，**Rust 那份没跟上**。改任何"两份实现共用的读口/字段"时，先问一句：
+**另一边是靠哪个名字读的？** 这类分叉不会报错，只会表现为"某个界面里少一段/什么都没有"。
+
+**能自动抓它的判据**（还没做，值得做）：让 Rust 宿主暴露自己的路由表，再让
+`probe-catalog.mjs` 拿 JS 的 `buildRoutes()` 逐条对——**只比路径，不发请求**（发请求会有
+副作用：JS 的 `/layer` 会 reconcile，mode=desktop 时真的会拉起一只）。
+
 ## 「双击 exe，她没显示出来」（2026-09 用户报，两个根因叠在一起）
 
 用户的原话：**"我直接跑 Release 里的 exe，桌宠没显示出来，但是我插件起的桌面是好的。"**
