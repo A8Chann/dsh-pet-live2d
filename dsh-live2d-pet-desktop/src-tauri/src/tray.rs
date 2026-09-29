@@ -147,43 +147,76 @@ pub fn setup(app: &App, home: &std::path::Path) -> tauri::Result<()> {
     Ok(())
 }
 
-/// **诊断用**：绕开 `tray-icon`，在这个进程里手工调一次 `Shell_NotifyIcon(NIM_ADD)`。
+/// **诊断用**：绕开 `tray-icon`，在这个进程里手工调 `Shell_NotifyIcon(NIM_ADD)`。
 ///
-/// 为什么要它：用户 2026-09 遇到的"托盘里没有她"里，**同一个二进制以前能注册、现在不能**，
-/// 而一个与本程序无关的最小探针（PowerShell + WinForms 窗口 + `Shell_NotifyIcon`）**当场就
-/// 注册成功**（NIM_ADD=True、`Shell_NotifyIconGetRect` 拿到矩形、溢出区里出现它）。
-/// 也就是说通知区域是好的，问题在**我们的进程或参数**里。这一函数把两个锅分开：
+/// 为什么要它：用户 2026-09 遇到的"托盘里没有她"，实测**同一台机器上**：
 ///
-///   * 手工调也失败 ⇒ 问题在进程级（窗口句柄 / 完整性级别 / 策略）；
-///   * 手工调成功、而 `tray-icon` 失败 ⇒ 问题在它那侧（它自己的隐藏窗口类，或它造的 HICON）。
+///   * 一个与本程序无关的最小探针（PowerShell + WinForms 窗口 + 手工 `Shell_NotifyIcon`）
+///     **成功**（`NIM_ADD=True`、`GetRect` 拿到矩形、溢出区里出现它）；
+///   * 而**任何 Tauri 程序**（2.11 与 2.12 两代、有无窗口、建在最前还是最后）都失败，
+///     `GetLastError = 5`（ACCESS_DENIED）。
 ///
-/// 参数故意用最保守的组合：**宠物窗口的 HWND** + **系统自带图标**（IDI_APPLICATION = 32512）。
-/// `GetLastError` 也写进日志。诊断完立刻删掉，不在用户托盘里留第二个图标。
+/// 参数、窗口样式（LAYERED / TRANSPARENT / NOACTIVATE / TOOLWINDOW）、DPI 感知、
+/// 依赖版本、exe 位置、完整性标签**都已排除**（探针里逐个试过，全部成功）。
+///
+/// 所以这里问的是最后一个能决定"我们能不能自己修"的问题：**在 Tauri 进程里新造一个
+/// 最普通的窗口，能不能注册？**
+///
+///   * 能 ⇒ 我们可以在应用内部自己做兜底注册（自建窗口 + 自己的菜单）；
+///   * 不能 ⇒ 只能等上游（`tray-icon` / `tao`）或系统侧修。
 #[cfg(windows)]
 fn diagnose_native_tray(app: &App, home: &std::path::Path) {
-    use windows_sys::Win32::Foundation::{GetLastError, HWND};
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{CreateWindowExW, WS_OVERLAPPED};
+
+    // 一、宠物窗口（带 LAYERED / NOACTIVATE / TOOLWINDOW，与 tray-icon 自己那个隐藏窗口同类）。
+    if let Some(window) = app.get_webview_window(crate::pet_window::PET_WINDOW) {
+        if let Ok(handle) = window.hwnd() {
+            try_register(home, handle.0 as HWND, "宠物窗口");
+        }
+    }
+
+    // 二、**自己造一个最普通的窗口**：`STATIC` 是系统预注册的类，不需要 RegisterClassW，
+    //     也不需要 hInstance。两次唯一差别就是窗口本身。
+    let plain = unsafe {
+        CreateWindowExW(
+            0,
+            windows_sys::w!("STATIC"),
+            windows_sys::w!("pet-tray-diag"),
+            WS_OVERLAPPED,
+            0,
+            0,
+            0,
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null(),
+        )
+    };
+    if plain.is_null() {
+        let _ = logbook::log(home, "[dial] 自建普通窗口失败（CreateWindowExW 返回空），跳过");
+        return;
+    }
+    try_register(home, plain, "自建普通窗口");
+}
+
+/// 用给定窗口手工注册一个托盘图标，把结果与 `GetLastError` 写进日志；
+/// 成功就立刻删掉（诊断用，不在用户托盘里留第二个图标）。
+#[cfg(windows)]
+fn try_register(home: &std::path::Path, hwnd: windows_sys::Win32::Foundation::HWND, label: &str) {
+    use windows_sys::Win32::Foundation::GetLastError;
     use windows_sys::Win32::UI::Shell::{
         Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::LoadIconW;
 
-    let Some(window) = app.get_webview_window(crate::pet_window::PET_WINDOW) else {
-        let _ = logbook::log(home, "[dial] 手工诊断：拿不到宠物窗口，跳过");
-        return;
-    };
-    let Ok(handle) = window.hwnd() else {
-        let _ = logbook::log(home, "[dial] 手工诊断：窗口没有 HWND，跳过");
-        return;
-    };
-    let hwnd: HWND = handle.0 as HWND;
-
     // IDI_APPLICATION = 32512：系统自带图标，不需要额外资源。
     let hicon = unsafe { LoadIconW(std::ptr::null_mut(), 32512usize as *const u16) };
     if hicon.is_null() {
-        let _ = logbook::log(home, "[dial] 手工诊断：连系统图标都取不到，跳过");
+        let _ = logbook::log(home, &format!("[dial] （{label}）连系统图标都取不到，跳过"));
         return;
     }
-
     let mut tip = [0u16; 128];
     for (index, unit) in "DSH 桌宠（诊断）".encode_utf16().take(127).enumerate() {
         tip[index] = unit;
@@ -203,20 +236,11 @@ fn diagnose_native_tray(app: &App, home: &std::path::Path) {
     let error = unsafe { GetLastError() };
     let _ = logbook::log(
         home,
-        &format!("[dial] 手工 Shell_NotifyIcon(NIM_ADD) = {added}（GetLastError={error}）"),
+        &format!("[dial] 手工 NIM_ADD（{label}）= {added}（GetLastError={error}）"),
     );
-
     if added {
         let removed = unsafe { Shell_NotifyIconW(NIM_DELETE, &mut nid) } != 0;
-        let _ = logbook::log(
-            home,
-            &format!("[dial] 诊断图标已清理：{removed} ⇒ 进程级没问题，锅在 tray-icon 那侧"),
-        );
-    } else {
-        let _ = logbook::log(
-            home,
-            "[dial] 连手工注册都被拒 ⇒ 问题在进程级（窗口 / 完整性 / 策略），不在 tray-icon",
-        );
+        let _ = logbook::log(home, &format!("[dial] （{label}）成功，诊断图标已清理：{removed}"));
     }
 }
 

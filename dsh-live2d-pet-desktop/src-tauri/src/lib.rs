@@ -504,8 +504,20 @@ pub fn run() {
             let handle = app.handle().clone();
 
             // 日志要落 `%DSH_HOME%\pet-desktop.log`（GUI 程序没有控制台），所以先定 home。
-            // `say` 同时打 stderr 与日志文件 —— 开发时照旧看终端，用户双击时只看得到文件。
             let home = resolve_home();
+
+            // ---- 托盘：**放在 setup 的第一件事**（实验） ----
+            //
+            // 参照物是同机上一个能正常出托盘的 Tauri 应用（DSH Desktop）：代码几乎一样，
+            // 唯一实质差别是它建托盘时进程里的"前置动作"少得多。用户 2026-09 报"托盘里没有她"
+            // 时实测：本程序手工调 `Shell_NotifyIcon` 也被拒（`GetLastError=5` ACCESS_DENIED），
+            // 而一个无关的最小程序能注册成功 ⇒ 想确认锅是不是"我们 setup 里的前置动作"。
+            // 这一段只是**定位实验**：先在最前面建托盘，看它能不能注册上。
+            tray::setup(app, &home).map_err(|error| {
+                std::io::Error::other(format!("建托盘失败：{error}"))
+            })?;
+
+            // `say` 同时打 stderr 与日志文件 —— 开发时照旧看终端，用户双击时只看得到文件。
             let say = |line: String| {
                 let _ = logbook::log(&home, &line);
             };
@@ -598,6 +610,7 @@ pub fn run() {
                 bytes as f64 / 1024.0 / 1024.0
             ));
 
+            // （托盘的定位实验：现在它在 setup 的第一件事里建，见上面的注释。）
             let host = host::serve(shared.clone(), pets_root, plugin_root, attach.clone(), home.clone())?;
             say(format!("[shell] 宿主已就绪：{}", host.url));
             // 每一步都**带上自己的上下文**：setup 里任何一步失败，Tauri 只会把它包成
@@ -627,9 +640,8 @@ pub fn run() {
                     }
                 }
             }
-            tray::setup(app, &home).map_err(|error| std::io::Error::other(format!("建托盘失败：{error}")))?;
+            // 托盘已经在前面建好了（那次挪动是实验的一部分，见上面的注释）。
             spawn_hover_loop(handle.clone(), shared.clone());
-
             // ---- 显示层：桌面端要不要显示、以及"我还活着"的心跳 ----
             //
             // 用户在 DSH 设置里选了「页面内」时，这个窗口必须让位（否则桌面上和页面里各
