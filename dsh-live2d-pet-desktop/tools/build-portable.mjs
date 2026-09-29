@@ -18,7 +18,7 @@ import { execFileSync } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { DESKTOP, ROOT } from './paths.mjs'
-import { ensureNotLowIntegrity } from './integrity.mjs'
+import { ensureRunnableIntegrity } from './integrity.mjs'
 
 const argv = process.argv.slice(2)
 const has = (flag) => argv.includes(flag)
@@ -77,10 +77,12 @@ step('2/3 产出 dist/', () => {
     const exeOut = join(DIST, 'DSH-Pet.exe')
     copyFileSync(built, exeOut)
     console.log('  ' + exeOut + '  ' + mb(exeOut))
-    // **这一道不能省**：在 DSH 会话里构建出来的产物会带 Low 完整性标签，双击起来会写不进
-    // `%DSH_HOME%`、也建不了 WebView2 的数据目录（用户 2026-09 踩的就是这个，见
-    // `tools/integrity.mjs` 的长注释）。
-    ensureNotLowIntegrity(exeOut)
+    // **这一道不能省**：产物**不能带任何会把进程压低的完整性标签**（在会话里构建出来的
+    // 会带 Low；而带 Low 的 exe 双击起来写不进 `%DSH_HOME%`、建不了 WebView2 数据目录，
+    // 连托盘都注册不上）。注意修法是**摆成 High（= 不设上限）而不是 Medium** ——
+    // Medium 会把进程压在 Medium，在资源管理器跑在 High 的机器上就再也注册不了托盘
+    // （用户 2026-09 那台机器就是，A/B 实测见 `tools/integrity.mjs` 的长注释）。
+    ensureRunnableIntegrity(exeOut)
     return
   }
 

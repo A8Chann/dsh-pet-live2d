@@ -249,9 +249,14 @@ tools/
 对象 —— `%DSH_HOME%`、WebView2 数据目录都算）。**在 DSH 会话里构建/复制出来的文件会这样**：
 
 ```bat
-icacls "<exe 路径>"                        :: 看那一行 "Mandatory Label\… Mandatory Level"
-icacls "<exe 路径>" /setintegritylevel Medium   :: 摆正（一条命令）
+icacls "<exe 路径>"                          :: 看那一行 "Mandatory Label\… Mandatory Level"
+icacls "<exe 路径>" /setintegritylevel High  :: 摆正（一条命令）
 ```
+
+⚠️ **要摆成 `High`，不要摆成 `Medium`**：完整性标签是**上限** —— Medium 会把进程压在
+Medium，在**资源管理器自己跑在 High** 的机器上（UAC 关闭）连**托盘图标都注册不上**
+（`GetLastError=5`，日志里能看到）。没标签也行（那就跟着启动者走），但要摘掉标签只能靠
+"复制到无标签目录"，`icacls /reset` 摘不掉。
 
 `npm run build:portable` 与 `node tools/npm-prepare-subpackage.mjs` 现在都会自动检查并摆正，
 摆不正就直接让构建失败 —— 所以发布物不会再有这个问题。

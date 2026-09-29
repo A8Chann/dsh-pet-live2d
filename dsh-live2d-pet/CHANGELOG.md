@@ -69,12 +69,17 @@
 
 修法（构建期，两道）：
 
-- `tools/integrity.mjs`：检查产物的完整性标签，是 Low 就用
-  `icacls /setintegritylevel Medium` 摆正并复查，摆不正直接让构建失败；
+- `tools/integrity.mjs`：检查产物的完整性标签，**带 Low/Medium 就摆成 `High`**（= 不设上限）
+  并复查，摆不正直接让构建失败；
 - 接进 `build-portable.mjs`（产物出库）与 `npm-prepare-subpackage.mjs`（发 npm 前），
-  所以**发布物不可能再是 Low**。
+  所以**发布物不可能再带压低进程的标签**。
 
-已经拿到 Low 版本的用户：`icacls "<exe>" /setintegritylevel Medium` 一条命令即可修好
+⚠️ 这里有个**曾经的错误修法**：一开始是摆成 `Medium`，结果在"资源管理器跑在 High"的机器上
+（UAC 关闭 ⇒ 整机 High）**连托盘都注册不上**（`Shell_NotifyIcon` 返回 FALSE、
+`GetLastError=5`）—— 因为完整性标签是**上限**，Medium 会把进程压在 Medium，
+它对 shell 的托盘消息被 UIPI 拦掉。**正确做法是没有标签，或者摆成 High。**
+
+已经拿到带标签版本的用户：`icacls "<exe>" /setintegritylevel High` 一条命令即可修好
 （或者重新下载一遍发布包）。
 
 ### 修：直接双击桌面端的 exe，她"没显示出来"（2026-09 用户报）

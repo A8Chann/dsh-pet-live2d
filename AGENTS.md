@@ -111,13 +111,23 @@ node tools/lab.mjs raw "<一段 JS>"             # 直接在试验台页面里�
   结论（`她在桌面上` / `按偏好让位（mode=inline）` / `**起不来**：…`），Windows 上起不来还
   会弹框；日志落在 exe 旁边就说明 `%DSH_HOME%` 那处写盘被拒了。别一上来就怀疑二进制 ——
   2026-09 那三次分别是「页面内」偏好让她自己让位、WebView2 目录被占、以及下面这条。
-- **在会话里构建/复制出来的文件带 `Low` 完整性标签**（沙箱给工作区新文件打的就是它），
-  而 **Low 进程写不进任何 Medium 对象** —— 一个被标 Low 的 exe 双击起来会写不进
-  `%DSH_HOME%`（`拒绝访问 (os error 5)`）、也建不了 `%LOCALAPPDATA%\<id>\EBWebView`
-  （WebView2 `0x800700AA`）。**凡是"在会话里产出、再交给用户双击/运行"的产物都必须过
-  `icacls` 检查**（`tools/integrity.mjs` 的 `ensureNotLowIntegrity`，已接进两个打包脚本；
-  手动：`icacls "<路径>" /setintegritylevel Medium`）。诊断时先看 `icacls <文件>` 的
-  `Mandatory Label` 那一行 —— 2026-09 为此绕了一整轮，A/B 实测在 skill：desktop-shell。
+- **完整性标签是"上限"：给产物贴 Low/Medium 都是自伤，正确做法是"没有标签"**。
+  进程 IL = min(启动者令牌, exe 上的标签)，所以：
+  - 贴 `Low`（沙箱给工作区新文件打的就是它）⇒ 双击后进程也是 Low ⇒ 写不进
+    `%DSH_HOME%`（`拒绝访问 (os error 5)`）、建不了 `%LOCALAPPDATA%\<id>\EBWebView`
+    （WebView2 `0x800700AA`）⇒ 用户报的"双击没显示"；
+  - 贴 `Medium`（**2026-09 我"修"它的办法，是错的**）⇒ 进程压在 Medium ⇒ 在
+    **资源管理器跑在 High 的机器**上（UAC 关闭 ⇒ 整机 High），Medium 进程给 shell 的托盘
+    消息被 UIPI 拦掉 ⇒ `Shell_NotifyIcon` 返回 FALSE、`GetLastError=5` ⇒ **托盘里永远没有
+    她**（而那台机器上换成 High 或没标签立刻就好；用户另一台电脑正常，正因为那台的资源管理器
+    是 Medium）；
+  - **无标签**（或 High）⇒ 跟着启动者走：本机 High 有托盘、普通机器 Medium 也有托盘 ✓。
+
+  **凡是"在会话里产出、再交给用户双击/运行"的产物都必须过一道检查**
+  （`tools/integrity.mjs` 的 `ensureRunnableIntegrity`，已接进两个打包脚本；手动：
+  `icacls "<路径>" /setintegritylevel High` —— **不是 Medium**）。诊断时先看
+  `icacls <文件>` 的 `Mandatory Label` 那一行 —— 2026-09 为此绕了一整轮，
+  A/B 实测（Low=False / Medium=False / 无标签=True / High=True）在 skill：desktop-shell。
 
 ## 设置的存储纪律
 
