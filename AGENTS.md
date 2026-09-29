@@ -109,8 +109,15 @@ node tools/lab.mjs raw "<一段 JS>"             # 直接在试验台页面里�
   能自动验的只有宿主机半区（`probe-catalog.mjs` 对拍）、单元测试、以及进程外读口。
 - **用户说"双击了没反应"时，第一条命令是读 `%DSH_HOME%\pet-desktop.log`**：每次启动都留了
   结论（`她在桌面上` / `按偏好让位（mode=inline）` / `**起不来**：…`），Windows 上起不来还
-  会弹框。别一上来就怀疑二进制 —— 2026-09 那次是「页面内」偏好让她自己让位（细节见
-  skill：desktop-shell）。
+  会弹框；日志落在 exe 旁边就说明 `%DSH_HOME%` 那处写盘被拒了。别一上来就怀疑二进制 ——
+  2026-09 那三次分别是「页面内」偏好让她自己让位、WebView2 目录被占、以及下面这条。
+- **在会话里构建/复制出来的文件带 `Low` 完整性标签**（沙箱给工作区新文件打的就是它），
+  而 **Low 进程写不进任何 Medium 对象** —— 一个被标 Low 的 exe 双击起来会写不进
+  `%DSH_HOME%`（`拒绝访问 (os error 5)`）、也建不了 `%LOCALAPPDATA%\<id>\EBWebView`
+  （WebView2 `0x800700AA`）。**凡是"在会话里产出、再交给用户双击/运行"的产物都必须过
+  `icacls` 检查**（`tools/integrity.mjs` 的 `ensureNotLowIntegrity`，已接进两个打包脚本；
+  手动：`icacls "<路径>" /setintegritylevel Medium`）。诊断时先看 `icacls <文件>` 的
+  `Mandatory Label` 那一行 —— 2026-09 为此绕了一整轮，A/B 实测在 skill：desktop-shell。
 
 ## 设置的存储纪律
 

@@ -660,6 +660,48 @@ macOS runner 没有可交互窗口会话，这些在 CI 里也验不了；只有
 日志里现在也带 **exe 的完整路径**：同一台机器上可能同时存在 Release 下的、`dist/` 里刚构建的、
 插件管的三份，"跑的到底是哪一份"不该靠猜（这次猜了很久）。
 
+### 第三报（真正的根因）：**DSH 会话里产出的文件带 Low 完整性标签**
+
+用户的框还在，但这次的日志落在了 **exe 旁边**（`dist\pet-desktop.log`）而不是
+`%DSH_HOME%` —— 说明 `%DSH_HOME%` 那处写入是被**拒绝**的。兜底路径救回了现场，
+而我把"首选位置为什么写不进"也记进了日志：
+
+```
+[logbook] 首选日志位置写不进（已改用 …\dist\pet-desktop.log）：C:\Users\HWX\.dsh\pet-desktop.log：拒绝访问。 (os error 5)
+```
+
+同一台机器、同一个用户，从 PowerShell（High 完整性 / 管理员）写 `C:\Users\HWX\.dsh` 是**成功**的，
+ACL 也没问题（`SYSTEM / Administrators / <本地 SID>` 都是 FullControl）。真正的线索是
+`icacls` 的那一行：
+
+```
+dist\DSH桌宠.exe   Mandatory Label\Low Mandatory Level:(I)(NW)     ← ★
+```
+
+**在 DSH 会话里写出来的文件会带 `Low` 完整性标签**（沙箱给工作区里的新文件打的就是它），
+而那个 exe 正是我在会话里构建/复制出来的。被标成 Low 的 exe：**双击起来后进程就是 Low
+完整性**，按 no-write-up 规则**写不进任何 Medium 对象** ⇒ `%DSH_HOME%` 拒绝访问、
+`%LOCALAPPDATA%\<id>\EBWebView` 建不起来（WebView2 报 `0x800700AA 资源在使用中`）。
+插件从 npm 下载到 `%DSH_HOME%\bin\` 的那份（普通进程写的、没有标签）因此一切正常 ——
+**同一个版本、同一个二进制，只差一个标签**。
+
+**判据（A/B 实测，别再靠推理）**：把同一个 exe 标成 Low 与 Medium 各跑一次（计划任务
+`schtasks /create … /f` + `schtasks /run`，注意 `.cmd` 里**不能放中文路径** —— ASCII 编码会
+把路径吃掉，白白得到一次假失败）：
+
+| exe 标签 | `%DSH_HOME%` 里有日志 | 偏好被改写 |
+|---|---|---|
+| Low | ✗ | ✗ |
+| Medium | ✓ | ✓ |
+
+**修法与护栏**：`tools/integrity.mjs` 的 `ensureNotLowIntegrity()` —— 检查 `icacls` 的
+Mandatory Label 行，是 Low 就 `/setintegritylevel Medium` 并复查，摆不正直接让构建失败。
+已接进 `build-portable.mjs`（产物出库）与 `npm-prepare-subpackage.mjs`（发 npm 前）。
+手动修一条命令：`icacls "<exe>" /setintegritylevel Medium`。
+
+**这条的适用范围比桌面端大**：**任何"在会话里构建、再交给用户双击/运行"的产物都要过这一道**
+（exe、脚本要用的二进制、放进 zip 的启动器……）。CI 里构建的不受影响（GitHub runner 是普通进程）。
+
 ## 已完成 / 还剩什么
 
 **M0（透明 + 穿透 + 复用插件）**、**M2（跟着 DSH 走）**、**M3（设置菜单进右键面板）**、

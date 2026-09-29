@@ -226,6 +226,19 @@ tools/
   目录**，症状正是 `0x800700AA`（还会连日志都写不出来）。要她出现在桌面上，就在资源管理器里
   **双击**，或者用 DSH 设置里的「桌面」让宿主进程去拉起（那条路是沙箱外的）。
 
+### 如果弹框说 `拒绝访问` / `0x800700AA`，而且日志落在 exe 旁边
+
+那多半是这个 exe 被打了 **Low 完整性标签**（Windows 上，低完整性进程写不进任何 Medium
+对象 —— `%DSH_HOME%`、WebView2 数据目录都算）。**在 DSH 会话里构建/复制出来的文件会这样**：
+
+```bat
+icacls "<exe 路径>"                        :: 看那一行 "Mandatory Label\… Mandatory Level"
+icacls "<exe 路径>" /setintegritylevel Medium   :: 摆正（一条命令）
+```
+
+`npm run build:portable` 与 `node tools/npm-prepare-subpackage.mjs` 现在都会自动检查并摆正，
+摆不正就直接让构建失败 —— 所以发布物不会再有这个问题。
+
 ## 已知限制
 
 - **拖动还是"窗口内挪位置"**：桌面版应该是"拖动整只宠物 = 移动窗口"。位置也还是相对

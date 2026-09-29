@@ -45,9 +45,24 @@ pub fn log(home: &Path, line: &str) -> std::io::Result<PathBuf> {
     }
 
     let mut last_error = None;
-    for path in candidates {
-        match append_line(&path, &text) {
-            Ok(()) => return Ok(path),
+    for (index, path) in candidates.iter().enumerate() {
+        match append_line(path, &text) {
+            Ok(()) => {
+                // 落到**兜底位置**时，把首选位置为什么写不进也记下来 —— 这是关键诊断信息：
+                // 用户 2026-09 那次就是"日志跑到 exe 旁边去了"，而原因一直没人知道
+                // （弹框里也只会显示最终路径）。
+                if index > 0 {
+                    if let Some(reason) = &last_error {
+                        let note = format!(
+                            "{} [logbook] 首选日志位置写不进（已改用 {}）：{reason}\n",
+                            now_stamp(),
+                            path.display()
+                        );
+                        let _ = append_line(path, &note);
+                    }
+                }
+                return Ok(path.clone());
+            }
             Err(error) => last_error = Some(format!("{}：{error}", path.display())),
         }
     }

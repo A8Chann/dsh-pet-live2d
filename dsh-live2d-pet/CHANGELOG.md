@@ -2,6 +2,30 @@
 
 ## 未发布
 
+### 修：**本地构建**出来的 exe 双击起不来（完整性标签，2026-09 用户报的第三次）
+
+症状：双击 exe 弹一个错误框，里面是 `0x800700AA 请求的资源在使用中`（WebView2），
+同时 `%DSH_HOME%` 里既没有 `pet-desktop.log`、偏好也没被改写 —— 而在 DSH 设置里
+让插件拉起的那只一切正常。
+
+根因是 **Windows 的完整性标签（integrity level）**：**在 DSH 会话里写出来的文件会带
+`Low` 标签**（沙箱给工作区新文件打的就是它），而本地构建的那个 exe 正好产在那儿。
+被打上 Low 标签的 exe，双击起来后进程就是 Low 完整性 —— 按 no-write-up 规则，
+**它写不进任何 Medium 对象**：`%DSH_HOME%`（`拒绝访问 (os error 5)`）与
+`%LOCALAPPDATA%\<id>\EBWebView`（WebView2 建不起来）全都中招。
+插件从 npm 下载的那份（普通进程写的、没有标签）因此完全正常 —— 同一个版本、同一个
+二进制，只差一个标签。
+
+修法（构建期，两道）：
+
+- `tools/integrity.mjs`：检查产物的完整性标签，是 Low 就用
+  `icacls /setintegritylevel Medium` 摆正并复查，摆不正直接让构建失败；
+- 接进 `build-portable.mjs`（产物出库）与 `npm-prepare-subpackage.mjs`（发 npm 前），
+  所以**发布物不可能再是 Low**。
+
+已经拿到 Low 版本的用户：`icacls "<exe>" /setintegritylevel Medium` 一条命令即可修好
+（或者重新下载一遍发布包）。
+
 ### 修：直接双击桌面端的 exe，她"没显示出来"（2026-09 用户报）
 
 症状：双击 GitHub Release 里那个 exe，**什么都没发生**；但插件从设置里拉起来的那只一切正常。

@@ -10,6 +10,7 @@
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { DESKTOP } from './paths.mjs'
+import { ensureNotLowIntegrity } from './integrity.mjs'
 
 /**
  * 平台子包表：`--sub` 的名字 → 二进制名 + `dist/` 里那个产物名 + 主包是否必须已声明它。
@@ -54,6 +55,11 @@ copyFileSync(BIN_SRC, BIN_DST)
 // macOS/Linux 上可执行位是要留在 tarball 里的（npm 会照搬 mode）——
 // 插件那边取出来之后还会 chmod 一次，但发布物本身就不该是个 644 的文件。
 if (process.platform !== 'win32') chmodSync(BIN_DST, 0o755)
+
+// **发布前的最后一道**：这份二进制要发上 npm、装到**别人机器**上。若它带着 Low 完整性
+// 标签（在 DSH 会话里构建出来的就会带），装完双击必挂 —— 用户 2026-09 就是这么中招的
+// （本地构建那份双击起不来，插件从 npm 下的那份正常）。见 `tools/integrity.mjs`。
+ensureNotLowIntegrity(BIN_DST)
 
 // 版本号与主包**必须一致**：主包的 optionalDependencies 写的就是这个版本。
 const pack = JSON.parse(readFileSync(MANIFEST, 'utf8'))

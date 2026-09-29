@@ -18,6 +18,7 @@ import { execFileSync } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { DESKTOP, ROOT } from './paths.mjs'
+import { ensureNotLowIntegrity } from './integrity.mjs'
 
 const argv = process.argv.slice(2)
 const has = (flag) => argv.includes(flag)
@@ -69,6 +70,10 @@ step('2/3 产出 dist/', () => {
     const exeOut = join(DIST, 'DSH桌宠.exe')
     copyFileSync(built, exeOut)
     console.log('  ' + exeOut + '  ' + mb(exeOut))
+    // **这一道不能省**：在 DSH 会话里构建出来的产物会带 Low 完整性标签，双击起来会写不进
+    // `%DSH_HOME%`、也建不了 WebView2 的数据目录（用户 2026-09 踩的就是这个，见
+    // `tools/integrity.mjs` 的长注释）。
+    ensureNotLowIntegrity(exeOut)
     return
   }
 
