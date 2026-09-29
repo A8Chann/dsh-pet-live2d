@@ -67,7 +67,14 @@ step('2/3 产出 dist/', () => {
   mkdirSync(DIST, { recursive: true })
 
   if (isWin) {
-    const exeOut = join(DIST, 'DSH桌宠.exe')
+    // ⚠️ **产物名用 ASCII**（`DSH-Pet.exe`，不是 `DSH桌宠.exe`）。
+    //
+    // 两个理由：① 发出去的那两份本来就是 ASCII（Release 资产是
+    // `dsh-pet-live2d-desktop-<版本>-win32-x64.exe`、npm 子包里是
+    // `dsh-pet-live2d-desktop.exe`），本机构建没理由另起一个中文名；
+    // ② 有一处"注册表里所有成功注册托盘图标的程序都是 ASCII 名、只有中文名那份没注册上"
+    // 的观察（2026-09），虽然没定论，但没必要在这上面冒险。
+    const exeOut = join(DIST, 'DSH-Pet.exe')
     copyFileSync(built, exeOut)
     console.log('  ' + exeOut + '  ' + mb(exeOut))
     // **这一道不能省**：在 DSH 会话里构建出来的产物会带 Low 完整性标签，双击起来会写不进

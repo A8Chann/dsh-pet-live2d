@@ -185,6 +185,15 @@ export function createDisplayLayer(options) {
       note('找不到桌面端二进制，无法拉起（' + (options.hint ?? '') + '）')
       return { ok: false, reason: 'binary-missing' }
     }
+    // **先自愈**：我们记着的那个子进程可能早就没了（被杀 / 崩了 / 崩溃后没人收），
+    // 而 `exit` 事件也没到（比如进程被 `taskkill /T` 连带干掉）。不清理的话
+    // `childPid !== 0` 会让下面那条守卫永远返回"已经有一只了" —— 于是设置里显示
+    // **"桌面已接管"、桌面上却什么都没有**（用户 2026-09 报的现象）。
+    if (childPid !== 0 && !pidAlive(childPid) && !running()) {
+      note('记着的桌面端进程（pid ' + childPid + '）已经不在了 —— 忘掉它')
+      child = null
+      childPid = 0
+    }
     if (childPid !== 0 || running()) return { ok: true, reason: 'already-running' }
     if (Date.now() - lastAttempt < RETRY_MS && lastAttempt !== 0) {
       return { ok: false, reason: 'retry-cooldown' }
@@ -204,6 +213,15 @@ export function createDisplayLayer(options) {
       })
       childPid = child.pid ?? 0
       child.unref()
+      // **子进程退出要当场忘掉它**：否则 `childPid` 永远非 0，reconcile 会一直认为
+      // "已经有一只了"，她死了插件也不重拉（设置里还显示"桌面已接管"）。
+      child.on('exit', () => {
+        if (childPid === (child?.pid ?? 0)) {
+          note('桌面端进程退出了（pid ' + childPid + '）')
+          child = null
+          childPid = 0
+        }
+      })
       note('已拉起桌面端：' + binary.path + ' --attach ' + dshUrl + '（pid ' + childPid + '）')
       return { ok: true, reason: 'spawned', pid: childPid }
     } catch (error) {

@@ -588,6 +588,63 @@ EXITCODE=-1073740791
 WebView2/Chromium，mac 是 WKWebView/WebKit，Pixi 8 + Cubism Core 在 WebKit 上从没跑过。
 macOS runner 没有可交互窗口会话，这些在 CI 里也验不了；只有真机能回答。
 
+## 「托盘里没有她」（2026-09 用户报，查了整整一轮）
+
+### 机制：`build()` 返回 Ok ≠ 注册成功
+
+`tray-icon` 的 Windows 实现里那一句：
+
+```rust
+if !register_tray_icon(hwnd, internal_id, &hicon, &attrs.tooltip, true) {
+    // Explorer/taskbar may not be ready yet (e.g., app starts before explorer.exe).
+    // Keep the window alive and wait for TaskbarCreated to re-register.
+}
+```
+
+**`Shell_NotifyIcon(NIM_ADD)` 失败时它静默忽略**，只等 `TaskbarCreated` 广播重注册 ——
+而那个广播**只有资源管理器重启时才来**。所以：注册失败一次 = **永远没有图标**，
+而且 `build()` 依然 `Ok`、进程一切正常。
+
+判据：`TrayIcon::rect()`（Windows 上就是 `Shell_NotifyIconGetRect`）。
+⚠️ **但拿不到矩形 ≠ 失败**：**藏在溢出区里的图标也拿不到矩形**（实测过），
+所以它只能当"信息"，不能拿它去重试/重建。
+
+### 排查顺序（每步都能自己跑，不用麻烦用户）
+
+| 步骤 | 命令 / 读口 | 能回答什么 |
+|---|---|---|
+| 1 | `%DSH_HOME%\pet-desktop.log` 里的 `托盘图标…` 行 | 自证结果（有 / 无矩形） |
+| 2 | `HKCU:\Control Panel\NotifyIconSettings`（**按 exe 路径**记的） | 这个**路径**历史上注册成功过没有 |
+| 3 | 用 UIA 点开任务栏的「显示隐藏的图标」再枚举那个飞出窗口 | 她**现在**在不在溢出区（**无名条目也要列出来** —— 只列有名字的会漏） |
+| 4 | 一个与桌宠无关的最小探针（WinForms 窗口 + 手写 `Shell_NotifyIcon`） | 通知区域**本身**现在还能不能接受新图标 |
+| 5 | 在 app 里手工再调一次 `Shell_NotifyIcon` + `GetLastError`（`tray.rs::diagnose_native_tray`） | 锅在库还是在本进程 |
+
+第 4/5 步是关键分辨器。实测数据（2026-09 本机）：
+
+* 最小探针：`NIM_ADD = True`、`GetRect` 拿到矩形、溢出区里出现它 ✓
+* 本程序（**任何**构建、任何位置、连手工调用）：`NIM_ADD = false`，**`GetLastError = 5`（ACCESS_DENIED）** ✗
+
+⇒ **通知区域是好的，是我们这个进程被拒**。已排除的变量：二进制（发布版旧二进制今天同样失败）、
+构建环境（沙箱外构建同样失败）、位置（工作区内 / 外、`Downloads` 都失败）、
+文件完整性标签（Medium ✓）、库的参数（手工调用也失败）。
+
+**还没排除**：进程级的东西（job 对象 / UIPI / 窗口所在桌面）。诊断代码留在 `tray.rs`，
+下次启动会把这些写进日志。
+
+### 顺手学到的三条
+
+* **`%DSH_HOME%`、工作区、`dist/` 的完整性标签要分开看**：工作区根目录
+  `D:\HTML\DSH_Pet_Live2d` 带 `Mandatory Label\Low Mandatory Level:(OI)(CI)(NW)`，
+  **在它里面新建的文件都会继承 Low**（构建出来的 exe 因此双击起不来 —— 见上面那一节）。
+  对单个文件 `icacls … /setintegritylevel Medium` 只救当场那一个，
+  **下一次新建的又会是 Low**（工作区外写的文件没这个问题）。
+* 注册表 `NotifyIconSettings` 是**按 exe 路径**记的 ⇒ 同一路径换了二进制，**旧条目仍然在**，
+  所以"有条目"证明不了当前这次注册成功。
+* 排查用的 `.ps1` **必须纯 ASCII**（PS 5.1 无 BOM 按 ANSI 读 ✗）：解析错误会被报在一行
+  看着完全正常的代码上（我为此追了三条街）—— 那是**前面的中文注释**把解析器带歪了。
+* 排查时**别把用户的实例挤掉**：WebView2 的 user-data-dir 独占，我一边 A/B 一边让用户测，
+  两份互相踢，白白丢了一轮观测。
+
 ## 「窗口在、canvas 在画、就是看不到她」= 页面让位判据（第二个成因）
 
 用户第四次报：**设置里显示「桌面已接管」，但屏幕上没有宠物，托盘里也找不到**。

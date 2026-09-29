@@ -351,6 +351,47 @@ fn route(
         return Ok(true);
     }
 
+    // 共享设置：**两端都读写 `%DSH_HOME%\pet-settings.json` 这一份**，页面按 `rev` 判断
+    // 自己那份是不是旧的。桌面端页面与 DSH 页面不是同一个 origin，localStorage 各存各的、
+    // 永不互见 —— 所以这条路由是"两边设置一致"的唯一通道。
+    //
+    // ⚠️ 与 `{API}/layer` 同一类分叉：JS 宿主（`lib/index.js` 的 `settingsRoute`）一直有它，
+    // 而这边原来没有 —— 用户 2026-09 报的"桌面端设置与 DSH 里的不一致"就是这个。
+    // 语义必须与 `lib/settings.js` 逐字对应（合并写、空写不推进 rev、坏数据只取形状对的）。
+    if path == format!("{API}/settings") {
+        if method == "POST" {
+            let parsed: Result<Value, _> =
+                serde_json::from_str(if body.trim().is_empty() { "{}" } else { body });
+            let Ok(parsed) = parsed else {
+                send_json(stream, 400, &json!({ "ok": false, "error": "bad-body" }))?;
+                return Ok(true);
+            };
+            match super::settings::write_settings(&state.home, &parsed) {
+                Some(written) => {
+                    let mut payload = written;
+                    if let Some(map) = payload.as_object_mut() {
+                        map.insert("ok".to_string(), json!(true));
+                    }
+                    send_json(stream, 200, &payload)?;
+                }
+                None => {
+                    send_json(stream, 500, &json!({ "ok": false, "error": "write-failed" }))?;
+                }
+            }
+            return Ok(true);
+        }
+        if method != "GET" && method != "HEAD" {
+            send_json(stream, 405, &json!({ "ok": false, "error": "method-not-allowed" }))?;
+            return Ok(true);
+        }
+        let mut payload = super::settings::read_settings(&state.home);
+        if let Some(map) = payload.as_object_mut() {
+            map.insert("ok".to_string(), json!(true));
+        }
+        send_json(stream, 200, &payload)?;
+        return Ok(true);
+    }
+
     // ---- 桌面端自己的接口 ----
     if path == "/__desktop/ping" {
         let pets = pets(state);

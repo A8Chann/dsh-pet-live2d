@@ -2,6 +2,39 @@
 
 ## 未发布
 
+### 修：桌面端的设置与 DSH 里的不一致（同一类"两份宿主分叉"）
+
+设置原来只走 `localStorage`（浏览器按 origin 隔离 ✗），所以共享存档必须走
+`%DSH_HOME%\pet-settings.json` + `GET|POST /api/live2d-pet/settings` —— 而**桌面端的 Rust
+宿主没有实现这条路由**（JS 侧 `lib/settings.js` 的注释里甚至写着"Rust 侧的对应实现见
+`host/settings.rs`"，而那个文件当时并不存在）。页面取不到就只能退回它自己那份 localStorage，
+于是两个窗口各显示各的。
+
+现在补上 `host/settings.rs`（与 `lib/settings.js` 逐字对应：三个键 `tuning`/`overrides`/
+`outfit`、合并写、**空写不推进 `rev`**（防两端互推）、坏数据只取形状对的部分）与那条路由。
+实测：GET 空存档 → POST `tuning`（rev 1）→ POST `outfit`（rev 2 且 tuning 不被擦掉）→ 落盘一致。
+
+### 修：插件拉起的那只死了以后，插件一直以为"已经有一只了"
+
+`lib/display.js` 只在 `stop()` 里清 `child`/`childPid`，**子进程自己退出（被杀 / 崩了）时不清**
+—— 于是 `reconcile()` 永远认为"已经有一只了"，既不重拉，设置里还显示"桌面已接管"，而桌面上
+什么都没有。现在给子进程挂了 `exit` 处理器，并在 `start()` 里加了一条自愈（记着的 pid 已经不在、
+心跳也不新鲜 ⇒ 忘掉它再拉）。（用户 2026-09 报的"设置说已接管但看不到宠物"有一半是这个。）
+
+### 新：托盘的**自证与诊断**（写给"托盘里没有她"这类问题）
+
+`TrayIconBuilder::build()` 返回 Ok **不代表图标进了通知区域** —— `tray-icon` 在
+`Shell_NotifyIcon(NIM_ADD)` 失败时是**静默忽略**的（源码注释说"等 Explorer 发 TaskbarCreated
+再重注册"，而那个广播只有资源管理器重启时才有）。现在启动后会自证一次
+（`TrayIcon::rect()` = `Shell_NotifyIconGetRect`）并写日志；拿不到矩形时还会**绕开库手工调一次**
+`Shell_NotifyIcon`（用她自己的窗口 + 系统图标），把返回值和 `GetLastError` 写进
+`%DSH_HOME%\pet-desktop.log`。注意：**矩形拿不到不等于失败**（藏在溢出区里的图标也拿不到），
+所以这条日志是"信息"而不是"失败"。
+
+### 改：Windows 产物名改成 ASCII（`DSH-Pet.exe`）
+
+与 Release 资产 / npm 子包那两份（本来都是 ASCII）保持一致，少一个变量。
+
 ### 修：手动启动的桌面端"设置里显示已接管，但看不到宠物"
 
 **独立模式**（自己双击 exe / 不走插件）下，窗口起来了、canvas 也在画，但**页面把自己藏了**：

@@ -23,7 +23,7 @@ import { ensureNotLowIntegrity } from './integrity.mjs'
  * 否则用户装主包时会去找一个不存在的包（见子包 README 的"发布纪律"）。
  */
 const SUBS = {
-  'win32-x64': { bin: 'dsh-pet-live2d-desktop.exe', built: 'DSH桌宠.exe', declared: true },
+  'win32-x64': { bin: 'dsh-pet-live2d-desktop.exe', built: 'DSH-Pet.exe', declared: true },
   'darwin-arm64': { bin: 'dsh-pet-live2d-desktop', built: 'dsh-pet-live2d-desktop', declared: false },
 }
 

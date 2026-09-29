@@ -21,6 +21,7 @@ use std::sync::{Arc, Mutex};
 use tauri::{App, AppHandle, Manager};
 
 use crate::host::shared::Shared;
+use crate::logbook;
 use crate::pet_window;
 
 /// 托盘图标的尺寸。**32×32 而不是把大图缩下去**：托盘那块地方只有 16×16 /
@@ -30,11 +31,25 @@ const TRAY_ICON: &[u8] = include_bytes!("../icons/32x32.png");
 /// 屏幕菜单项 id 的前缀：`screen:<序号>`。
 const SCREEN_PREFIX: &str = "screen:";
 
-pub fn setup(app: &App) -> tauri::Result<()> {
+/// 建托盘图标。**注册完会自证一次**，并在这个过程中留下可查的日志。
+///
+/// 为什么要自证：`TrayIconBuilder::build()` 返回 Ok **不代表图标真的进了通知区域**。
+/// `tray-icon` 在 `Shell_NotifyIcon(NIM_ADD)` 失败时是**静默忽略**的（源码里那句注释写着
+/// "等 Explorer 发 TaskbarCreated 再重注册"，而那个广播**只有资源管理器重启时才有**）——
+/// 于是注册失败一次就等于**永远没有图标**，还没有任何错误冒出来。
+/// 用户 2026-09 报的"托盘里也没有她"就是撞在这里：进程、窗口、宠物全正常，
+/// 注册表里没有条目、溢出区里也没有，`build()` 却是 Ok。
+///
+/// 判据用 `TrayIcon::rect()`（Windows 上就是 `Shell_NotifyIconGetRect`）：
+/// **系统知道图标画在哪 = 真的注册上了**。
+///
+/// ⚠️ 但 `rect()` 拿不到**不等于**失败：**藏在溢出区里的图标也拿不到矩形**
+/// （实测过：同一个图标在溢出区里 `rect()` 失败，而它明明在）。所以这里**不重试、不重建**
+/// —— 只如实记一条日志，再跑一遍 [`diagnose_native_tray`] 把机制问清楚。
+pub fn setup(app: &App, home: &std::path::Path) -> tauri::Result<()> {
     let menu = build_menu(app.handle(), current_monitor_index(app.handle()))?;
-
     let icon = tauri::image::Image::from_bytes(TRAY_ICON)?;
-    TrayIconBuilder::with_id("pet-tray")
+    let built = TrayIconBuilder::with_id("pet-tray")
         .icon(icon)
         .menu(&menu)
         .show_menu_on_left_click(false)
@@ -100,8 +115,109 @@ pub fn setup(app: &App) -> tauri::Result<()> {
                 refresh(tray.app_handle());
             }
         })
-        .build(app)?;
+        .build(app);
+
+    match built {
+        Ok(tray) => match tray.rect() {
+            Ok(Some(_)) => {
+                let _ = logbook::log(home, "[shell] 托盘图标已就绪（注册已确认）");
+            }
+            other => {
+                let _ = logbook::log(
+                    home,
+                    &format!(
+                        "[shell] 托盘图标注册了，但系统没给出它的位置（{other:?}）—— \
+                         多半是 Win11 把它收进了溢出区（点任务栏的 ^ 看）"
+                    ),
+                );
+                #[cfg(windows)]
+                diagnose_native_tray(app, home);
+            }
+        },
+        Err(error) => {
+            // 建不起来（拿不到图标 / 菜单失败）：**不让整个应用起不来**，但要说清楚。
+            let _ = logbook::log(
+                home,
+                &format!("[shell] 托盘图标创建失败：{error} —— 她照常工作，只是没有托盘菜单"),
+            );
+            #[cfg(windows)]
+            diagnose_native_tray(app, home);
+        }
+    }
     Ok(())
+}
+
+/// **诊断用**：绕开 `tray-icon`，在这个进程里手工调一次 `Shell_NotifyIcon(NIM_ADD)`。
+///
+/// 为什么要它：用户 2026-09 遇到的"托盘里没有她"里，**同一个二进制以前能注册、现在不能**，
+/// 而一个与本程序无关的最小探针（PowerShell + WinForms 窗口 + `Shell_NotifyIcon`）**当场就
+/// 注册成功**（NIM_ADD=True、`Shell_NotifyIconGetRect` 拿到矩形、溢出区里出现它）。
+/// 也就是说通知区域是好的，问题在**我们的进程或参数**里。这一函数把两个锅分开：
+///
+///   * 手工调也失败 ⇒ 问题在进程级（窗口句柄 / 完整性级别 / 策略）；
+///   * 手工调成功、而 `tray-icon` 失败 ⇒ 问题在它那侧（它自己的隐藏窗口类，或它造的 HICON）。
+///
+/// 参数故意用最保守的组合：**宠物窗口的 HWND** + **系统自带图标**（IDI_APPLICATION = 32512）。
+/// `GetLastError` 也写进日志。诊断完立刻删掉，不在用户托盘里留第二个图标。
+#[cfg(windows)]
+fn diagnose_native_tray(app: &App, home: &std::path::Path) {
+    use windows_sys::Win32::Foundation::{GetLastError, HWND};
+    use windows_sys::Win32::UI::Shell::{
+        Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::LoadIconW;
+
+    let Some(window) = app.get_webview_window(crate::pet_window::PET_WINDOW) else {
+        let _ = logbook::log(home, "[dial] 手工诊断：拿不到宠物窗口，跳过");
+        return;
+    };
+    let Ok(handle) = window.hwnd() else {
+        let _ = logbook::log(home, "[dial] 手工诊断：窗口没有 HWND，跳过");
+        return;
+    };
+    let hwnd: HWND = handle.0 as HWND;
+
+    // IDI_APPLICATION = 32512：系统自带图标，不需要额外资源。
+    let hicon = unsafe { LoadIconW(std::ptr::null_mut(), 32512usize as *const u16) };
+    if hicon.is_null() {
+        let _ = logbook::log(home, "[dial] 手工诊断：连系统图标都取不到，跳过");
+        return;
+    }
+
+    let mut tip = [0u16; 128];
+    for (index, unit) in "DSH 桌宠（诊断）".encode_utf16().take(127).enumerate() {
+        tip[index] = unit;
+    }
+    let mut nid = NOTIFYICONDATAW {
+        cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+        hWnd: hwnd,
+        uID: 0x4453,
+        uFlags: NIF_MESSAGE | NIF_ICON | NIF_TIP,
+        uCallbackMessage: 0x0400 + 1234,
+        hIcon: hicon,
+        szTip: tip,
+        ..unsafe { std::mem::zeroed() }
+    };
+
+    let added = unsafe { Shell_NotifyIconW(NIM_ADD, &mut nid) } != 0;
+    let error = unsafe { GetLastError() };
+    let _ = logbook::log(
+        home,
+        &format!("[dial] 手工 Shell_NotifyIcon(NIM_ADD) = {added}（GetLastError={error}）"),
+    );
+
+    if added {
+        let removed = unsafe { Shell_NotifyIconW(NIM_DELETE, &mut nid) } != 0;
+        let _ = logbook::log(
+            home,
+            &format!("[dial] 诊断图标已清理：{removed} ⇒ 进程级没问题，锅在 tray-icon 那侧"),
+        );
+    } else {
+        let _ = logbook::log(
+            home,
+            "[dial] 连手工注册都被拒 ⇒ 问题在进程级（窗口 / 完整性 / 策略），不在 tray-icon",
+        );
+    }
 }
 
 /// 建整份菜单（启动时一次、之后每次状态变化重建一次）。

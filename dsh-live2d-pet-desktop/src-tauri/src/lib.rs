@@ -627,7 +627,7 @@ pub fn run() {
                     }
                 }
             }
-            tray::setup(app).map_err(|error| std::io::Error::other(format!("建托盘失败：{error}")))?;
+            tray::setup(app, &home).map_err(|error| std::io::Error::other(format!("建托盘失败：{error}")))?;
             spawn_hover_loop(handle.clone(), shared.clone());
 
             // ---- 显示层：桌面端要不要显示、以及"我还活着"的心跳 ----

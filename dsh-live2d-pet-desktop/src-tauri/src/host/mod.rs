@@ -13,6 +13,7 @@ pub mod display;
 pub mod dsh_link;
 pub mod embed;
 pub mod http;
+pub mod settings;
 pub mod shared;
 
 pub use http::{page_url, serve};
