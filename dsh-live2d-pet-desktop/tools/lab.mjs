@@ -5,7 +5,7 @@
 //   node tools/lab.mjs seek <group> <sec>     把某动作推进到某时刻，打印 phone 参数与最大位移块
 //   node tools/lab.mjs raw <js>               在页面里跑一段 JS（返回 JSON 字符串）
 import { createServer } from 'node:http'
-import { readFileSync, existsSync, mkdirSync } from 'node:fs'
+import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join, extname } from 'node:path'
 import { spawn } from 'node:child_process'
 import { DESKTOP, ROOT } from './paths.mjs'
@@ -75,10 +75,12 @@ const json = async (expression) => {
 }
 
 await send('Page.navigate', { url: 'http://127.0.0.1:' + serving + '/' })
-for (let i = 0; i < 40; i += 1) {
-  const state = await json('JSON.stringify({ ready: !!window.__lab.ready, error: window.__lab.error || null })')
+// 等一下页面把脚本跑起来：导航刚回来那一帧 `window.__lab` 还不存在，
+// 直接读 `.ready` 会抛 TypeError（而这个错会被 json() 原样抛出来，看着像"页面坏了"）。
+for (let i = 0; i < 60; i += 1) {
+  const state = await json('JSON.stringify({ hasLab: typeof window.__lab !== "undefined", ready: typeof window.__lab !== "undefined" && !!window.__lab.ready, error: typeof window.__lab !== "undefined" ? (window.__lab.error || null) : null })')
   if (state.error !== null) { console.error('试验台报错：' + state.error); process.exit(2) }
-  if (state.ready === true) break
+  if (state.hasLab && state.ready === true) break
   await sleep(300)
 }
 console.log('试验台就绪（组：' + JSON.stringify(await json('JSON.stringify(window.__lab.groups())')) + '）')
@@ -164,7 +166,34 @@ if (mode === 'actions') {
   console.log('  phone 参数：' + JSON.stringify(phone))
   console.log('  ArtMesh26（看手机/手）盒：' + JSON.stringify(hand?.box ?? null))
   console.log('  ArtMesh27（手机）盒：' + JSON.stringify(phoneProp?.box ?? null))
-} else if (mode === 'raw') {
+} else if (mode === 'shot') {
+  // 把参数推到给定值后**出图**：`node tools/lab.mjs shot <out.png> [参数=值 …]`
+  // 这是"某条参数到底让画面变成什么样"的最终判据 —— 读顶点变化量会被噪声骗（踩过）。
+  const out = process.argv[3]
+  const assignments = process.argv.slice(4)
+  await ev('window.__lab.stop()')
+  if (assignments.length > 0) {
+    const map = {}
+    for (const item of assignments) {
+      // `@<组>@<秒>`：把**动作**推进到那一刻（比手写一堆参数值准 —— 那才是真实姿势）。
+      if (item.startsWith('@')) {
+        const parts = item.slice(1).split('@')
+        const seconds = Number(parts[1] === undefined ? 0 : parts[1])
+        await ev('window.__lab.seek(' + JSON.stringify(parts[0]) + ', ' + seconds + ')')
+        continue
+      }
+      const [id, raw] = item.split('=')
+      map[id] = Number(raw)
+    }
+    if (Object.keys(map).length > 0) {
+      await ev('window.__lab.setParams(' + JSON.stringify(map) + ')')
+    }
+  }
+  const shot = await json('JSON.stringify(window.__lab.snapshot())')
+  if (shot.error !== undefined) { console.error('出图失败：' + shot.error); process.exit(2) }
+  const base64 = String(shot.url).replace(/^data:image\/png;base64,/, '')
+  writeFileSync(out, Buffer.from(base64, 'base64'))
+  console.log('已存 ' + out + '（画了 ' + shot.drawn + ' 块）  参数=' + JSON.stringify(assignments))} else if (mode === 'raw') {
   const result = await ev('(function () { ' + process.argv[3] + ' })()')
   console.log(typeof result === 'string' ? result : JSON.stringify(result))
 }

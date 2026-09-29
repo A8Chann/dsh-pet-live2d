@@ -260,6 +260,19 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
      */
     let keptPoses = [];
     const poseSnapshots = new Map();
+    /**
+     * **动作自己要的参数：每帧按住**（`motionOptions.<组>.holdParams = { id: 值 }`）。
+     *
+     * 和 `preset` 的区别就是"每帧"：`preset` 只写一次，之后会被动作曲线与保姿势回放
+     * 盖掉（实测自拍播放中 `phone5` 恒为 0）。抬手这类"动作需要、但它自己又写不对"
+     * 的参数只能每帧按住。跟着 `currentEntry` 一起失效，不会留下永久钉住的状态。
+     */
+    let actionHolds = null;
+    /**
+     * 诊断："每帧按住"那次写入之后，`phone5` 在模型里是多少、写了多少次、有没有抛错。
+     * 用它区分"没执行"与"执行了但之后被覆盖"—— 我在这两者之间来回猜了两轮。
+     */
+    let holdProbe = null;
     /** 参数名 -> 下标 的缓存（见 parameterIndex）。 */
     const paramIndexCache = new Map();
     /** ~5 秒 @60fps，够盖住这只模型 4 秒的待机循环。 */
@@ -1050,30 +1063,29 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
      *
      * 写在 applyRelease **之后**（否则会被还原表顶掉），表达式层之前（表情仍然最大）。
      *
-     * ⚠️ **动作驱动的参数不能被保姿势录像压住**（这一条修的是用户报的"装扮里的自拍右手不抬"）：
-     * 自拍（`Selfie`）驱动 `phone5`（抬手；干净试验台实测：推 `phone5` 会让
+     * ⚠️ **动作曲线碰过的参数不能被保姿势录像压住**（这一条修的是用户报的"自拍右手不抬"）：
+     * 自拍（`Selfie`）驱动 `phone5`（抬手，在干净试验台里确认过：推 `phone5` 会让
      * `看手机/ArtMesh26` 那块几何变形），但「掏出手机」定格时录下的那一帧里 `phone5=0`，
      * 于是这一层每帧把它写回 0 —— 写在动作更新之后，**曲线被压住**。干净环境实测：
      * 自拍里 `phone5` 涨到 9.713，而手那块几何一动不动（盒完全相同）。
      *
-     * 判据**由宠物声明**（`motionOptions.<组>.ignoreKeptParams`），不在这里猜：
-     * 我试过"`currentEntry.params` 里有的就跳过"，那是**宿主按曲线生成的清单**，
-     * 可能含动作文件根本没写的参数（实测 `OpenCase` 的清单含 `phone5`，曲线却不写它）——
-     * 结果把相位/别的槽位那套保姿势一起打断了（`cdp-head`「no single hand option
-     * dominates」、`cdp-host-events`「tool phase sustains」当场红，A/B 撤回那一处即全绿）。
-     * 声明式的名单面窄、看得见、改 pet.json 就能调，不会误伤别的路径。
+     * 所以：录像里那些**当前动作曲线碰过**的参数跳过不写，让动作说了算；
+     * 其余（掏出手机自己的 `phone`/`phone2`/`phone4`/`phone6` 之类）照旧保姿势。
+     *
+     * ⚠️ **别把它换成"宠物声明的名单"**：我在 3.0.0 那版换成了
+     * `motionOptions.<组>.ignoreKeptParams`，结果用户立刻报"自拍又被修坏了" ——
+     * 因为 `OpenCase` 的曲线清单本来就含 `phone5`，换名单等于**把这道豁免撤掉**。
+     * 这条判据要看的是"动作碰过哪些参数"，`currentEntry.params` 正是这个语义。
      */
     const applyKeptPoses = (core, values) => {
       if (keptPoses.length === 0 || values === null) return;
-      const skip = currentEntry === null
-        ? null
-        : optionsFor(currentEntry.group)?.ignoreKeptParams ?? null;
-      const skipSet = Array.isArray(skip) ? new Set(skip) : null;
+      const owned = currentEntry === null ? null : currentEntry.params;
+      const ownedSet = owned === null || owned === undefined ? null : new Set(owned);
       for (const group of keptPoses) {
         const frame = poseSnapshots.get(group);
         if (frame === undefined) continue;
         for (const id of Object.keys(frame)) {
-          if (skipSet !== null && skipSet.has(id)) continue;
+          if (ownedSet !== null && ownedSet.has(id)) continue;
           const at = parameterIndex(core, id);
           if (at >= 0) values[at] = frame[id];
         }
@@ -1158,6 +1170,9 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         if (Math.abs(mouthTargetFollow - mouthFollow) < 0.002) mouthFollow = mouthTargetFollow;
         if (Math.abs(mouthTargetLean - mouthLean) < 0.002) mouthLean = mouthTargetLean;
       }
+      // **动作自己要的参数**（`motionOptions.<组>.holdParams`）**不在这里写** ——
+      // 缝隙在 `update()` 之前，而曲线是 `update()` 里写的，写在这儿会被曲线盖掉。
+      // 真正的实现在 `update()` 的钩子里（搜 `actionHolds`）。
       // Blink. Runs before the early return because it is unconditional — it
       // has nothing to do with what is pinned, and the engine's own blink is
       // disabled precisely because its gate never opens for this model.
@@ -1397,6 +1412,31 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
             updateBase();
             updateCalls += 1;
             markSeam("U");
+            // **每帧按住的值写在这里**（`update()` 之后 = 这一帧最后一步）。
+            //
+            // 为什么不在缝隙里（`loadParameters` 那条）：缝隙在 `update()` **之前**，
+            // 而动作曲线是 `update()` 里写的 ⇒ 死死被曲线盖住。实测：表装对了
+            // （`holds={"phone5":10}`）而 `phone5` 读出来仍是曲线的形状
+            // （1.78 → 9.87 → 0）。这正是"动作要写值"必须写在最后的原因。
+            if (actionHolds !== null) {
+              // ⚠️ 这个 try 是**静默**的：里面任何拼错的变量都会把"写入"一起吞掉，
+              // 而外面的症状只是"值没生效"（我在这儿被坑了一轮：探针里写了个不存在的
+              // `probeAt`，于是写入根本没跑，而 `holds` 表看起来完全正常）。
+              try {
+                const values = core._model.parameters.values;
+                for (const id of Object.keys(actionHolds)) {
+                  const at = parameterIndex(core, id);
+                  if (at >= 0) values[at] = actionHolds[id];
+                }
+                const probeAt = parameterIndex(core, "phone5");
+                holdProbe = {
+                  wrote: probeAt >= 0 ? values[probeAt] : null,
+                  calls: (holdProbe?.calls ?? 0) + 1,
+                };
+              } catch (error) {
+                holdProbe = { error: String(error).slice(0, 120), calls: (holdProbe?.calls ?? 0) + 1 };
+              }
+            }
             updateSample = sample();
           };
         }
@@ -1516,6 +1556,9 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       // supposed to do the spraying is a separate parameter (`jingyu`) that
       // nothing in that motion touches — which is why it looked like a no-op.
       const preset = opts.preset ?? null;
+      // 每帧按住的参数（见 actionHolds 的注释）。读宠物声明的 `holdParams`。
+      const holdParams = opts.holdParams ?? null;
+      actionHolds = holdParams !== null && typeof holdParams === 'object' ? Object.assign({}, holdParams) : null;
       // Stop ONLY when replaying the very same group+index, which is the one
       // case the engine refuses on its own. Clearing the queue unconditionally
       // removed the outgoing motion instantly, so there was nothing left to
@@ -1581,12 +1624,15 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       restoreHeld();
       playIdle();
     };
+
     /** Return to the looping idle animation; the resting state of the pet. */
     const playIdle = () => {
       clearTimer();
       token += 1;
       kind = "idle";
       currentEntry = null;
+      // 回待机 = 动作结束 ⇒ 松开"每帧按住"的表（见 actionHolds）。
+      actionHolds = null;
       if (model === null || idleName === null) return;
       // Coming back to rest retires the previous action's parameter pins, so
       // the bubble-gum mouth (and anything else action-specific) is released
@@ -1955,6 +2001,19 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       }),
       /** Diagnostic: how shut the eyes were on the last frame, 0..1. */
       blinkAmount: () => blinkWrote,
+      /**
+       * Diagnostic: "每帧按住"那张表（`motionOptions.<组>.holdParams`）。
+       *
+       * 加它的原因：我按"抬手要每帧写值"实现了 `holdParams`，但实机读 `phone5` 仍是
+       * 曲线值（8.88 而不是 10）—— 必须能直接看到"表到底有没有被装上、里面是什么"，
+       * 否则只能在外面猜是没传进来还是被覆盖了。
+       */
+      holdDebug: () => ({
+        holds: actionHolds === null ? null : Object.assign({}, actionHolds),
+        group: currentEntry === null ? null : currentEntry.group,
+        kind: kind,
+        probe: holdProbe === null ? null : Object.assign({}, holdProbe),
+      }),
       /** Force a blink now, so a test does not have to wait for one. */
       blinkNow: () => { blinkAt = 0; blinkStart = (typeof performance !== "undefined" ? performance.now() : Date.now()); },
       /** Diagnostic: how many motions the engine is cross-fading right now. */

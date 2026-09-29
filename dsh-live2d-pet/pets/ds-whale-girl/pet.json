@@ -44,9 +44,9 @@
         "hold": true
       },
       "Selfie": {
-        "ignoreKeptParams": [
-          "phone5"
-        ]
+        "holdParams": {
+          "phone5": 10
+        }
       }
     },
     "expressionSlots": [
