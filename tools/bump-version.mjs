@@ -22,6 +22,10 @@ const SUB_NAME = 'dsh-pet-live2d-desktop-win32-x64'
 const TARGETS = [
   { file: 'dsh-live2d-pet/package.json', edits: ['version', 'optionalDependencies'] },
   { file: 'dsh-live2d-pet-desktop/npm/desktop-win32-x64/package.json', edits: ['version'] },
+  // ⚠️ 平台子包**每一个**都要在这里 —— 漏一个的后果不是"少改一处"，而是
+  // `npm-prepare-subpackage.mjs` 的版本一致性校验直接红（CI 第 10 步），
+  // 整个 mac 构建白跑。2026-09-29 发 3.1.0 时就是这么红的：只抬了 win 子包。
+  { file: 'dsh-live2d-pet-desktop/npm/desktop-darwin-arm64/package.json', edits: ['version'] },
   // 这份是参考副本（`npm-prepare-subpackage.mjs` 会拿它对拍），版本也要跟上。
   { file: 'dsh-live2d-pet-desktop/npm/main-package.json', edits: ['version', 'optionalDependencies'] },
 ]
