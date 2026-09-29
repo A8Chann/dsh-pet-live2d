@@ -588,6 +588,53 @@ EXITCODE=-1073740791
 WebView2/Chromium，mac 是 WKWebView/WebKit，Pixi 8 + Cubism Core 在 WebKit 上从没跑过。
 macOS runner 没有可交互窗口会话，这些在 CI 里也验不了；只有真机能回答。
 
+## 「双击 exe，她没显示出来」（2026-09 用户报，两个根因叠在一起）
+
+用户的原话：**"我直接跑 Release 里的 exe，桌宠没显示出来，但是我插件起的桌面是好的。"**
+
+### 根因一：显示层偏好把"手动启动"的意图吃掉了
+
+`%DSH_HOME%\pet-desktop.json` 当时是 `{"mode":"inline"}`。判定规则只有一条：
+
+```
+心跳新鲜（< 6 秒）且 mode ≠ "inline"  →  桌面端是 owner
+否则                                  →  页面内是 owner
+```
+
+于是手动启动的那一份：起来 → 刷心跳 → 读到 `inline` → **1 秒内把自己 `hide()`**。
+进程活着、托盘图标也在（Win11 还把它收进溢出区），用户看到的就是"什么都没发生"。
+而插件那条路会先写 `mode: desktop` 再 `spawn(… '--attach', url)`，所以它看着一切正常。
+
+**修法**：`host::display::manual_launch_overrides_inline(mode, launched_by_plugin, mode_forced_on_cli)`
+—— 手动启动 + `mode=inline` ⇒ 把偏好写成 `desktop`（同一个共享文件，页面里那只立刻让位，
+仍然只有一只）。**两个例外都不能改写**：
+
+* 插件拉起的那份：`lib/display.js` 的 spawn 现在带 `--from-plugin`，壳据此严格尊重用户选择；
+* `--dsh inline`（驱动专用，`probe-*.mjs` 要一个"绝不退回桌面"的环境）—— 命令行是圣旨。
+  ⚠️ **漏掉这一条就是真回归**：驱动起来的环境会被壳自己翻成 desktop。
+
+### 根因二：GUI 程序没有控制台，失败是**彻底静默**的
+
+`main.rs` 上是 `windows_subsystem = "windows"`（release 双击不弹黑框），代价是 stderr 没去处。
+建窗失败、WebView2 忙、panic —— 用户那边一律表现为"双击了，什么都没发生"。
+
+**修法**（`src/logbook.rs` + `lib.rs` 的 `install_panic_hook`）：
+
+* 启动过程写 `%DSH_HOME%\pet-desktop.log`（stderr 照旧打，开发时不用改习惯），
+  其中**最重要的一行是"显示层决定"**：`她在桌面上` / `按偏好让位（mode=inline）` /
+  `窗口是用户在托盘里藏起来的`；
+* panic 钩子：写日志 + Windows 上弹 `MessageBoxW`（不引依赖，windows-sys 已有）指向日志路径。
+
+**排查顺序因此固定下来**：用户说"没反应"→ 先读 `%DSH_HOME%\pet-desktop.log`
+（每次启动都留了结论），再看 `pet-desktop.json` 的 mode，最后才怀疑二进制。
+
+### 顺带学到的
+
+* **"用户手动启动" vs "按设置拉起" 是两种意图**，原来的实现把它们混为一谈（都只读偏好文件）。
+  凡是"按共享状态决定行为"的地方都要问一句：**这次启动是谁发起的、他想要什么**。
+* 时间戳自己算（`logbook::format_utc_ms`，Hinnant 的 `civil_from_days`）比引 chrono 便宜，
+  而且**能在本机跑单元测试** —— 在验不了的平台上，这类纯函数是唯一能钉死的东西。
+
 ## 已完成 / 还剩什么
 
 **M0（透明 + 穿透 + 复用插件）**、**M2（跟着 DSH 走）**、**M3（设置菜单进右键面板）**、

@@ -106,6 +106,28 @@ pub fn desktop_should_show(home: &Path) -> bool {
     compute_owner(&mode, true) == "desktop"
 }
 
+/// **手动启动**（不是插件拉起的）要不要把偏好从「页面内」改写成「桌面」。
+///
+/// 规则本身没错：用户在 DSH 设置里选了「页面内」，桌面端就该让位。但**手动双击这个 exe
+/// 的意图就是"我要她在桌面上"** —— 照老规矩她会读到 `inline` 然后 1 秒内自己 `hide()`，
+/// 用户看到的是"双击了，什么都没发生"（2026-09 用户报的就是这个，进程其实活着，托盘图标
+/// 还在 Win11 的溢出区里）。
+///
+/// 所以：手动启动且 mode 是 `inline` ⇒ 写 `desktop`。写的是**同一个共享文件**，页面里那只
+/// 立刻让位，仍然只有一只。
+///
+/// **两个例外**，都不能改写 —— 它们都是"有人明确说了要页面内"：
+///
+/// * `--from-plugin`：插件按用户的设置拉起的，严格尊重用户的选择；
+/// * `--dsh inline`：驱动专用（`probe-*.mjs` 要一个"绝不退回桌面"的环境），命令行就是圣旨。
+pub fn manual_launch_overrides_inline(
+    mode: &str,
+    launched_by_plugin: bool,
+    mode_forced_on_cli: bool,
+) -> bool {
+    !launched_by_plugin && !mode_forced_on_cli && mode == "inline"
+}
+
 /// 桌面端心跳：把"我还活着、我是哪个进程"写进偏好文件。
 pub fn publish_heartbeat(home: &Path) -> std::io::Result<()> {
     let pid = std::process::id() as u64;
@@ -236,6 +258,19 @@ mod tests {
         assert!(!desktop_should_show(home.path()), "用户选了页面内 → 桌面端不该显示");
         write_preference(home.path(), json!({ "mode": "desktop" })).unwrap();
         assert!(desktop_should_show(home.path()));
+    }
+
+    #[test]
+    fn 手动启动遇到页面内偏好就切到桌面() {
+        // 用户报的"双击 exe 没显示"就是这条：手动启动 + mode=inline ⇒ 改写。
+        assert!(manual_launch_overrides_inline("inline", false, false));
+        // 插件拉起的严格尊重用户选择（那条路本来只在 mode=desktop 时才拉起）。
+        assert!(!manual_launch_overrides_inline("inline", true, false));
+        // 驱动用 `--dsh inline` 起的那一份：命令行说了要页面内，不许翻回去。
+        assert!(!manual_launch_overrides_inline("inline", false, true));
+        // 别的模式本来就会显示，不需要改写。
+        assert!(!manual_launch_overrides_inline("auto", false, false));
+        assert!(!manual_launch_overrides_inline("desktop", false, false));
     }
 
     #[test]

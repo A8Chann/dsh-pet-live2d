@@ -18,6 +18,7 @@
 // `pub` 是为了让诊断/对拍用的小工具（`src/bin/diag-catalog.rs`）能直接调宿主半区，
 // 不用起窗口。发布产物不受影响（bin 不进最终 exe）。
 pub mod host;
+mod logbook;
 mod pet_window;
 mod tray;
 
@@ -98,6 +99,64 @@ fn parse_arg(flag: &str) -> Option<String> {
     let args: Vec<String> = std::env::args().collect();
     let at = args.iter().position(|a| a == flag)?;
     args.get(at + 1).cloned()
+}
+
+/// 这一份是不是**插件拉起的**（`--from-plugin` / `PET_DESKTOP_FROM_PLUGIN`）。
+///
+/// 用途只有一个：区分"用户手动启动"与"插件按设置拉起" —— 前者遇到「页面内」偏好要改写成
+/// 「桌面」，后者要严格尊重用户的选择。见 `host::display::manual_launch_overrides_inline`。
+fn launched_by_plugin() -> bool {
+    if let Some(value) = parse_arg("--from-plugin") {
+        // 允许 `--from-plugin=false` 这种写法（插件那边可能按开关传值）。
+        return value != "false" && value != "0";
+    }
+    std::env::var("PET_DESKTOP_FROM_PLUGIN")
+        .map(|value| value != "false" && value != "0")
+        .unwrap_or(false)
+}
+
+/// 装一个 panic 钩子：**GUI 程序没有控制台，panic 默认谁都看不到**。
+///
+/// `main.rs` 上是 `windows_subsystem = "windows"`（release 双击不弹黑框），代价是启动失败
+/// 只表现为"什么都没发生"。用户 2026-09 报的"直接跑 Release 里的 exe，桌宠没显示出来"
+/// 与"建窗被拒"这类问题，都因此查了很久。
+///
+/// 钩子里做两件事：写 `%DSH_HOME%\pet-desktop.log`；Windows 上再弹一个消息框（双击场景里
+/// 唯一看得见的出口）。原来的钩子照旧调一次，开发时 `RUST_BACKTRACE=1` 还是老样子。
+fn install_panic_hook() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let home = resolve_home();
+        let journal = logbook::log_path(&home);
+        logbook::log(&home, &format!("[shell] **起不来**：{info}"));
+        logbook::log(&home, &format!("[shell] 完整日志：{}", journal.display()));
+        #[cfg(windows)]
+        show_error_box(
+            "DSH 桌宠没能启动",
+            &format!("{info}\n\n完整日志：\n{}", journal.display()),
+        );
+        previous(info);
+    }));
+}
+
+/// Windows 上的致命错误弹窗。用系统的 `MessageBoxW`（不引额外依赖）—— 双击场景里，
+/// 这是唯一能把"为什么没反应"告诉用户的地方。
+#[cfg(windows)]
+fn show_error_box(title: &str, body: &str) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        MessageBoxW, MB_ICONERROR, MB_OK, MB_SETFOREGROUND, MB_TOPMOST,
+    };
+    let wide = |text: &str| -> Vec<u16> { text.encode_utf16().chain(std::iter::once(0)).collect() };
+    let title = wide(title);
+    let body = wide(body);
+    unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            body.as_ptr(),
+            title.as_ptr(),
+            MB_OK | MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST,
+        );
+    }
 }
 
 /// 全局光标在哪（**本平台原生口径**）。
@@ -313,6 +372,9 @@ fn resolve_home() -> std::path::PathBuf {
 /// 每 1 秒一轮，比心跳 TTL（6 秒）密得多 —— 用户在设置里切到「页面内」之后，桌面这只
 /// 一秒内就让位，不用等超时。
 fn spawn_display_loop(app: AppHandle, shared: Arc<Mutex<Shared>>, home: std::path::PathBuf) {
+    // 第一次决定显隐时记一条日志（**只记一次**，不然每秒一行）。用户双击之后"没看到窗口"
+    // 的时候，这一行就是答案："按偏好让位给页面内那只"。
+    let mut announced = false;
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_millis(1000));
         // 心跳：只要进程活着就一直刷（哪怕窗口是藏着的）—— 藏起来不等于退出，
@@ -334,6 +396,17 @@ fn spawn_display_loop(app: AppHandle, shared: Arc<Mutex<Shared>>, home: std::pat
                 .map(|guard| guard.hidden_by_user)
                 .unwrap_or(false);
             let want_visible = should_show && !hidden_by_user;
+            if !announced {
+                announced = true;
+                let why = if want_visible {
+                    "她在桌面上".to_string()
+                } else if hidden_by_user {
+                    "窗口是用户在托盘里藏起来的".to_string()
+                } else {
+                    format!("按偏好让位（mode={mode}）—— 想让她留在桌面上：DSH 设置里选「桌面」")
+                };
+                logbook::log(&home, &format!("[shell] 显示层决定：{why}"));
+            }
             match window.is_visible() {
                 Ok(visible) if visible == want_visible => {}
                 _ => {
@@ -356,6 +429,7 @@ fn spawn_display_loop(app: AppHandle, shared: Arc<Mutex<Shared>>, home: std::pat
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    install_panic_hook();
     let active = parse_active();
     let attach = resolve_attach();
     // 页面模式也走环境变量：host 与页面读的是同一个值。
@@ -371,7 +445,7 @@ pub fn run() {
                 &home,
                 serde_json::json!({ "mode": "inline" }),
             );
-            eprintln!("[shell] 显示层偏好已设为 inline（桌面端不让位）");
+            logbook::log(&home, "[shell] 显示层偏好已设为 inline（桌面端不让位）");
         } else {
             std::env::set_var("PET_DESKTOP_DSH", dsh);
         }
@@ -388,6 +462,11 @@ pub fn run() {
         .setup(move |app| {
             let handle = app.handle().clone();
 
+            // 日志要落 `%DSH_HOME%\pet-desktop.log`（GUI 程序没有控制台），所以先定 home。
+            // `say` 同时打 stderr 与日志文件 —— 开发时照旧看终端，用户双击时只看得到文件。
+            let home = resolve_home();
+            let say = |line: String| logbook::log(&home, &line);
+
             // ---- macOS：她不该出现在程序坞 / Cmd-Tab 里 ----
             //
             // Windows 那边靠 `skip_taskbar(true)`，但**这一条在 macOS 上没有实现**：
@@ -398,19 +477,40 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             {
                 match handle.set_activation_policy(tauri::ActivationPolicy::Accessory) {
-                    Ok(()) => eprintln!("[shell] 激活策略：Accessory（不进程序坞）"),
-                    Err(error) => eprintln!("[shell] 设置激活策略失败：{error}"),
+                    Ok(()) => say("[shell] 激活策略：Accessory（不进程序坞）".to_string()),
+                    Err(error) => say(format!("[shell] 设置激活策略失败：{error}")),
                 }
             }
 
             let runtime = resolve_runtime_dir(&handle);
             let pets_root = resolve_pets_root();
-            let home = resolve_home();
-            eprintln!("[shell] 运行期目录：{}", runtime.display());
-            eprintln!("[shell] DSH_HOME：{}", home.display());
+            say(format!(
+                "[shell] 起手：pid {}，{}",
+                std::process::id(),
+                if launched_by_plugin() { "插件拉起" } else { "手动启动" }
+            ));
+            say(format!("[shell] 运行期目录：{}", runtime.display()));
+            say(format!("[shell] DSH_HOME：{}", home.display()));
+
+            // ---- 手动启动 + 偏好是「页面内」⇒ 按"用户要她在桌面上"处理 ----
+            //
+            // 否则她会读到 inline、1 秒内自己让位，用户看到的是"双击了，什么都没发生"
+            // （2026-09 用户报的正是这个）。规则本身不动，只改这一次的意图；写的是同一个
+            // 共享文件，页面里那只立刻让位 —— 仍然只有一只。详见
+            // `host::display::manual_launch_overrides_inline`。
+            let mode = host::display::normalise_mode(host::display::read_preference(&home).get("mode"));
+            // `--dsh inline` 是驱动专用的"命令行指定模式"，那种情况下不许改写（见那个函数）。
+            let mode_forced = parse_arg("--dsh").map(|value| value == "inline").unwrap_or(false);
+            if host::display::manual_launch_overrides_inline(&mode, launched_by_plugin(), mode_forced) {
+                let _ = host::display::write_preference(&home, serde_json::json!({ "mode": "desktop" }));
+                say("[shell] 偏好原是「页面内」，这次是手动启动 —— 已切成「桌面」：她留在桌面上（DSH 设置里可改回）".to_string());
+            } else {
+                say(format!("[shell] 显示层偏好：mode={mode}"));
+            }
+
             match &attach {
-                Some(upstream) => eprintln!("[shell] **挂载模式**：宠物数据与相位都来自 {upstream}"),
-                None => eprintln!("[shell] 独立模式：宠物目录 {}", pets_root.display()),
+                Some(upstream) => say(format!("[shell] **挂载模式**：宠物数据与相位都来自 {upstream}")),
+                None => say(format!("[shell] 独立模式：宠物目录 {}", pets_root.display())),
             }
 
             // 随包宠物只在独立模式下解包：挂载时宠物由 DSH 那边的插件负责，本机碰它
@@ -419,21 +519,21 @@ pub fn run() {
             if attach.is_none() && !host::embed::plugin_extracted(&plugin_root) {
                 std::fs::create_dir_all(&plugin_root)?;
                 match host::catalog::materialize_bundled_pets(&plugin_root) {
-                    Ok(count) => eprintln!(
+                    Ok(count) => say(format!(
                         "[shell] 已解包随包宠物：{count} 个文件 → {}",
                         plugin_root.display()
-                    ),
-                    Err(error) => eprintln!("[shell] 解包随包宠物失败：{error}"),
+                    )),
+                    Err(error) => say(format!("[shell] 解包随包宠物失败：{error}")),
                 }
             }
             let (files, bytes) = host::embed::totals();
-            eprintln!(
+            say(format!(
                 "[shell] 内嵌资源：{files} 个文件（{:.2} MB）",
                 bytes as f64 / 1024.0 / 1024.0
-            );
+            ));
 
             let host = host::serve(shared.clone(), pets_root, plugin_root, attach.clone(), home.clone())?;
-            eprintln!("[shell] 宿主已就绪：{}", host.url);
+            say(format!("[shell] 宿主已就绪：{}", host.url));
             // 每一步都**带上自己的上下文**：setup 里任何一步失败，Tauri 只会把它包成
             // "Failed to setup app: ... <错误本身>"，而裸的 io 错误（比如 `拒绝访问。
             // (os error 5)`）根本不说是哪一步 —— 这一轮为了定位它绕了很久。

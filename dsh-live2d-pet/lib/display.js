@@ -180,7 +180,12 @@ export function createDisplayLayer(options) {
     lastAttempt = Date.now()
     try {
       // `detached` + `unref`：她是**独立的**窗口进程，DSH 关掉她还得站着。
-      child = spawn(binary.path, ['--attach', dshUrl], {
+      //
+      // `--from-plugin`：告诉壳"这一份是插件按设置拉起的" —— 壳据此**严格尊重**用户的
+      // 「页面内」选择。**手动双击**时没有这个参数，壳会把「页面内」改写成「桌面」：
+      // 双击的意图就是"我要她在桌面上"，否则用户看到的是"双击了，什么都没发生"
+      // （2026-09 用户报的就是这个；见壳里 `host::display::manual_launch_overrides_inline`）。
+      child = spawn(binary.path, ['--attach', dshUrl, '--from-plugin'], {
         detached: true,
         stdio: 'ignore',
         windowsHide: true,
