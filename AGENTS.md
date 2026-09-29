@@ -69,7 +69,7 @@ node tools/lab.mjs raw "<一段 JS>"             # 直接在试验台页面里�
 它只加载**原始** `.moc3` + 原始 `motion3.json`，自己解析曲线、自己推进时间 ——
 没有宠物插件的任何一层（会话相位 / 槽位定格 / 保姿势录像 / 面板遮挡全都不会来捣乱）。
 
-## 桌面端的两条硬纪律
+## 桌面端的三条硬纪律
 
 **① 宿主半区有两份实现**（网页端 `dsh-live2d-pet/lib/index.js`，桌面端
 `dsh-live2d-pet-desktop/src-tauri/src/host/`）。改 `pet.json` 的字段语义、加新字段、
@@ -92,6 +92,18 @@ node tools/lab.mjs raw "<一段 JS>"             # 直接在试验台页面里�
 症状是"同一份代码、两个界面行为不一样"，非常容易误判成"桌面端有 bug"。
 （2026-09 用户报"桌面的设置与 DSH 里的设置没有同步"，根因之一就是这条：
 桌面端那份客户端里根本没有新写的同步代码。）
+
+**③ macOS 那份产物只能在 macOS 上构建，而且本项目的会话里起不了 GUI**：
+
+- mac 目标连 `cargo check --target aarch64-apple-darwin` 都过不去（依赖里有要编
+  Objective-C 的 crate，本机没有 `cc`/macOS SDK）⇒ mac 代码唯一的编译器是 CI
+  （`.github/workflows/desktop-mac.yml`：`cargo test --lib` + `build-package`）。
+  所以 mac 相关改动**不要声称本地验过**。
+- **在 DSH 会话里启动桌宠，一定失败**：`Failed to setup app: ... 拒绝访问 (os error 5)`
+  （建窗/建 WebView2 环境被拒）。这不是构建坏了 —— **已发布的 3.0.1 exe 在同一环境里
+  一模一样地失败**（对照实验做过）。想验 GUI 只能在真实交互会话里双击，或让用户跑。
+- 因此：桌面端的 GUI 行为（透明 / 穿透 / 托盘 / 窗口）**改动后必须由人在真机确认**；
+  能自动验的只有宿主机半区（`probe-catalog.mjs` 对拍）、单元测试、以及进程外读口。
 
 ## 设置的存储纪律
 

@@ -49,10 +49,54 @@ pub fn place_on_monitor(app: &AppHandle, index: usize) -> bool {
     true
 }
 
+/// 光标现在落在**第几块屏**上（建窗时挑屏用："她在哪块屏上工作，就出现在哪块"）。
+///
+/// 口径：把**光标**与**每块屏的框**换算到同一个空间再比 —— 两边都必须换算，不能只算一边。
+///
+/// * Windows：光标（`GetCursorPos`）与屏框都是物理像素 → 直接比；
+/// * macOS：光标是**逻辑点**（CoreGraphics 全局显示坐标），而屏框是物理像素
+///   （tao 把 `CGDisplayBounds` 乘上了该屏的缩放）→ 这里**除回去**（÷ 该屏自己的缩放），
+///   于是逐屏 DPI 不同也对得上：乘了再除，回到 `CGDisplayBounds` 那个点空间。
+///
+/// 读不到光标（Linux/Wayland 等）就退回第 0 块屏，与"没有光标可选"时的旧行为一致。
+pub fn monitor_index_at_cursor(app: &AppHandle) -> usize {
+    let Some((cx, cy)) = crate::cursor_screen_pos() else {
+        return 0;
+    };
+    let Ok(monitors) = app.available_monitors() else {
+        return 0;
+    };
+    for (index, monitor) in monitors.iter().enumerate() {
+        let scale = if crate::CURSOR_IS_LOGICAL {
+            let value = monitor.scale_factor();
+            if value > 0.0 {
+                value
+            } else {
+                1.0
+            }
+        } else {
+            1.0
+        };
+        let position = monitor.position();
+        let size = monitor.size();
+        let x0 = position.x as f64 / scale;
+        let y0 = position.y as f64 / scale;
+        let x1 = x0 + size.width as f64 / scale;
+        let y1 = y0 + size.height as f64 / scale;
+        if cx >= x0 && cy >= y0 && cx < x1 && cy < y1 {
+            return index;
+        }
+    }
+    0
+}
+
 /// 光标（虚拟桌面坐标）所在那块屏幕的序号（找不到就给 0 = 第一块）。
 ///
 /// 收窄到具体运行时（不用泛型）：托盘那边要拿它算"当前选的是哪块屏"，而托盘用的是
 /// 具体类型，`&AppHandle<R>` 上这个泛型版本调不通（编译期就报 E0308）。
+///
+/// 输入是**物理像素** —— 目前唯一的调用方（托盘）传的是窗口位置，窗口位置在三平台
+/// 都是物理像素，所以这里不需要 macOS 那条"除回去"的换算。
 pub fn monitor_index_at(app: &AppHandle, x: i32, y: i32) -> usize {
     let Ok(monitors) = app.available_monitors() else {
         return 0;
@@ -81,9 +125,7 @@ pub fn create_pet_window(app: &AppHandle, url: &str) -> Result<(), Box<dyn std::
     // 试过铺满虚拟桌面（8560×1440 + 负坐标），结果进程**直接崩掉**：事件日志里是
     // `0xc0000409`（fail-fast / 栈缓冲越界），模块就是 exe 自己。那个尺寸/负原点会踩到
     // WebView2 或窗口创建路径里的某个边界，而全屏透明层本来就不需要铺满。
-    let monitor_index = crate::cursor_screen_pos()
-        .map(|(x, y)| monitor_index_at(app, x, y))
-        .unwrap_or(0);
+    let monitor_index = monitor_index_at_cursor(app);
     let target = app
         .available_monitors()
         .ok()

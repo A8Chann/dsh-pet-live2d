@@ -783,17 +783,27 @@ pub fn embed_bytes(name: &str) -> Option<&'static [u8]> {
     super::embed::get(name)
 }
 
-/// 给测试用：宠物根目录（默认 `%DSH_HOME%\pets`）。
-pub fn default_pets_root() -> std::path::PathBuf {
-    let home = std::env::var("DSH_HOME")
+/// `%DSH_HOME%`（默认 `~/.dsh`）。
+///
+/// ⚠️ 主目录环境变量**两个平台不同名**：Windows 是 `USERPROFILE`，macOS/Linux 是 `HOME`。
+/// 只认前者的话，mac 上会退化成**当前工作目录**下的 `.dsh` —— 症状是"宠物目录找不到"，
+/// 而且会在人家随便哪个 cwd 里新建一份（比找不到更讨厌）。
+pub fn default_home() -> std::path::PathBuf {
+    if let Some(value) = std::env::var("DSH_HOME")
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            std::path::PathBuf::from(std::env::var("USERPROFILE").unwrap_or_else(|_| ".".to_string()))
-                .join(".dsh")
-        });
-    home.join("pets")
+    {
+        return std::path::PathBuf::from(value);
+    }
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_else(|_| ".".to_string());
+    std::path::PathBuf::from(home).join(".dsh")
+}
+
+/// 给测试用：宠物根目录（默认 `%DSH_HOME%\pets`）。
+pub fn default_pets_root() -> std::path::PathBuf {
+    default_home().join("pets")
 }
 
 /// 给测试用：`Path` 存在性（避免测试里到处 use std::path）。

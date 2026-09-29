@@ -458,11 +458,141 @@ fetch('/plugins/dsh-pet-live2d/client.js', { cache: 'no-store' })
   返回空。**从页面 URL 推端口**最稳：页面是壳的宿主发的，`http://127.0.0.1:<port>/` 里那个
   端口一定是它（一个实例给一个独立 CDP 端口，映射就是确定的）。
 
+## macOS：能构建、不能在本机验（2026-09 做的那一轮）
+
+**macOS 目标只能在 macOS 上构建。** 依赖里有要编 Objective-C 的 crate（`objc2-*`），
+所以在这台 Windows 上连 `cargo check --target aarch64-apple-darwin` 都过不去：
+`cc-rs` 找不到 `cc` 就 `error occurred in cc-rs: failed to find tool "cc"`。
+**别在这上面耗时间** —— 装了 rustup target 也没用，缺的是 macOS SDK。
+结论：mac 那份唯一的产地是 CI（`.github/workflows/desktop-mac.yml`，`macos-14`），
+它跑 `cargo test --lib` —— 那是 mac 目标第一次真正被编译的地方。
+
+因为本地编不了，**策略是"让 mac 与 Windows 共用同一条代码路径，mac 专属代码压到最少"**。
+下面每条都是"不这么做就踩坑"：
+
+### 1. `tauri-build` 的 feature allowlist 只认顶层 `[dependencies]`
+
+`tauri.conf.json` 里写了 `macOSPrivateApi: true`，就必须在 Cargo.toml 里有
+`macos-private-api` 这个 feature，否则构建直接失败：
+
+```
+The `tauri` dependency features on the `Cargo.toml` file does not match the allowlist
+defined under `tauri.conf.json`. ... add the `macos-private-api` feature
+```
+
+坑在**它怎么找**：`find_dependency()` 先看顶层 `[dependencies]`，**只有顶层没有才翻
+`[target.*.dependencies]`**。我们顶层有 `tauri`，所以写在 `[target.'cfg(target_os =
+"macos")'.dependencies]` 里的那份它**根本看不见** ⇒ Windows 上照样报错。
+写在顶层也正是 `tauri dev/build` 自己会做的（它改的就是这一行）。
+代价：Windows 构建也会带上它牵扯到的 `wry/transparent` + `wry/fullscreen`
+（`tauri-runtime/macos-private-api` 本身是空 feature）⇒ **改完必须回归**：
+`npm run build:portable`（含对拍 + 壳全链 + 网页端 suite）。
+
+### 2. macOS 的全局光标：CoreGraphics，不是 NSEvent
+
+穿透判定要"操作系统光标在哪"（窗口忽略事件之后页面收不到鼠标移动，这是鸡生蛋问题）。
+非 Windows 原来直接返回 `None` ⇒ 建窗时那个"忽略光标事件"永远打不开 ⇒ **她点不到**。
+
+* **用 `CGEventCreate(NULL)` + `CGEventGetLocation`**：CoreGraphics 没有"只能主线程"的
+  约束，也**不需要**辅助功能/录屏权限（只读当前指针位置，不装事件监听）。
+* **不要用 NSEvent**（tao 内部就是这么读的）：那是 AppKit，而穿透轮询跑在**后台线程**上。
+* 口径：`CGEventGetLocation` 是**逻辑点**、原点 = 主屏左上角，与 `CGDisplayBounds`
+  **同一套空间**（tao 的屏幕框就是它乘上该屏缩放）。Windows 的 `GetCursorPos` 是**物理
+  像素**。两者与 `outer_position()`（物理）的关系不同，所以换算写成一条带 `k` 的公式：
+
+  ```rust
+  local = (cursor * k - window_origin) / scale   // macOS: k = scale；Windows: k = 1
+  ```
+
+* 这段换算是**唯一能在本机对两个平台都验**的代码，所以把它拆成纯函数
+  `pointer_local_with(..., logical: bool)` 并配 4 个单元测试（含"缩放为 0 不能出 NaN"——
+  NaN 会让 `local < 宽度` 恒 false，症状正是最难查的那种"她永远点不到"）。
+* 挑屏（"她该出现在光标所在那块屏"）同理：**两边都换算到同一空间再比** ——
+  Windows 都比物理像素；macOS 把屏框 ÷ 该屏自己的缩放，除回 `CGDisplayBounds` 那个点空间。
+
+### 3. `skip_taskbar` 在 macOS 上是空函数
+
+`tauri-runtime-wry` 的 macOS 分支：
+
+```rust
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
+fn skip_taskbar(self, _skip: bool) -> Self { self }   // 什么都不做
+```
+
+tao 也只给 Windows/Linux 写了实现。mac 上要藏得靠**激活策略**：
+`app.set_activation_policy(tauri::ActivationPolicy::Accessory)`（`ActivationPolicy` 只有
+macOS 才有，用 `#[cfg(target_os = "macos")]` 包起来），`.app` 里再叠一层 `LSUIElement`。
+
+### 4. `.app` 里不要往包内写数据
+
+`resolve_runtime_dir` 的"便携优先"（exe 旁边 `DSH桌宠-data/`）在 `.app` 里是**有害**的：
+`Contents/MacOS/` 用户可写，于是随包宠物会被解包进包里 ⇒ **代码签名当场失效**，下次启动
+被 Gatekeeper 拒。判据是"可执行文件在不在 `….app/Contents/MacOS/` 里"，
+在包里就走 `app_local_data_dir()`。
+
+### 5. 主目录变量两个平台不同名
+
+`DSH_HOME` 没设时：Windows 是 `%USERPROFILE%`，macOS/Linux 是 `$HOME`。只认前者的话 mac
+上退化成**当前工作目录**下的 `.dsh`（宠物目录找不到，还会在人家随便哪个 cwd 里乱写）。
+`lib.rs` 与 `build.rs` 都要按这个规则取（`build.rs` 嵌 Cubism Core 时也走它）。
+
+### 6. 打包与 CI 的几处细节
+
+* `tools/build-portable.mjs` 现在**平台感知**：Windows 出 `dist/DSH桌宠.exe` 并跑验证；
+  macOS 出裸二进制 + `DSH桌宠.app`（`sips`+`iconutil` 转图标、`codesign --sign -`
+  ad-hoc 签名），**不跑验证**（那套驱动全是 Windows 的）。
+* `tools/npm-prepare-subpackage.mjs --sub darwin-arm64`：平台子包表现在有两项，
+  `declared` 标记这个子包**有没有发布** —— 没发布时主包 `optionalDependencies` 里不该有它
+  （否则用户装主包会去找一个不存在的包）。发布顺序永远是**先子包、后主包**。
+* CI 里两件容易被忽略的输入：`tools/browser-test` 的 `npm ci`（`build.rs` 要在编译期嵌
+  React UMD，缺了只是 warning，跑起来才白屏）；Cubism Core 的路径（决定产物**要不要**
+  自带离线 core —— 下载并嵌入等于随包分发专有运行时，所以默认关，留了 workflow input）。
+* runner：Apple Silicon 用 `macos-14`；**Intel 要用 `macos-15-intel`**（`macos-13` 已下线，
+  官方给的迁移标签就是它，可用到 2027-08）。
+* `.app` 打包用 `ditto -c -k --keepParent`（`zip` 会丢可执行位/签名相关属性）。
+
+### 7. 在这个环境里**起不了 GUI**（别再花时间复现）
+
+想在本机跑一遍桌面端驱动时会撞上：
+
+```
+Failed to setup app: error encountered during setup hook: 建桌宠窗口失败：拒绝访问。 (os error 5)
+EXITCODE=-1073740791
+```
+
+**这不是构建坏了。** 判定它的那次对照实验值得记住：把 **npm 上已发布的 3.0.1 exe**
+（`registry.npmjs.org/dsh-pet-live2d-desktop-win32-x64/-/…-3.0.1.tgz`，构建路径是别人机器上
+的 `C:\Users\aymb0\.cargo\…`）拉到同一环境里跑 —— **一模一样地失败在同一行**。
+所以"建窗被拒"是 DSH 会话这个执行环境本身的性质（进程树/会话没有可用的交互桌面），
+与你的改动无关。换着法子试过且都**没用**：沙箱内 `Start-Process`、`node spawn detached`、
+`schtasks`（带不带 `/IT` 都一样）、把 `TEMP`/`DSH_HOME`/`WEBVIEW2_USER_DATA_FOLDER`
+指到工作区（Tauri 显式指定 WebView2 数据目录，那个环境变量会被覆盖 ⇒ 无效）。
+
+推论（也是纪律）：**桌面端 GUI 行为只能由人在真实交互会话里确认**。会话内能自动验的是
+宿主机半区（`probe-catalog.mjs` 对拍）、`cargo test --lib`、以及一切进程外读口。
+
+顺带两条本机启动细节，省得再踩：
+
+- `Start-Process -RedirectStandardError/-RedirectStandardOutput` 在这台机器上**直接报**
+  `Item has already been added. Key in dictionary: 'HTTP_PROXY' Key being added: 'http_proxy'`
+  —— 环境里同时有大写与小写的代理变量，PowerShell 建环境字典时炸了。要抓 stderr 就包一层
+  `.cmd`（`"%~1" > log 2>&1`），并且 **`.cmd` 里不能出现中文**（cmd 按 ANSI/GBK 读脚本，
+  中文路径会烂）—— 用 `%~1` / `%~dp0` / 8.3 短路径，或先把 exe 复制到纯 ASCII 目录。
+- 从会话里 `Start-Process` 出去的 GUI 进程会继承 stdout 管道 ⇒ 宿主命令**永远不返回**
+  （看起来像卡死）。要么放后台作业，要么让子进程把输出重定向进文件。
+
+### 8. 未验证清单（别在 README 里写成既成事实）
+
+真机上没有验过的：透明窗在 macOS 上是否真的透（`macOSPrivateApi` 只是必要条件）、
+逐像素穿透、全局跟随、托盘菜单、多屏归属、以及**整个渲染栈** —— Windows 跑的是
+WebView2/Chromium，mac 是 WKWebView/WebKit，Pixi 8 + Cubism Core 在 WebKit 上从没跑过。
+macOS runner 没有可交互窗口会话，这些在 CI 里也验不了；只有真机能回答。
+
 ## 已完成 / 还剩什么
 
 **M0（透明 + 穿透 + 复用插件）**、**M2（跟着 DSH 走）**、**M3（设置菜单进右键面板）**、
 **M4（单文件便携 exe + 托盘）**、**M5（挂载模式）** 都已落地并实测通过；宿主半区已翻成
-Rust，exe 8.94 MB。
+Rust，exe 8.94 MB。**M6（macOS arm64 构建）**代码与 CI 就绪，行为未在真机验证。
 
 还剩：
 
@@ -473,4 +603,5 @@ Rust，exe 8.94 MB。
 - **宿主半区是两份实现**：Rust 一份、`lib/index.js` 一份（网页端在用）。改宠物契约
   （`pet.json` 字段语义）必须**两边一起改**，然后跑 `probe-catalog.mjs` —— 这条是纪律，
   不是建议。
-- **非 Windows**：没验过不吹。
+- **非 Windows**：macOS arm64 只做到"能构建"，行为没验过；Intel Mac 与 Linux 连构建都
+  还没有（平台表与子包清单已按平台写好，加矩阵项即可）。

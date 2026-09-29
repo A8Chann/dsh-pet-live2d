@@ -50,8 +50,10 @@ DSH 的 Web GUI 负责对话，而 **dsh-pet-live2d 是挂在这块界面上的�
 | 挡不挡 UI | — | 只有角色剪影吃鼠标事件，方形画布的透明处**穿透**到底下页面 |
 | 打扰程度 | — | 静置才会自己演一段；平时画面上**没有任何常驻 UI**，鼠标划过也不显示 |
 
-> 另有**实验性的桌面端**（[`dsh-live2d-pet-desktop/`](dsh-live2d-pet-desktop/README.md)，Tauri 壳，M0 已在 Windows 实测通过）：
-> 把同一份宠物代码放进**透明置顶窗口**、逐像素穿透到壁纸。还没做打包，想尝鲜直接看它的 README。
+> 另有**桌面端**（[`dsh-live2d-pet-desktop/`](dsh-live2d-pet-desktop/README.md)，Tauri 壳）：
+> 把同一份宠物代码放进**透明置顶窗口**、逐像素穿透到壁纸。Windows x64 的单文件 exe
+> 随插件包分发（装完在设置里选「桌面」）；macOS（Apple Silicon）的构建由 CI 产出，
+> **尚未在真机验证** —— 平台支持与已知限制见它的 README。
 
 ## 快速上手
 

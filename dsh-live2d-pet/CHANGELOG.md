@@ -1,5 +1,33 @@
 # 更新日志
 
+## 未发布（macOS 桌面端：构建就绪，行为待真机验证）
+
+### 新：macOS（Apple Silicon）的桌面端构建
+
+以前桌面端只有 Windows。现在 macOS arm64 也能出产物了 —— 由 GitHub Actions 构建
+（`.github/workflows/desktop-mac.yml`，`macos-14` runner），一次产出两样：
+
+| 产物 | 给谁用 |
+|---|---|
+| `DSH桌宠.app`（zip） | 人：双击就站出来 |
+| `dsh-pet-live2d-desktop`（tar.gz，裸二进制） | 插件：npm 平台子包 `dsh-pet-live2d-desktop-darwin-arm64` 要的那份 |
+
+为此改的东西（都在桌面端那一侧）：macOS 上**读全局光标**改走 CoreGraphics（透明层"哪块
+区域吃鼠标"的判定靠它，以前非 Windows 直接返回"读不到"，等于她永远点不到）；主目录按
+平台取（macOS 是 `HOME`，以前只认 `USERPROFILE`，会退化成当前目录下的 `.dsh`）；macOS 用
+`ActivationPolicy::Accessory` 藏进"不进程序坞"（Windows 的 `skip_taskbar` 在 mac 上没有
+实现）；`.app` 里不再往包内写运行期数据（那会破坏代码签名）。
+
+**没验过的地方，别当既成事实**：本项目所有驱动都跑在 Windows 上，macOS runner 又没有可
+交互的窗口会话 —— "她能不能点、能不能穿透、跟不跟手"目前**只有代码层面的理由**，没有
+实测。Intel Mac 与 Linux 都还没有构建。
+
+### 注意：macOS 那份没有签名
+
+第一次打开会被 Gatekeeper 拦（"无法验证开发者"）：右键→打开，或者
+`xattr -dr com.apple.quarantine <路径>`。想双击就能开，需要 Apple Developer ID（$99/年）
++ 公证 —— 那时 CI 里能一起做，但证书得先有。
+
 ## 3.0.1
 
 ### 修：「自拍」右手不抬（3.0.0 引入）

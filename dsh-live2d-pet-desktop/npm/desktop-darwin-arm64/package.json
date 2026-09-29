@@ -1,0 +1,30 @@
+{
+  "name": "dsh-pet-live2d-desktop-darwin-arm64",
+  "version": "3.0.1",
+  "description": "dsh-pet-live2d 的桌面端二进制（macOS arm64 / Apple Silicon）：让桌宠站在桌面上而不是 DSH 页面里。由主包按需安装，不需要手动装。",
+  "license": "MIT",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "files": [
+    "bin/dsh-pet-live2d-desktop",
+    "README.md"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "live2d",
+    "desktop-pet"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/A8Chann/dsh-pet-live2d.git"
+  },
+  "homepage": "https://github.com/A8Chann/dsh-pet-live2d#readme",
+  "bugs": {
+    "url": "https://github.com/A8Chann/dsh-pet-live2d/issues"
+  }
+}

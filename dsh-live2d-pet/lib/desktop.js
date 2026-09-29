@@ -26,7 +26,11 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 export function desktopPackageName(platform = process.platform, arch = process.arch) {
   const table = {
     'win32-x64': 'dsh-pet-live2d-desktop-win32-x64',
-    // 将来加构建时在这里补：'darwin-arm64' / 'linux-x64' …
+    // macOS arm64（Apple Silicon）。**只有构建与代码就绪，npm 上还没有这个子包** ——
+    // 发布前要补两步，顺序不能反（否则用户拿到的主包会指向一个不存在的子包）：
+    //   1. `node tools/npm-prepare-subpackage.mjs --sub darwin-arm64` 后把子包发上 npm；
+    //   2. 主包 `optionalDependencies` 加一行 `"dsh-pet-live2d-desktop-darwin-arm64": "<主包版本>"`。
+    'darwin-arm64': 'dsh-pet-live2d-desktop-darwin-arm64',
   }
   return table[platform + '-' + arch]
 }

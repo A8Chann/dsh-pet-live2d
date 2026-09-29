@@ -1,45 +1,176 @@
-// 一键产出**单文件便携 exe**。
+// 一键产出**可分发产物**。
 //
-// 翻成 Rust 宿主之后这一步变得很短：没有 deno compile、没有资源清单生成 —— 资源由
-// `src-tauri/build.rs` 在编译期直接嵌进去，`cargo build --release` 就够了。
+//   node tools/build-portable.mjs [--skip-suite] [--target <triple>] [--no-app]
 //
-//   node tools/build-portable.mjs [--skip-suite]
+// 两个平台两条形状（同一份源码，差别只在"怎么打包"）：
+//
+//   * **Windows**：`dist/DSH桌宠.exe` —— 单文件便携 exe。默认跑完三步验证（对拍 + 壳全链 +
+//     网页端回归），那是本机唯一能端到端验的路。
+//   * **macOS**：两样东西
+//       - `dist/dsh-pet-live2d-desktop` —— 裸二进制，给 npm 平台子包用（插件 spawn 它）；
+//       - `dist/DSH桌宠.app` —— 给人双击用（Info.plist + 图标 + ad-hoc 签名）。
+//     **不跑验证**：那套驱动全是 Windows 的（PowerShell / `SetCursorPos` / 窗口扩展样式 /
+//     WebView2 的 CDP 端口），mac 上一条都跑不了 —— 与其印一个假的绿，不如什么都不印。
+//
+// 资源（页面 / 浏览器半区 / 随包宠物 / Cubism Core）在**编译期**由 `src-tauri/build.rs`
+// 嵌进二进制，所以这一步没有"铺资源"的活。
 import { execFileSync } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, statSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { DESKTOP, ROOT } from './paths.mjs'
 
 const argv = process.argv.slice(2)
-const skipSuite = argv.includes('--skip-suite')
-const DIST = join(DESKTOP, 'dist')
-const EXE_SRC = join(DESKTOP, 'src-tauri', 'target', 'release', 'dsh-pet-live2d-desktop.exe')
-const EXE_OUT = join(DIST, 'DSH桌宠.exe')
+const has = (flag) => argv.includes(flag)
+const value = (flag) => (argv.indexOf(flag) === -1 ? undefined : argv[argv.indexOf(flag) + 1])
 
-const cargoBin = join(process.env.USERPROFILE ?? '', '.cargo', 'bin')
-const cargo = existsSync(join(cargoBin, 'cargo.exe')) ? join(cargoBin, 'cargo.exe') : 'cargo'
-const env = { ...process.env, PATH: cargoBin + ';' + (process.env.PATH ?? '') }
+const skipSuite = has('--skip-suite')
+const targetTriple = value('--target')
+const wantApp = !has('--no-app')
+
+const isWin = process.platform === 'win32'
+const isMac = process.platform === 'darwin'
+const DIST = join(DESKTOP, 'dist')
+const BIN_NAME = isWin ? 'dsh-pet-live2d-desktop.exe' : 'dsh-pet-live2d-desktop'
+const OUT_DIR = targetTriple === undefined
+  ? join(DESKTOP, 'src-tauri', 'target', 'release')
+  : join(DESKTOP, 'src-tauri', 'target', targetTriple, 'release')
+
+// cargo 不一定在 PATH 上：本机（Windows）装在 `%USERPROFILE%\.cargo\bin`，macOS 是
+// `~/.cargo/bin`。两边都先探一下，探不到就交给 PATH。
+const home = process.env.USERPROFILE ?? process.env.HOME ?? ''
+const cargoBin = join(home, '.cargo', 'bin')
+const cargoExe = isWin ? 'cargo.exe' : 'cargo'
+const cargo = existsSync(join(cargoBin, cargoExe)) ? join(cargoBin, cargoExe) : 'cargo'
+const env = { ...process.env, PATH: cargoBin + (isWin ? ';' : ':') + (process.env.PATH ?? '') }
 
 const step = (title, fn) => {
   console.log('\n=== ' + title + ' ===')
   fn()
 }
+const mb = (path) => (statSync(path).size / 1024 / 1024).toFixed(2) + ' MB'
+
+const buildArgs = ['build', '--release', '--bin', 'dsh-pet-live2d-desktop']
+if (targetTriple !== undefined) buildArgs.push('--target', targetTriple)
 
 step('1/3 编译壳（release；资源在编译期嵌入）', () => {
-  execFileSync(cargo, ['build', '--release', '--bin', 'dsh-pet-live2d-desktop'], {
+  execFileSync(cargo, buildArgs, {
     stdio: 'inherit',
     cwd: join(DESKTOP, 'src-tauri'),
     env,
   })
 })
 
-step('2/3 产出 dist/DSH桌宠.exe', () => {
-  if (!existsSync(EXE_SRC)) throw new Error('没找到 release 产物：' + EXE_SRC)
+step('2/3 产出 dist/', () => {
+  const built = join(OUT_DIR, BIN_NAME)
+  if (!existsSync(built)) throw new Error('没找到 release 产物：' + built)
   mkdirSync(DIST, { recursive: true })
-  copyFileSync(EXE_SRC, EXE_OUT)
-  console.log('  ' + EXE_OUT + '  ' + (statSync(EXE_OUT).size / 1024 / 1024).toFixed(2) + ' MB')
+
+  if (isWin) {
+    const exeOut = join(DIST, 'DSH桌宠.exe')
+    copyFileSync(built, exeOut)
+    console.log('  ' + exeOut + '  ' + mb(exeOut))
+    return
+  }
+
+  // macOS / Linux：裸二进制（平台子包要的那份）
+  const binOut = join(DIST, BIN_NAME)
+  copyFileSync(built, binOut)
+  execFileSync('chmod', ['755', binOut])
+  console.log('  ' + binOut + '  ' + mb(binOut))
+  if (isMac && wantApp) makeAppBundle(binOut)
 })
 
-step('3/3 对拍 + 壳全链 + 网页端回归', () => {
+/**
+ * 组装 `DSH桌宠.app`。
+ *
+ * 为什么要包一层：裸 Mach-O 双击时是"从终端跑一个可执行文件"，没有图标、没有名字、
+ * 系统当它是个普通进程；`.app` 才是 mac 上"一个应用"的样子。
+ *
+ * 三件事都是刻意的：
+ *   * `LSUIElement = true` —— 不进程序坞、不进 Cmd-Tab（与代码里的
+ *     `ActivationPolicy::Accessory` 双保险，从 Info.plist 就生效，比代码更早）；
+ *   * 图标用仓库里那张 `src-tauri/icons/icon.png` 现场转 `.icns`（`sips` + `iconutil`
+ *     是系统自带的，不引构建依赖）；转不出来就跳过图标，不让它挡住构建；
+ *   * `codesign --sign -`：**ad-hoc 签名**。它不等于"已签名可分发"（用户仍可能被
+ *     Gatekeeper 拦下，因为没有 Developer ID 与公证），但没有它连本机从"下载"来的包
+ *     都更难启动。
+ */
+function makeAppBundle(binary) {
+  const version = readFileSync(join(ROOT, 'dsh-live2d-pet', 'package.json'), 'utf8')
+  const shortVersion = JSON.parse(version).version ?? '0.0.0'
+  const appDir = join(DIST, 'DSH桌宠.app')
+  const macosDir = join(appDir, 'Contents', 'MacOS')
+  const resDir = join(appDir, 'Contents', 'Resources')
+  rmSync(appDir, { recursive: true, force: true })
+  mkdirSync(macosDir, { recursive: true })
+  mkdirSync(resDir, { recursive: true })
+
+  const execName = 'DSH桌宠'
+  const execPath = join(macosDir, execName)
+  copyFileSync(binary, execPath)
+  execFileSync('chmod', ['755', execPath])
+
+  const icon = makeIcns(resDir)
+  writeFileSync(join(appDir, 'Contents', 'Info.plist'), infoPlist(execName, shortVersion, icon), 'utf8')
+
+  try {
+    execFileSync('codesign', ['--force', '--sign', '-', appDir], { stdio: 'inherit' })
+  } catch (error) {
+    console.log('  （ad-hoc 签名失败，产物照旧可用：' + String(error && error.message) + '）')
+  }
+  console.log('  ' + appDir)
+}
+
+/** `icons/icon.png` → `Resources/icon.icns`（sips + iconutil，都是系统自带）。 */
+function makeIcns(resDir) {
+  const source = join(DESKTOP, 'src-tauri', 'icons', 'icon.png')
+  if (!existsSync(source)) return undefined
+  const iconset = join(DIST, 'icon.iconset')
+  try {
+    rmSync(iconset, { recursive: true, force: true })
+    mkdirSync(iconset, { recursive: true })
+    // `iconutil` 只认这一套尺寸（16/32/128/256/512 各带一个 @2x），别自创 64x64 ——
+    // 非标准文件名它会拒。
+    for (const size of [16, 32, 128, 256, 512]) {
+      execFileSync('sips', ['-z', String(size), String(size), source, '--out', join(iconset, `icon_${size}x${size}.png`)], { stdio: 'ignore' })
+      execFileSync('sips', ['-z', String(size * 2), String(size * 2), source, '--out', join(iconset, `icon_${size}x${size}@2x.png`)], { stdio: 'ignore' })
+    }
+    execFileSync('iconutil', ['-c', 'icns', iconset, '-o', join(resDir, 'icon.icns')], { stdio: 'inherit' })
+    return 'icon.icns'
+  } catch (error) {
+    console.log('  （图标转换跳过：' + String(error && error.message) + '）')
+    return undefined
+  } finally {
+    rmSync(iconset, { recursive: true, force: true })
+  }
+}
+
+function infoPlist(execName, version, icon) {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key><string>${execName}</string>
+  <key>CFBundleDisplayName</key><string>${execName}</string>
+  <key>CFBundleExecutable</key><string>${execName}</string>
+  <key>CFBundleIdentifier</key><string>com.dsh.pet.live2d.desktop</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>${version}</string>
+  <key>CFBundleVersion</key><string>${version}</string>
+  <key>LSMinimumSystemVersion</key><string>11.0</string>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>LSUIElement</key><true/>
+${icon === undefined ? '' : `  <key>CFBundleIconFile</key><string>${icon}</string>\n`}</dict>
+</plist>
+`
+}
+
+step('3/3 验证', () => {
+  if (isWin === false) {
+    console.log('  跳过：本机所有驱动都是 Windows 的（PowerShell / SetCursorPos / 窗口扩展样式），')
+    console.log('  macOS 上的行为属于未验证区 —— 见 npm/desktop-darwin-arm64/README.md。')
+    return
+  }
   if (skipSuite) {
     console.log('  （--skip-suite：跳过）')
     return
@@ -70,4 +201,4 @@ step('3/3 对拍 + 壳全链 + 网页端回归', () => {
   })
 })
 
-console.log('\nPORTABLE_OK ' + EXE_OUT)
+console.log('\nPORTABLE_OK ' + DIST)

@@ -1,0 +1,124 @@
+# 桌面端的 macOS（arm64）构建。
+#
+# 为什么需要 CI 而不是本机构建：**macOS 目标只能在 macOS 上编**（tauri 的依赖里有要
+# Objective-C 编译的 crate，需要 macOS SDK）。开发机是 Windows，所以这里是 mac 那份
+# 二进制唯一的产地。
+#
+# 它做四件事：
+#   1. `npm ci`（`tools/browser-test`）—— `build.rs` 要在编译期把 React UMD 嵌进产物，
+#      没有它页面会缺 React（构建只是 warning，跑起来才白屏，所以这一步不能省）；
+#   2. `cargo test --lib` —— **本机验不了的那部分**：macOS 目标只有在这里才会真正编译，
+#      顺带跑那些跨平台的单元测试（坐标换算、catalog、显示层规则）；
+#   3. `node tools/build-portable.mjs --skip-suite` —— 出裸二进制 + `DSH桌宠.app`
+#      （ad-hoc 签名；`--skip-suite` 是因为那套驱动全是 Windows 的，mac 上跑不了）；
+#   4. 产物：workflow artifact 永远有；打 tag 时再挂到**已存在**的 Release 上
+#      （Release 由发布流程先建好，正文取 CHANGELOG —— CI 只挂附件，不抢建 Release 这件事）。
+#
+# ⚠️ 没有做的事（别以为是漏了）：
+#   * **不发 npm**。平台子包要人工发，而且顺序是"先子包、后主包"，见
+#     `dsh-live2d-pet-desktop/npm/desktop-darwin-arm64/README.md`；
+#   * **不做签名/公证**。那要 Apple Developer ID 证书 + 密钥，属于仓库 secret 的范畴；
+#     没有它用户第一次打开会被 Gatekeeper 拦（右键→打开 或去 quarantine 属性）；
+#   * **不在 mac 上验行为**。macOS runner 没有可交互的窗口会话，"她能不能点、跟不跟手"
+#     在这里验不了 —— 这一条只有真机能回答。
+name: desktop-mac
+
+on:
+  workflow_dispatch:
+    inputs:
+      embed_cubism_core:
+        description: '把官方 Cubism Core 下到 ~/.dsh 并嵌进产物（默认关：那等于随包分发它）'
+        type: boolean
+        default: false
+  push:
+    tags: ['v*']
+    branches: [main]
+    paths:
+      - 'dsh-live2d-pet-desktop/**'
+      - 'dsh-live2d-pet/lib/**'
+      - 'dsh-live2d-pet/pets/**'
+      - '.github/workflows/desktop-mac.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  mac-arm64:
+    # Apple Silicon。Intel（darwin-x64）要另加一行 `macos-15-intel` —— 平台表与子包清单
+    # 都已经按平台写好了，加一个矩阵项即可。
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: React UMD（build.rs 编译期要嵌它）
+        run: npm ci
+        working-directory: tools/browser-test
+
+      - name: 缓存 cargo 索引与下载（**不缓存 target/**）
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: mac-arm64-cargo-${{ hashFiles('dsh-live2d-pet-desktop/src-tauri/Cargo.lock') }}
+          restore-keys: mac-arm64-cargo-
+        # 为什么不缓存 `target/`：这个是 LTO 的 release 构建，target 有数 GB，
+        # 上传/下载缓存的时间往往比省下的编译时间还长，还会顶掉仓库 10GB 的缓存额度。
+        # 公共仓库的 macOS runner 分钟数不要钱，就让每次构建自己从头编。
+
+      - name: 可选：内嵌 Cubism Core
+        if: inputs.embed_cubism_core
+        run: |
+          mkdir -p "$HOME/.dsh/pets/.runtime"
+          curl -fsSL -o "$HOME/.dsh/pets/.runtime/live2dcubismcore.min.js" \
+            https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js
+          ls -l "$HOME/.dsh/pets/.runtime/live2dcubismcore.min.js"
+
+      - name: 单元测试（macOS 目标在这里才第一次真正编译）
+        run: cargo test --lib
+        working-directory: dsh-live2d-pet-desktop/src-tauri
+
+      - name: 构建（裸二进制 + DSH桌宠.app）
+        run: node tools/build-portable.mjs --skip-suite
+        working-directory: dsh-live2d-pet-desktop
+
+      - name: 铺平台子包（校验版本与主包一致）
+        run: node tools/npm-prepare-subpackage.mjs --sub darwin-arm64
+        working-directory: dsh-live2d-pet-desktop
+
+      - name: 打包（zip 保留 .app 的可执行位与签名）
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./dsh-live2d-pet/package.json').version")
+          cd dsh-live2d-pet-desktop/dist
+          ditto -c -k --keepParent "DSH桌宠.app" "DSH桌宠-${version}-mac-arm64.zip"
+          tar -czf "dsh-pet-live2d-desktop-${version}-darwin-arm64.tar.gz" dsh-pet-live2d-desktop
+          shasum -a 256 *.zip *.tar.gz
+          ls -l
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-mac-arm64
+          path: |
+            dsh-live2d-pet-desktop/dist/*.zip
+            dsh-live2d-pet-desktop/dist/*.tar.gz
+          if-no-files-found: error
+
+      - name: 挂到 Release 附件（仅 tag；Release 必须先存在）
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            echo "::warning::远端还没有 $tag 的 Release —— 先按发布流程建好它，再重跑本 workflow（产物已在 artifact 里）"
+            exit 0
+          fi
+          gh release upload "$tag" dsh-live2d-pet-desktop/dist/*.zip dsh-live2d-pet-desktop/dist/*.tar.gz --clobber

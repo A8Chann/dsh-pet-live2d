@@ -30,13 +30,19 @@ use host::shared::{Point, Shared};
 
 /// 运行期目录：随包插件的解包处。
 ///
-/// **便携优先**：exe 旁边可写就用 `.\DSH桌宠-data\`（U 盘、绿色版直接带着走）；
-/// 不可写（放在 Program Files、只读盘）才退回 `%LOCALAPPDATA%\<identifier>\runtime\`。
-/// 判据是**真的写一次试试**，不是猜路径权限。
+/// **便携优先**：可执行文件旁边可写就用 `.\DSH桌宠-data\`（U 盘、绿色版直接带着走）；
+/// 不可写（放在 Program Files、只读盘）才退回系统给的应用数据目录。判据是**真的写一次
+/// 试试**，不是猜路径权限。
+///
+/// macOS 的 `.app` 是例外：包里的可执行文件**旁边**也能写（`Contents/MacOS/` 属于用户），
+/// 但往包里写会当场破坏代码签名（下次启动 Gatekeeper 就拒），而且"便携"对 .app 本来
+/// 就不成立 —— 包是只读分发物，数据该进 `~/Library/Application Support/`。见
+/// [`inside_app_bundle`]。
 pub fn resolve_runtime_dir(app: &AppHandle) -> std::path::PathBuf {
     let probe = std::env::current_exe()
         .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join("DSH桌宠-data")));
+        .and_then(|exe| exe.parent().map(|dir| dir.join("DSH桌宠-data")))
+        .filter(|_| !inside_app_bundle());
     if let Some(dir) = probe {
         if std::fs::create_dir_all(&dir).is_ok() {
             let test = dir.join(".writable");
@@ -52,6 +58,22 @@ pub fn resolve_runtime_dir(app: &AppHandle) -> std::path::PathBuf {
         .unwrap_or_else(|_| std::env::temp_dir().join("DSH桌宠"));
     let _ = std::fs::create_dir_all(fallback.join("runtime"));
     fallback.join("runtime")
+}
+
+/// 可执行文件是不是在一个 `.app` 包里（`….app/Contents/MacOS/<exe>`）。
+///
+/// Windows / Linux 上永远是 `false`（那里没有 `.app` 这种包，也不会有人把目录叫这名）。
+fn inside_app_bundle() -> bool {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| {
+            exe.parent()          // …/Contents/MacOS
+                .and_then(|dir| dir.parent())   // …/Contents
+                .and_then(|dir| dir.parent())   // …/X.app
+                .map(std::path::Path::to_path_buf)
+        })
+        .and_then(|bundle| bundle.extension().map(|ext| ext == "app"))
+        .unwrap_or(false)
 }
 
 /// 宠物根目录：`%DSH_HOME%\pets`（默认 `~/.dsh/pets`），与网页端插件同一份。
@@ -78,11 +100,19 @@ fn parse_arg(flag: &str) -> Option<String> {
     args.get(at + 1).cloned()
 }
 
-/// 光标位置（屏幕物理像素）。非 Windows 上返回 None —— 只在 Windows 上验过。
+/// 全局光标在哪（**本平台原生口径**）。
 ///
-/// 建窗口时也要用它（"她该出现在哪块屏上"由光标决定），所以是 `pub(crate)`。
+/// * **Windows**：物理像素（`GetCursorPos`），原点 = 主屏左上角；
+/// * **macOS**：逻辑点（`CGEventGetLocation`），原点同样是主屏左上角 —— CoreGraphics
+///   的"全局显示坐标"就是这么定义的，与 `CGDisplayBounds` 同一套（tao 的屏幕框也是
+///   从那儿乘上缩放来的）；
+/// * **其它**（Linux/Wayland 等）：`None`。
+///
+/// ⚠️ "读不到" 与 "指针不在她身上" 是**两件事**：前者会让整套穿透判定失效（窗口会一直
+/// 保持建窗时那个"忽略光标事件"的状态 = 她永远点不到）。所以调用方必须单独处理 `None`，
+/// 不能当成 `(0, 0)`。
 #[cfg(windows)]
-pub(crate) fn cursor_screen_pos() -> Option<(i32, i32)> {
+pub(crate) fn cursor_screen_pos() -> Option<(f64, f64)> {
     use windows_sys::Win32::Foundation::POINT;
     use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
     let mut point = POINT { x: 0, y: 0 };
@@ -90,13 +120,82 @@ pub(crate) fn cursor_screen_pos() -> Option<(i32, i32)> {
     if ok == 0 {
         None
     } else {
+        Some((point.x as f64, point.y as f64))
+    }
+}
+
+/// macOS：`CGEventCreate(NULL)` 拿到"当前鼠标"事件，再问它坐标。
+///
+/// **为什么不用 NSEvent**（tao 内部读光标就是用它）：那是 AppKit，而穿透轮询跑在**后台
+/// 线程**上 —— AppKit 只保证主线程安全，CoreGraphics 没有这条约束。
+/// 也**不需要**辅助功能/录屏权限：这里只读当前指针位置，不装事件监听。
+///
+/// `CGPoint` 在 64 位下就是两个 `CGFloat` = 两个 `f64`，`#[repr(C)]` 手工声明即可，
+/// 不必为此引 objc2/core-graphics 依赖（那两样在 Windows 上编译不了，本地就没法检查）。
+#[cfg(target_os = "macos")]
+pub(crate) fn cursor_screen_pos() -> Option<(f64, f64)> {
+    #[repr(C)]
+    struct CGPoint {
+        x: f64,
+        y: f64,
+    }
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGEventCreate(source: *const std::ffi::c_void) -> *mut std::ffi::c_void;
+        fn CGEventGetLocation(event: *mut std::ffi::c_void) -> CGPoint;
+    }
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        fn CFRelease(cf: *const std::ffi::c_void);
+    }
+    unsafe {
+        // `CGEventCreate(NULL)` = "当前鼠标状态"那个事件，所有权归我们（Create 规则）。
+        let event = CGEventCreate(std::ptr::null());
+        if event.is_null() {
+            return None;
+        }
+        let point = CGEventGetLocation(event);
+        CFRelease(event as *const std::ffi::c_void);
         Some((point.x, point.y))
     }
 }
 
-#[cfg(not(windows))]
-pub(crate) fn cursor_screen_pos() -> Option<(i32, i32)> {
+#[cfg(not(any(windows, target_os = "macos")))]
+pub(crate) fn cursor_screen_pos() -> Option<(f64, f64)> {
     None
+}
+
+/// 原生光标是不是"逻辑点"。只有 macOS 是。
+///
+/// 唯一用途：换算成窗口本地坐标时，逻辑点要先乘窗口缩放还原成物理像素 —— 见
+/// [`pointer_local`]。这个分支判据只有一个地方，就是为了不让"单位"散落在各处。
+pub(crate) const CURSOR_IS_LOGICAL: bool = cfg!(target_os = "macos");
+
+/// 把全局光标换算成**窗口本地 CSS 像素**（也就是窗口本地物理像素 ÷ 缩放）。
+///
+/// 一条公式同时管两个平台 —— 差别只在 `k`：
+///   * Windows：光标与窗口原点本来就都是物理像素、同原点 → `k = 1`；
+///   * macOS：光标是逻辑点、窗口原点是物理像素 → `k = 缩放`，乘完两边同口径再相减。
+///
+/// 拆出 `logical` 参数只为一件事：**让两个分支都能在 Windows 上跑单元测试**
+/// （否则 macOS 那一支直到 CI 才有第二次编译机会）。
+pub(crate) fn pointer_local_with(
+    cursor: (f64, f64),
+    window_origin: (f64, f64),
+    scale: f64,
+    logical: bool,
+) -> (f64, f64) {
+    let scale = if scale > 0.0 { scale } else { 1.0 };
+    let k = if logical { scale } else { 1.0 };
+    (
+        (cursor.0 * k - window_origin.0) / scale,
+        (cursor.1 * k - window_origin.1) / scale,
+    )
+}
+
+/// 本平台口径下的 [`pointer_local_with`]。
+pub(crate) fn pointer_local(cursor: (f64, f64), window_origin: (f64, f64), scale: f64) -> (f64, f64) {
+    pointer_local_with(cursor, window_origin, scale, CURSOR_IS_LOGICAL)
 }
 
 /// 穿透轮询：读光标 → 问页面（经 host 的内存任务）→ 切窗口的忽略状态 → 写回状态。
@@ -107,6 +206,9 @@ pub(crate) fn cursor_screen_pos() -> Option<(i32, i32)> {
 fn spawn_hover_loop(app: AppHandle, shared: Arc<Mutex<Shared>>) {
     std::thread::spawn(move || {
         let mut last: Option<bool> = None;
+        // 「读不到全局光标」只喊一次：这是**整套判定失效**级别的故障（她会一直点不到），
+        // 但每 33ms 喊一次会把 stderr 刷爆。
+        let mut warned_no_cursor = false;
         loop {
             std::thread::sleep(Duration::from_millis(33));
             let Some(window) = app.get_webview_window(pet_window::PET_WINDOW) else {
@@ -116,8 +218,17 @@ fn spawn_hover_loop(app: AppHandle, shared: Arc<Mutex<Shared>>) {
                 continue;
             }
             let Some((cx, cy)) = cursor_screen_pos() else {
+                if !warned_no_cursor {
+                    warned_no_cursor = true;
+                    eprintln!(
+                        "[shell] 这个平台读不到全局光标 —— 穿透判定用不了，\
+                         她会一直处于「忽略光标事件」状态（点不到）。\
+                         见 lib.rs 的 cursor_screen_pos"
+                    );
+                }
                 continue;
             };
+            warned_no_cursor = false;
             // ⚠️ 这里**不要**按光标所在屏幕搬窗口。
             //
             // 试过：她于是"跟着鼠标所在的屏幕跑"（用户的原话是"宠物应该是在固定位置"）。
@@ -133,8 +244,9 @@ fn spawn_hover_loop(app: AppHandle, shared: Arc<Mutex<Shared>>) {
                 continue;
             };
             let scale = if scale > 0.0 { scale } else { 1.0 };
-            let local_x = (cx as f64 - ox) / scale;
-            let local_y = (cy as f64 - oy) / scale;
+            // 光标与窗口原点口径不同（macOS 一个是逻辑点、一个是物理像素），
+            // 换算收在 `pointer_local` 里 —— 那里有单元测试，这条链上别再手写公式。
+            let (local_x, local_y) = pointer_local((cx, cy), (ox, oy), scale);
 
             let inside = local_x >= 0.0 && local_y >= 0.0 && local_x < w as f64 && local_y < h as f64;
             let (interactive, reason, answered) = if inside {
@@ -158,7 +270,7 @@ fn spawn_hover_loop(app: AppHandle, shared: Arc<Mutex<Shared>>) {
                 guard.probe_errors += 1;
             }
             guard.report_hover(
-                (cx, cy),
+                (cx.round() as i32, cy.round() as i32),
                 (local_x.round() as i32, local_y.round() as i32),
                 (ox, oy),
                 (w, h),
@@ -190,15 +302,10 @@ fn resolve_attach() -> Option<String> {
 }
 
 /// `%DSH_HOME%`：`pets/` 与显示层偏好文件（`pet-desktop.json`）都在这里，与网页端插件同源。
+///
+/// 规则的实体在 `host::http::default_home()`（主目录变量两平台不同名那件事写在那里）。
 fn resolve_home() -> std::path::PathBuf {
-    std::env::var("DSH_HOME")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            std::path::PathBuf::from(std::env::var("USERPROFILE").unwrap_or_else(|_| ".".to_string()))
-                .join(".dsh")
-        })
+    host::http::default_home()
 }
 
 /// 显示层轮询：**刷新心跳**，并按"该不该显示"显示/隐藏窗口。
@@ -280,6 +387,22 @@ pub fn run() {
         .manage(shared.clone())
         .setup(move |app| {
             let handle = app.handle().clone();
+
+            // ---- macOS：她不该出现在程序坞 / Cmd-Tab 里 ----
+            //
+            // Windows 那边靠 `skip_taskbar(true)`，但**这一条在 macOS 上没有实现**：
+            // tauri-runtime-wry 里 macOS 分支那个函数是空的（`fn skip_taskbar(self, _skip) { self }`），
+            // tao 也只给 Windows/Linux 写了实现。mac 上要藏就得改**激活策略**：
+            // Accessory = 不出现在程序坞、不进 Cmd-Tab，但仍然能有窗口与托盘图标。
+            // 建窗之前设，免得先闪一下 Dock 图标。
+            #[cfg(target_os = "macos")]
+            {
+                match handle.set_activation_policy(tauri::ActivationPolicy::Accessory) {
+                    Ok(()) => eprintln!("[shell] 激活策略：Accessory（不进程序坞）"),
+                    Err(error) => eprintln!("[shell] 设置激活策略失败：{error}"),
+                }
+            }
+
             let runtime = resolve_runtime_dir(&handle);
             let pets_root = resolve_pets_root();
             let home = resolve_home();
@@ -311,15 +434,24 @@ pub fn run() {
 
             let host = host::serve(shared.clone(), pets_root, plugin_root, attach.clone(), home.clone())?;
             eprintln!("[shell] 宿主已就绪：{}", host.url);
-            pet_window::create_pet_window(&handle, &host::page_url(&host))?;
-            tray::setup(app)?;
+            // 每一步都**带上自己的上下文**：setup 里任何一步失败，Tauri 只会把它包成
+            // "Failed to setup app: ... <错误本身>"，而裸的 io 错误（比如 `拒绝访问。
+            // (os error 5)`）根本不说是哪一步 —— 这一轮为了定位它绕了很久。
+            pet_window::create_pet_window(&handle, &host::page_url(&host))
+                .map_err(|error| std::io::Error::other(format!("建桌宠窗口失败：{error}")))?;
+            tray::setup(app).map_err(|error| std::io::Error::other(format!("建托盘失败：{error}")))?;
             spawn_hover_loop(handle.clone(), shared.clone());
 
             // ---- 显示层：桌面端要不要显示、以及"我还活着"的心跳 ----
             //
             // 用户在 DSH 设置里选了「页面内」时，这个窗口必须让位（否则桌面上和页面里各
             // 一只）。判定读的是两端共用的偏好文件，规则在 `host::display` 里，有单元测试。
-            host::display::publish_heartbeat(&home)?;
+            host::display::publish_heartbeat(&home).map_err(|error| {
+                std::io::Error::other(format!(
+                    "写显示层心跳失败（{}）：{error}",
+                    home.join("pet-desktop.json").display()
+                ))
+            })?;
             spawn_display_loop(handle.clone(), shared.clone(), home.clone());
 
             // 相位桥：订阅运行中 DSH 的相位流。DSH 没开就只是 idle，宠物照样自己摸鱼。
@@ -342,4 +474,57 @@ pub fn run() {
                 host::display::clear_heartbeat(&home);
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pointer_local_with;
+
+    /// 这是整条"穿透判定"链上唯一一段能在本机（Windows）对**两个平台**都验的代码 ——
+    /// 所以 `logical` 才做成参数：macOS 那一支否则要等到 CI 才有第一次编译机会。
+    ///
+    /// Windows：光标与窗口原点都是物理像素，相减再除缩放就是窗口本地 CSS 像素。
+    #[test]
+    fn pointer_local_windows_口径() {
+        // 100%：本地坐标 = 相减。
+        assert_eq!(
+            pointer_local_with((300.0, 200.0), (100.0, 50.0), 1.0, false),
+            (200.0, 150.0)
+        );
+        // 200%：窗口原点 (1000, 500) 物理 = 本地 (0, 0)；光标 (1200, 700) → 本地 (100, 100)。
+        assert_eq!(
+            pointer_local_with((1200.0, 700.0), (1000.0, 500.0), 2.0, false),
+            (100.0, 100.0)
+        );
+    }
+
+    /// macOS：光标是**逻辑点**（CGEvent），窗口原点是**物理像素**（tao 乘过缩放）。
+    #[test]
+    fn pointer_local_macos_逻辑点() {
+        // 200% 缩放、窗口原点 (1000, 500) 物理；光标逻辑点 (600, 350)
+        // → 物理 (1200, 700) → 本地物理 (200, 200) → 除缩放 → (100, 100)。
+        assert_eq!(
+            pointer_local_with((600.0, 350.0), (1000.0, 500.0), 2.0, true),
+            (100.0, 100.0)
+        );
+    }
+
+    /// 1x 屏上两个平台必须**无法区分**：mac 的"逻辑点"就等于物理像素。
+    #[test]
+    fn pointer_local_一倍屏两平台一致() {
+        let windows = pointer_local_with((660.0, 480.0), (100.0, 50.0), 1.0, false);
+        let macos = pointer_local_with((660.0, 480.0), (100.0, 50.0), 1.0, true);
+        assert_eq!(windows, macos);
+        assert_eq!(windows, (560.0, 430.0));
+    }
+
+    /// 缩放拿到 0 / 负数（异常值）不能变成 NaN 或 Inf ——
+    /// NaN 会让 "local < 窗口宽" 这条比较恒为 false，症状正是最难查的那种"她永远点不到"。
+    #[test]
+    fn pointer_local_缩放异常也要有限() {
+        for bad in [0.0, -1.0] {
+            let (x, y) = pointer_local_with((300.0, 200.0), (100.0, 50.0), bad, true);
+            assert!(x.is_finite() && y.is_finite(), "缩放 {bad} 时算出了 {x},{y}");
+        }
+    }
 }

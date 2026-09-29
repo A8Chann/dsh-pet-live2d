@@ -13,7 +13,17 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon", "image-png"] }
+# `macos-private-api`：透明窗背景在 macOS 上要用 tauri 的私有 API 开关。
+#
+# 为什么写在**顶层**而不是 `[target.'cfg(target_os = "macos")'.dependencies]` —— 踩过：
+# `tauri-build` 会拿 `tauri.conf.json` 的 `macOSPrivateApi` 去核 manifest 里的 feature，而它
+# 的查找顺序是"先顶层 `[dependencies]`，只在顶层没有时才翻 target 段"。我们顶层有 `tauri`，
+# 于是 target 段那份声明它**根本看不见** ⇒ Windows 上也报
+#   "The `tauri` dependency features ... does not match the allowlist"。
+# 写在顶层也正是 `tauri dev/build` 自己会做的（它改的就是这一行）。代价：Windows 构建也会
+# 带上它带来的 `wry/transparent` + `wry/fullscreen`（`tauri-runtime/macos-private-api` 本身
+# 是空 feature）。这一条**必须回归**：桌面端驱动 + 网页端 suite 都跑过才算数。
+tauri = { version = "2", features = ["tray-icon", "image-png", "macos-private-api"] }
 serde = { version = "1", features = ["derive"] }
 # `preserve_order`：**JSON 对象的键顺序必须与文件里的顺序一致**。
 # serde_json 默认用 BTreeMap（字典序），于是 `FileReferences.Motions` 会变成
@@ -26,6 +36,10 @@ sha2 = "0.10"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+
+# 顺带记一条同源但不同 feature 的坑：`skip_taskbar(true)` 在 macOS 上**没有实现**
+# （tauri-runtime-wry 的 macOS 分支是空函数，tao 也只给 Windows/Linux 写了实现），
+# 那边靠 `ActivationPolicy::Accessory` 才藏得住"不在程序坞里"——见 `src/lib.rs` 的 setup。
 
 # 单文件分发：体积与启动速度都算钱。strip 掉符号，LTO 拉满，按体积优化。
 [profile.release]

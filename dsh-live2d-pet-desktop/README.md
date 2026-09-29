@@ -212,7 +212,26 @@ tools/
 - **托盘图标在 Windows 11 默认收进溢出区**（系统行为，不是坏了）。
 - **宿主半区现在是两份实现**：Rust 一份、`lib/index.js` 一份（网页端在用）。改宠物契约
   （`pet.json` 的字段语义）时要**两边一起改**，然后跑 `probe-catalog.mjs`。
-- **只在 Windows 上验过**。macOS/Linux 的透明与穿透是另一套，没验过不吹。
+- **只在 Windows 上验过**。这套透明 + 逐像素穿透在 Windows 上的每一环都有驱动盯着；
+  macOS 那一份**构建**已经通了（见下），但"能不能点、跟不跟手"还没人在真机上验过；
+  Linux 连构建都还没有。
+
+## 平台支持
+
+| 平台 | 构建 | 验证 | 说明 |
+|---|---|---|---|
+| Windows x64 | ✅ 本机 / CI | ✅ 驱动齐全（对拍 + 壳全链 + 网页端 suite） | 单文件 `DSH桌宠.exe`，随插件包分发 |
+| macOS arm64 | ✅ CI（`.github/workflows/desktop-mac.yml`，`macos-14`） | ❌ **未在真机验证** | 出 `DSH桌宠.app`（ad-hoc 签名）+ 裸二进制（npm 子包用） |
+| macOS x64 / Linux | ❌ | ❌ | 平台表与子包清单已按平台写好，加一个矩阵项 / 一次移植即可 |
+
+macOS 那份的三条硬事实（写下来免得下次重新踩）：
+
+1. **只能在 macOS 上构建**：依赖里有要编 Objective-C 的 crate，本机（Windows）连
+   `cargo check --target aarch64-apple-darwin` 都过不去（缺 `cc` 与 macOS SDK）；
+2. **没签名、没公证**：第一次打开会被 Gatekeeper 拦，要右键→打开，或者
+   `xattr -dr com.apple.quarantine <路径>`；想双击就开得有 Apple Developer ID；
+3. **不进程序坞**靠 `ActivationPolicy::Accessory`（Windows 那个 `skip_taskbar(true)` 在
+   macOS 上**没有实现**），`.app` 里另外用 `LSUIElement` 兜一层。
 
 ## 许可
 

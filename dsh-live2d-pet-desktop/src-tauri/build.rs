@@ -83,8 +83,26 @@ fn main() {
     }
     // Cubism Core：Live2D 株式会社的专有运行时，**不随包分发**；这里嵌的是本机已经
     // 缓存过的那一份（插件自己从官方 CDN 取回来缓存的），只是为了离线可用。
-    let core = std::env::var("USERPROFILE")
-        .map(|home| PathBuf::from(home).join(".dsh").join("pets").join(".runtime").join("live2dcubismcore.min.js"))
+    //
+    // 路径规则必须与运行时一致（`host::http::default_home`）：`DSH_HOME` 优先，否则用户
+    // 主目录 —— 而主目录变量**两个平台不同名**（Windows `USERPROFILE`、macOS/Linux `HOME`）。
+    // 只认前者的话，macOS 的 CI 上这一份永远嵌不进去，于是"CI 打出来的包"和"本地那个"
+    // 不是同一个东西（首次运行要去官方 CDN 取一次才离线可用）。
+    let core = std::env::var("DSH_HOME")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var("USERPROFILE")
+                .or_else(|_| std::env::var("HOME"))
+                .ok()
+                .map(|home| PathBuf::from(home).join(".dsh"))
+        })
+        .map(|home| {
+            home.join("pets")
+                .join(".runtime")
+                .join("live2dcubismcore.min.js")
+        })
         .unwrap_or_default();
     if core.is_file() {
         println!("cargo:warning=内嵌 Cubism Core（{}）", core.display());

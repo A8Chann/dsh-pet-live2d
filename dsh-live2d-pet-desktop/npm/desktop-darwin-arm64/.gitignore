@@ -1,0 +1,2 @@
+# npm pack 的产物：由 npm-prepare-subpackage.mjs 现做，不进仓库。
+*.tgz
