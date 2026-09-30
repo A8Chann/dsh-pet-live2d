@@ -91,6 +91,26 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   /** 显示层轮询间隔：桌面端接管/让位要在一秒内被看见。 */
   const LAYER_POLL_MS = 1000;
 
+  // ---- 交给引擎的地址必须是"保住 host 的绝对地址" ----
+  //
+  // 症状（2026-09-30 官方桌面端实测）：贴图全挂在
+  //   `dsh-app://api/live2d-pet/asset/ds-whale-girl/textures/texture_01.png` 404
+  // —— 注意 host 位置被 `api` 占了：官方桌面端的页面 origin 是 `dsh-app://app`，
+  // 而 Pixi 是在 **blob Worker** 里 `fetch` 贴图的（`WorkerManager.loadImageBitmap`），
+  // blob Worker 里解析 `/api/...` 这种根相对地址会把 host 丢掉。
+  //
+  // 所以凡是交给引擎（`Live2DModel.from` / 脚本注入）的地址，都先拼成
+  // `<协议>//<host>/api/...`。http(s) 外壳下结果与相对地址等价（只是更长），
+  // 自定义协议外壳下这正是能通的那一种写法。
+  const URL_BASE = (() => {
+    const { protocol, host } = window.location;
+    if (host) return protocol + "//" + host;
+    const { origin } = window.location;
+    return typeof origin === "string" && origin !== "null" ? origin : "";
+  })();
+  const absolutize = (url) =>
+    typeof url === "string" && url.startsWith("/") && URL_BASE !== "" ? URL_BASE + url : url;
+
   /**
    * 桌面端注册进来的"跟随处理器"。
    *
@@ -5390,13 +5410,13 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       layoutRef.current = layout;
 
       const boot = async () => {
-        if (!await ensureCore(catalog.coreUrl)) {
+        if (!await ensureCore(absolutize(catalog.coreUrl))) {
           if (!disposed) setCoreMissing(true);
           return;
         }
         if (disposed) return;
         setCoreMissing(false);
-        const vendor = await ensureVendor(catalog.vendorUrl);
+        const vendor = await ensureVendor(absolutize(catalog.vendorUrl));
         if (disposed) return;
         if (vendor === undefined) throw new Error("vendor bundle unavailable");
         configureVendor(vendor);
@@ -5432,7 +5452,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         app.canvas.style.height = "100%";
         stage.appendChild(app.canvas);
 
-        const loaded = await vendor.Live2DModel.from(pet.modelUrl, {
+        const loaded = await vendor.Live2DModel.from(absolutize(pet.modelUrl), {
           autoUpdate: false,
           autoHitTest: true,
           autoFocus: false,

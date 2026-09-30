@@ -1,5 +1,31 @@
 # 更新日志
 
+## 3.1.2（2026-09-30）
+
+### 修：官方桌面端（`dsh-app://` 外壳）里"贴图 404 / 加载失败"（issue #1 的真身）
+
+现象（用户在 DeepSeek Harness 官方桌面端里实测）：
+
+```
+[Loader.load] Failed to load dsh-app://api/live2d-pet/asset/ds-whale-girl/textures/texture_01.png
+Error: [WorkerManager.loadImageBitmap] Failed to fetch … 404 Not Found
+```
+
+注意地址里 **`api` 占了 host 的位置** ✗。根因有两条叠在一起：
+
+1. 官方桌面端的页面 origin 是 **`dsh-app://app`**（自定义协议，不是 http）；
+2. Live2D 引擎（Pixi）是在 **blob Worker** 里 `fetch` 贴图的，而 **blob Worker 里解析根相对
+   地址 `/api/...` 会把 host 丢掉** ⇒ 请求变成 `dsh-app://api/...` ⇒ 服务端收到的是
+   `/live2d-pet/asset/...`（少了 `/api`）⇒ 404 ⇒ 贴图全挂、模型加载失败。
+
+修法：凡是交给引擎的地址（模型 `modelUrl`、Cubism Core、vendor bundle）都先拼成
+**保住 host 的绝对地址** —— `<协议>//<host>/api/...`。http(s) 外壳下与相对地址等价
+（驱动全绿），`dsh-app://app` 下这正是页面自己那些相对请求能通的形式。
+
+（上一版 3.1.1 修的 `localStorage` 兜底是另一个真实问题：自定义协议 / opaque origin 下
+**光访问 `localStorage` 就会抛 `SecurityError`**，抛在组件第一帧 ⇒ 宠物与设置页一起白掉。
+两处都要有，才算真正"适配得了各种桌面外壳"。）
+
 ## 3.1.1（2026-09-30）
 
 ### 修：在某些桌面外壳里"宠物整个不出现"（`localStorage` 一访问就抛）
