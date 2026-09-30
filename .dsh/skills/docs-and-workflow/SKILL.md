@@ -92,6 +92,28 @@ whenToUse: >
    本机有 `tools/make-release.mjs`（**故意不进仓库**，和别的带 token 的脚本一样）：
    `node tools/make-release.mjs <版本> [--dry-run]`，token 从 `~/.dsh/github-token.txt` 读。
 
+### ⚠️ npm 的**暂存窗口**：`npm publish` 说成功 ≠ 已上线（2026-09-30 连踩三次）
+
+新 token 若是 **"Read and write (stage only)"** 权限（或 npm 判定需要批准），发布会进**暂存区**，
+过几分钟才公开。识别与处理：
+
+| 现象 | 含义 | 怎么办 |
+|---|---|---|
+| `+ pkg@ver` + `Your package is being processed and may take a few minutes` | **已进暂存区**，还没公开 | 轮询 `GET https://registry.npmjs.org/<pkg>/<ver>`，200 才算上线 |
+| `409 Cannot publish over previously staged version "x.y.z"` | **已经在暂存区**了，不是失败 | **别再发**，等它上线；脚本要把这条当成功路径 |
+| 版本级接口 404 而 packument 里也没有 | 还在窗口里 | 同上（3.1.1 那次我等了约 25 分钟） |
+
+写发布脚本的两条纪律（都是血泪）：
+
+* **每个包发完都要等到"上线"再做下一步**。本项目是"先子包、后主包"，主包的
+  `optionalDependencies` 指着子包 —— 子包没上线就发主包，用户装主包时那个可选依赖 404、
+  npm **静默跳过** ⇒ 桌面端凭空消失。
+* **判断 409 必须能读到 npm 的输出**：用 `execFileSync(..., { stdio: 'inherit' })` 时
+  `error.stdout/stderr` 是**空的**，于是"409 = 已在暂存区"的容错会失效、脚本把正常情况
+  当失败退出（3.1.3 第一次就是这么断的 ✗）。改用 `spawnSync`（默认 pipe）抓输出再判断。
+* 发布脚本**别用 `| Select-Object -Last N` 包输出** —— 它会把所有输出缓冲到进程结束，
+  后台跑起来就看不到任何进度；要进度就 `*> file.log` 再读文件。
+
 **别拿 `npm-publish.ps1 -DryRun` 判断发布能不能成**：它内部 `npm publish ... | Out-String`，
 npm 的 `notice` 走 stderr，PowerShell 会把它当 NativeCommandError，`$LASTEXITCODE` 读到的是
 **1**，于是脚本报"dry-run failed" —— 而包里其实一切正常（同一条命令手跑 `exit=0`、
