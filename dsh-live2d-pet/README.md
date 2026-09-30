@@ -39,6 +39,14 @@ git clone https://github.com/A8Chann/dsh-pet-live2d
 dsh plugin --profile web add "link:./dsh-pet-live2d/dsh-live2d-pet"
 ```
 
+> **装到哪个 profile？** 取决于你在哪里用它：
+>
+> - 浏览器里跑的 `dsh web` ⇒ **`--profile web`**（上面几条都是这个）；
+> - **DeepSeek Harness 官方桌面客户端** ⇒ 它用的是 **`--profile desktop`**，例如
+>   `dsh plugin --profile desktop add dsh-pet-live2d`。
+>
+> 装完**重启一次**（插件在启动时加载，客户端 bundle 也不做热重载）。
+
 ### Cubism Core：不用手动装
 
 `live2dcubismcore.min.js` 是 Live2D 株式会社的**专有运行时**，不能随插件分发 —— 但**你也不

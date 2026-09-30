@@ -31,6 +31,11 @@
   "在声明之前引用 `const`"这类**加载期 TDZ**。这类错 `node --check` 看不出来（不是语法错），
   症状是整个插件 import 失败、页面白屏报 "Failed to load plugins"。
   （我踩过：`const SHARED_KEYS = { overrides: OVERRIDE_KEY }` 写在 `OVERRIDE_KEY` 声明之前。）
+- **回 issue 只在"这个版本完全发布完"之后**：npm 上 `latest` 已指到它、Release 附件齐、CI 绿
+  —— 三样都确认过再回。版本还没上线就写"请升级到 x.y.z"，用户装到的其实是旧版，等于误导。
+  （2026-09-30 用户明确要求。坑在于 npm 有**暂存窗口**：`npm publish` 打印 `+ pkg@ver`
+  之后还要过几分钟才公开，期间版本级接口是 404；而
+  `409 Cannot publish over previously staged version` 只说明"已经在暂存区"，不是失败。）
 
 ## 文档分工（别把 README 写成开发日志）
 

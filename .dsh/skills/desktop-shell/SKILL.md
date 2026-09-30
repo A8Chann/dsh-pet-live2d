@@ -860,3 +860,51 @@ Rust，exe 8.94 MB。**M6（macOS arm64 构建）**代码与 CI 就绪，行为�
   不是建议。
 - **非 Windows**：macOS arm64 只做到"能构建"，行为没验过；Intel Mac 与 Linux 连构建都
   还没有（平台表与子包清单已按平台写好，加矩阵项即可）。
+
+## 自定义协议外壳（DeepSeek Harness 官方桌面端 `dsh-app://`）的两条坑
+
+2026-09-30，issue #1（"能适配一下 dsh 的 desktop 版本吗"）的真身就是这两条。官方桌面端的
+**页面 origin 不是 http，而是 `dsh-app://`**（应用用自己的协议处理器把请求转给本地服务），
+于是两个在 http 下永远遇不到的问题冒出来了：
+
+### ① 直接访问 `localStorage` 会抛 `SecurityError`
+
+自定义协议 / opaque origin 下，**光读取 `window.localStorage` 就抛异常**（有的壳还会因隐私
+设置禁用 storage）。它抛在**组件第一帧**里 ⇒ 宠物与设置页一起白掉，看起来就像"这插件不支持
+我的桌面端"。修法：所有读写走一层带兜底的封装，**连"取一次引用"都要裹在 try 里**
+（`typeof window.localStorage` 这个 getter 本身就会抛），拿不到就退回内存实现。
+
+### ② blob Worker 里解析根相对地址会**丢掉 host**
+
+Live2D 引擎（Pixi）在 **blob Worker** 里 `fetch` 贴图（`WorkerManager.loadImageBitmap`）。
+页面里写 `/api/...` 是好的，但在 blob Worker 里解析它 ⇒ host 位置被路径首段占掉：
+
+```
+页面 base `dsh-app://app`：/api/live2d-pet/asset/…     → 正常
+blob Worker 里：           new URL('/api/…', blob:…)   → dsh-app://api/live2d-pet/asset/…
+                                                               ^^^ host 变成 "api"
+```
+
+服务端收到的是 `/live2d-pet/asset/...`（`/api` 被当 host 吃掉）⇒ **404** ⇒ 贴图全挂、
+`[Loader.load] Failed to load …` ⇒ 用户看到"加载失败"。
+
+修法：**凡是交给引擎的地址**（模型 `modelUrl`、Cubism Core、vendor bundle）都先拼成
+**保住 host 的绝对地址**：
+
+```js
+const URL_BASE = location.host ? location.protocol + "//" + location.host : …;
+const absolutize = (url) => url.startsWith("/") && URL_BASE ? URL_BASE + url : url;
+```
+
+http(s) 外壳下与相对地址等价（驱动全绿），`dsh-app://app` 下这正是**页面自己那些相对请求
+能通的形式**。
+
+### 排查这类问题的手法
+
+* **别指望自己截图**：官方客户端的 Web UI 对无凭据请求回 **401**（页面路由要客户端自己的
+  会话），本机浏览器打不开。**让用户截控制台**最快 —— 一张图里那行 `dsh-app://api/...`
+  就把根因说完了。
+* 但 **`/api/live2d-pet/*` 是通的**（插件路由不校验）⇒ 进程外读口照样能问"插件在不在、
+  显示层归谁、存档 rev 多少"。
+* **装到哪个 profile**：官方桌面客户端用 **`--profile desktop`**；浏览器里跑的 `dsh web` 用
+  `--profile web`。回 issue / 写文档时极易只写 web（我第一版就写错了 ✗）。
