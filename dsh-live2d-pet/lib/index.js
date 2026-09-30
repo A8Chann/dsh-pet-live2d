@@ -1392,8 +1392,18 @@ function layerRoute(display) {
         return
       }
       // 页面自己报来的地址就是 DSH 的地址（端口是配置的，猜会猜错）。
+      //
+      // ⚠️ 但**官方桌面客户端的页面 origin 是 `dsh-app://app`**（自定义协议）—— 那个值
+      // 进不了 `setDshUrl`（它只收 `http(s)://`），于是会一直退回 3080 兜底：
+      // 壳以挂载模式连上一个没人听的端口 ⇒ 桌面上什么都没有（用户 2026-09-30 报的
+      // "插件里点桌面打开的 exe 显示不出宠物，直接双击倒是能出"就是这个）。
+      // 所以**同时看 `Host` 头** —— 自定义协议下应用会把请求转给本地服务，Host 才是真的。
       const origin = request.headers?.origin
       if (typeof origin === 'string') display.setDshUrl(origin)
+      const host = request.headers?.host
+      if (typeof host === 'string' && /^[\w.\-]+(:\d+)?$/.test(host)) {
+        display.setDshUrl('http://' + host)
+      }
       // 每次读状态都顺手 reconcile 一次：设置页点完马上能看到结果，不用等下一个 tick。
       const status = display.reconcile()
       sendJson(response, 200, {
