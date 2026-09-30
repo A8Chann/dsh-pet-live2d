@@ -17,6 +17,10 @@ if (typeof version !== 'string' || !/^\d+\.\d+\.\d+$/.test(version)) {
 }
 
 const SUB_NAME = 'dsh-pet-live2d-desktop-win32-x64'
+// 主包 `optionalDependencies` 里**每一行平台子包**都要跟着抬（3.1.1 起 darwin 也进来了）。
+// 漏掉它的后果：mac 用户装主包时去找一个版本不存在的子包 —— npm 会**静默跳过**，
+// 桌面端就这么消失了（正是"发布纪律：先子包后主包"要防的那类事故）。
+const SUB_NAMES = [SUB_NAME, 'dsh-pet-live2d-desktop-darwin-arm64']
 
 /** 要改的文件与"改什么"。`files` 里的路径相对仓库根。 */
 const TARGETS = [
@@ -34,16 +38,19 @@ let changed = 0
 for (const target of TARGETS) {
   const path = join(ROOT, target.file)
   const json = JSON.parse(readFileSync(path, 'utf8'))
-  const before = { version: json.version, optional: json.optionalDependencies?.[SUB_NAME] ?? null }
+  const optionalOf = (source) => SUB_NAMES.map((name) => name + '@' + (source.optionalDependencies?.[name] ?? '—')).join(', ')
+  const before = { version: json.version, optional: optionalOf(json) }
   if (target.edits.includes('version')) json.version = version
   if (target.edits.includes('optionalDependencies') && json.optionalDependencies !== undefined) {
-    json.optionalDependencies[SUB_NAME] = version
+    for (const name of SUB_NAMES) {
+      if (json.optionalDependencies[name] !== undefined) json.optionalDependencies[name] = version
+    }
   }
-  const after = { version: json.version, optional: json.optionalDependencies?.[SUB_NAME] ?? null }
+  const after = { version: json.version, optional: optionalOf(json) }
   const same = before.version === after.version && before.optional === after.optional
   console.log('  ' + target.file)
   console.log('      version        ' + before.version + ' → ' + after.version)
-  if (before.optional !== null || after.optional !== null) {
+  if (before.optional !== after.optional || before.optional.includes('@')) {
     console.log('      optionalDep    ' + before.optional + ' → ' + after.optional)
   }
   if (!same) changed += 1

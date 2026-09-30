@@ -31,6 +31,57 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
 
   const API = "/api/live2d-pet";
   const STORAGE_KEY = "dsh-live2d-pet.state.v1";
+
+  // ---- 存储：`localStorage` 要裹起来用 ----
+  //
+  // 为什么不能直接 `window.localStorage.getItem(...)`：**有些桌面外壳里访问它就抛异常**
+  // （自定义协议 / opaque origin 下是 `SecurityError: The operation is insecure`，
+  // 有的壳还会因为隐私设置直接禁用 storage）。一抛就是**在组件第一帧里**，整个宠物
+  // 连带设置页一起白掉 —— 而这种外壳（官方 desktop / 各家 Tauri、Electron 打包版）
+  // 恰恰是本插件最常见的运行环境之一。
+  //
+  // 拿不到就退回内存实现：这一次会话内照样能存（位置、大小、装扮），只是关掉窗口不保留。
+  // 注意**不能**用 `typeof window.localStorage` 判断 —— 那个 getter 本身就会抛，
+  // 所以连"取一次引用"都要裹在 try 里。
+  const nativeStorage = (() => {
+    try {
+      return window.localStorage;
+    } catch {
+      return null;
+    }
+  })();
+  const memoryStorage = new Map();
+  const storage = {
+    getItem(key) {
+      if (nativeStorage !== null) {
+        try {
+          return nativeStorage.getItem(key);
+        } catch {
+          /* 读也抛（配额/隐私模式）⇒ 退回内存那份 */
+        }
+      }
+      return memoryStorage.has(key) ? memoryStorage.get(key) : null;
+    },
+    setItem(key, value) {
+      memoryStorage.set(key, String(value));
+      if (nativeStorage === null) return;
+      try {
+        nativeStorage.setItem(key, value);
+      } catch {
+        /* 写不进去也别抛：内存那份已经存了 */
+      }
+    },
+    removeItem(key) {
+      memoryStorage.delete(key);
+      if (nativeStorage === null) return;
+      try {
+        nativeStorage.removeItem(key);
+      } catch {
+        /* 同上 */
+      }
+    },
+  };
+
   const ROOT_ATTR = "data-dsh-live2d-pet-root";
   const PET_ATTR = "data-dsh-live2d-pet";
   const LEGACY_ATTR = "data-dsh-live2d-pet-container";
@@ -3010,7 +3061,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
 
   function loadStored() {
     try {
-      const raw = window.localStorage.getItem(STORAGE_KEY);
+      const raw = storage.getItem(STORAGE_KEY);
       if (raw === null) return {};
       const parsed = JSON.parse(raw);
       return typeof parsed === "object" && parsed !== null ? parsed : {};
@@ -3021,7 +3072,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
 
   function saveStored(patch) {
     try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(Object.assign(loadStored(), patch)));
+      storage.setItem(STORAGE_KEY, JSON.stringify(Object.assign(loadStored(), patch)));
     } catch {
       /* storage is best-effort */
     }
@@ -3637,7 +3688,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
 
   const readLocal = (key) => {
     try {
-      const raw = window.localStorage.getItem(key);
+      const raw = storage.getItem(key);
       return raw === null ? null : JSON.parse(raw);
     } catch {
       return null;
@@ -3645,8 +3696,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   };
   const writeLocal = (key, value) => {
     try {
-      if (value === null || value === undefined) window.localStorage.removeItem(key);
-      else window.localStorage.setItem(key, JSON.stringify(value));
+      if (value === null || value === undefined) storage.removeItem(key);
+      else storage.setItem(key, JSON.stringify(value));
     } catch {
       /* 无痕模式之类：这次生效，下次不记得 */
     }
@@ -3912,7 +3963,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     FLAGS[key] = value === true;
     if (key === "outfitArchive" && FLAGS[key] === false) {
       try {
-        window.localStorage.removeItem(OUTFIT_KEY);
+        storage.removeItem(OUTFIT_KEY);
       } catch {
         /* 无痕模式：本来也没存下 */
       }
@@ -3952,7 +4003,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     let saved = given === undefined ? null : given;
     if (saved === undefined || saved === null) {
       try {
-        saved = JSON.parse(window.localStorage.getItem(OVERRIDE_KEY) ?? "null");
+        saved = JSON.parse(storage.getItem(OVERRIDE_KEY) ?? "null");
       } catch {
         saved = null;
       }
@@ -4304,7 +4355,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     let saved = given === undefined ? null : given;
     if (saved === undefined || saved === null) {
       try {
-        saved = JSON.parse(window.localStorage.getItem(TUNING_KEY) ?? "null");
+        saved = JSON.parse(storage.getItem(TUNING_KEY) ?? "null");
       } catch {
         saved = null;
       }
@@ -5985,7 +6036,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     const readOutfit = () => {
       if (!FLAGS.outfitArchive) return null;
       try {
-        const parsed = JSON.parse(window.localStorage.getItem(OUTFIT_KEY) ?? "null");
+        const parsed = JSON.parse(storage.getItem(OUTFIT_KEY) ?? "null");
         return parsed !== null && typeof parsed === "object" ? parsed : null;
       } catch {
         return null;

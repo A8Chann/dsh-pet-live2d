@@ -18,13 +18,13 @@ import { ensureRunnableIntegrity } from './integrity.mjs'
  * 二进制名要与 `dsh-live2d-pet/lib/desktop.js` 的 `BINARY_NAME` 一致（插件按那个名字从
  * tarball 里取），所以两边改动要一起做。
  *
- * `declared: true` = 已经发布、主包 `optionalDependencies` 里必须有一行。
- * macOS 那份现在是 `false`：代码与清单就绪但**还没发上 npm**，主包先别引用它，
- * 否则用户装主包时会去找一个不存在的包（见子包 README 的"发布纪律"）。
+ * `declared: true` = 已经发布、主包 `optionalDependencies` 里必须有一行（两平台现在都是）。
  */
 const SUBS = {
   'win32-x64': { bin: 'dsh-pet-live2d-desktop.exe', built: 'DSH-Pet.exe', declared: true },
-  'darwin-arm64': { bin: 'dsh-pet-live2d-desktop', built: 'dsh-pet-live2d-desktop', declared: false },
+  // 2026-09-30（3.1.1）：darwin 那份已于 3.1.0 发上 npm，主包这一版起也声明它 ——
+  // mac 用户装插件时会自动带上桌面端（在这之前只能从 Release 下 zip）。
+  'darwin-arm64': { bin: 'dsh-pet-live2d-desktop', built: 'dsh-pet-live2d-desktop', declared: true },
 }
 
 const argv = process.argv.slice(2)
