@@ -442,15 +442,14 @@ const probe = (selector) => "#dsh-settings-probe " + selector
  */
 const clickChip = (selector) => ev('(() => { const el = document.querySelector(' + JSON.stringify(selector)
   + '); if (!el) return false; el.click(); return true })()')
-// 相位 = 「每个相位一组池子」，不再是"动作 / 表情两个下拉"。而且**全部相位一开始就
-// 列在表里**（不再是"空列表 + 点添加才看到默认值"）：用户问过"会话相位里是空的，
-// 但点了添加有默认值，应该初始就带上吧" —— 列表空着看不出宠物默认会演什么。
+// 全部相位一开始列在概览中；按相位展开后才能编辑宠物默认池子。
 const toolRow = await ev('!!document.querySelector(' + JSON.stringify(probe('[data-phase="tool"]')) + ')')
 const toolIsDefault = await ev('!document.querySelector(' + JSON.stringify(probe('[data-phase="tool"]')) + ').hasAttribute("data-phase-custom")')
+const toolOpened = await clickChip(probe('[data-phase-toggle="tool"]'))
 const hasPhaseUi = await ev('!!document.querySelector(' + JSON.stringify(probe('[data-phase-pool-row="tool:rhand:写本本"]')) + ')')
-check('「会话相位」一开始就列出全部相位，并按 pet.json 的默认铺开池子',
-  toolRow === true && toolIsDefault === true && hasPhaseUi === true,
-  'row=' + toolRow + ' 默认=' + toolIsDefault + ' 池子=' + hasPhaseUi)
+check('「会话相位」列出全部相位，展开可编辑宠物默认池子',
+  toolRow === true && toolIsDefault === true && toolOpened === true && hasPhaseUi === true,
+  'row=' + toolRow + ' 默认=' + toolIsDefault + ' 展开=' + toolOpened + ' 池子=' + hasPhaseUi)
 const poolSlots = JSON.parse(await ev('JSON.stringify(Array.from(document.querySelectorAll('
   + JSON.stringify(probe('[data-phase="tool"] [data-pool-slot]'))
   + ')).map((el) => el.getAttribute("data-pool-slot")))'))
@@ -700,6 +699,8 @@ await sleep(600)
 check('waiting 相位一开始就在列表里（标注为「默认」）',
   (await ev('(() => { const row = document.querySelector(' + JSON.stringify(probe('[data-phase="waiting"]'))
   + '); return row !== null && !row.hasAttribute("data-phase-custom") })()')) === true)
+check('展开 waiting 后能编辑它的动作池',
+  (await clickProbe('[data-phase-toggle="waiting"]')) === true)
 await sleep(300)
 check('把 waiting 左手的默认条目删掉', (await clickProbe('[data-phase-pool-remove="waiting:lhand:橡皮"]')) === true)
 await sleep(350)
@@ -1195,12 +1196,13 @@ check('前提关系也能删掉',
   !requireRowsAfter.includes("rhand:双手比耶"), JSON.stringify(requireRowsAfter))
 await ev('window.__dshLive2dPet.setExpressions([])')
 
-// 相位行现在**永远在列表里**（不再是"点添加才出现"），所以这里验证的是新的契约：
-// 默认行没有 ×（没什么可恢复的）；**真的改一下**才落盘覆盖、才出现 ×；点 × 恢复默认。
+// 相位行一直在概览中；默认没有「重置动作」，编辑动作池后才出现该按钮。
 check('thinking 相位一开始就在列表里，且标着「默认」、没有 ×',
   (await ev('(() => { const row = document.querySelector("#dsh-settings-probe [data-phase=\'thinking\']");'
     + ' return row !== null && !row.hasAttribute("data-phase-custom")'
     + ' && !document.querySelector("#dsh-settings-probe [data-phase-remove=\'thinking\']") })()')) === true)
+check('展开 thinking 相位',
+  (await clickChip('#dsh-settings-probe [data-phase-toggle="thinking"]')) === true)
 check('改一下它（把某个默认条目删掉：thinking 的左手「画笔」）',
   (await clickChip('#dsh-settings-probe [data-phase-pool-remove="thinking:lhand:画笔"]')) === true)
 await sleep(400)

@@ -30,6 +30,7 @@ import { fileURLToPath } from 'node:url'
 import { createDisplayLayer } from './display.js'
 import { desktopHint, desktopSupported, resolveDesktopBinary } from './desktop.js'
 import { readSettings, writeSettings } from './settings.js'
+import { SOUND_PHASES, MAX_SOUND_BODY, decodeSound, readSound, resetSound, writeSound } from './sound-files.js'
 
 export const name = 'live2d-pet'
 
@@ -547,6 +548,8 @@ export function scanPet(dir, id) {
     // 台词：宠物自己的声音（问候 / 点击 / 摸头 / 摸尾巴 / 转晕 / 归位 / 每个相位）。
     // 用户能在设置里逐条改，改过的存浏览器；这里是**默认值**。
     lines: typeof block.lines === 'object' && block.lines !== null ? block.lines : {},
+    // null 表示旧宠物没有声明提示音，浏览器半区才使用内置兜底。
+    sounds: typeof block.sounds === 'object' && block.sounds !== null && !Array.isArray(block.sounds) ? block.sounds : null,
     // 互动反应候选（标签：动作的中文名或表情名）。摸头 / 摸尾巴 / 转晕各一组。
     patReactions: readReactionList(block.patReactions),
     tailReactions: readReactionList(block.tailReactions),
@@ -604,6 +607,8 @@ const BUNDLED_PET_HASHES = {
     '18840cd90fe70aa68632c45f77b4af1254595b5f963d261d2cbf34f6fbcaf579',
     // 1.0.1（2.3.0 ~ 2.3.2 随包的那份）：内容与上面那条相同，只是换了插件版本号
     '7c6cdb9c9f3d92636c388bffb3229c439cf01a65fe6a8a88499a8e4071f7884a',
+    // 1.1.0（会话提示音进入随包宠物之前）
+    '31eb2a210d3d99d2f2d53462b8a074ae22209579f7b8fcaa41dd5516e0a861b3',
   ],
 }
 
@@ -796,6 +801,7 @@ function sendJson(response, status, payload) {
   const body = Buffer.from(JSON.stringify(payload), 'utf8')
   response.writeHead(status, {
     'cache-control': 'no-store',
+    'x-content-type-options': 'nosniff',
     'content-type': 'application/json; charset=utf-8',
     'content-length': String(body.byteLength),
   })
@@ -901,6 +907,7 @@ function catalogRoute() {
           tailParts: pet.tailParts,
           partNames: pet.partNames,
           lines: pet.lines,
+          sounds: pet.sounds,
           patReactions: pet.patReactions,
           tailReactions: pet.tailReactions,
           spinReactions: pet.spinReactions,
@@ -1464,12 +1471,90 @@ function settingsRoute(home) {
   }
 }
 
+// 回环地址仍可能被 DNS 重绑定命中：写入接口只认服务器实际监听端口的本机 Host。
+function trustedSoundHost(request) {
+  const port = request.socket?.localPort
+  const host = request.headers.host?.toLowerCase()
+  return Number.isInteger(port) && [
+    `127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`,
+  ].includes(host)
+}
+
+// 音频接口的 pet id 必须来自当前目录；音频文件本身永不进入宠物目录。
+function soundRoute(home) {
+  return {
+    kind: 'prefix',
+    path: API + '/sound',
+    handler: async (request, response) => {
+      const fail = (status, error) => sendJson(response, status, { ok: false, error })
+      if (!loopbackOnly(request)) return fail(403, 'forbidden')
+      let parts
+      try {
+        parts = segmentsAfter(new URL(request.url ?? '/', 'http://pet.local').pathname, API + '/sound')?.map(decodeURIComponent)
+      } catch { return fail(400, 'invalid-path') }
+      if (!parts || (parts.length !== 1 && parts.length !== 2)
+        || !/^[A-Za-z0-9_-]+$/.test(parts[0])
+        || (parts.length === 2 && !SOUND_PHASES.includes(parts[1]))) return fail(404, 'not-found')
+      const [id, phase] = parts
+      if (!buildCatalog().some((pet) => pet.id === id)) return fail(404, 'not-found')
+      if (request.method === 'POST') {
+        if (phase === undefined) return fail(405, 'method-not-allowed')
+        if (!trustedSoundHost(request)) return fail(403, 'untrusted-host')
+        // 浏览器的跨站请求不能更改本地文件；代理端用自己的 Host 转发。
+        const origin = request.headers.origin
+        if (typeof origin === 'string' && origin !== `http://${request.headers.host}` && origin !== `https://${request.headers.host}`) return fail(403, 'cross-origin')
+        if (!/^application\/json(?:\s*;|$)/i.test(request.headers['content-type'] ?? '')) return fail(415, 'json-required')
+        let size = 0
+        const chunks = []
+        try {
+          for await (const chunk of request) {
+            size += chunk.length
+            if (size > MAX_SOUND_BODY) return fail(413, 'body-too-large')
+            chunks.push(chunk)
+          }
+        } catch { return fail(400, 'bad-body') }
+        let parsed
+        try { parsed = JSON.parse(Buffer.concat(chunks).toString('utf8')) } catch { return fail(400, 'bad-body') }
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return fail(400, 'bad-body')
+        try {
+          if (parsed.action === 'reset' && Object.keys(parsed).length === 1) resetSound(home, id, phase)
+          else if (Object.keys(parsed).length === 1 && Object.hasOwn(parsed, 'base64')) {
+            const bytes = decodeSound(parsed.base64)
+            if (!bytes) return fail(400, 'invalid-audio')
+            writeSound(home, id, phase, bytes)
+          } else return fail(400, 'bad-body')
+        } catch { return fail(500, 'write-failed') }
+        return sendJson(response, 200, { ok: true })
+      }
+      if (request.method !== 'GET' && request.method !== 'HEAD') return fail(405, 'method-not-allowed')
+      if (phase === undefined) {
+        const sounds = {}
+        for (const key of SOUND_PHASES) {
+          const sound = readSound(home, id, key)
+          if (sound) sounds[key] = {
+            url: `${API}/sound/${encodeURIComponent(id)}/${key}?token=${sound.token}`,
+            mime: sound.mime, bytes: sound.bytes.length, token: sound.token,
+          }
+        }
+        return sendJson(response, 200, { ok: true, sounds })
+      }
+      const sound = readSound(home, id, phase)
+      if (!sound) return fail(404, 'not-found')
+      response.writeHead(200, {
+        'cache-control': 'no-store', 'x-content-type-options': 'nosniff',
+        'content-type': sound.mime, 'content-length': String(sound.bytes.length),
+      })
+      response.end(request.method === 'HEAD' ? undefined : sound.bytes)
+    },
+  }
+}
+
 /** The complete route table this plugin owns. */
 export function buildRoutes(hub, display, home) {
   const routes = [catalogRoute(), assetRoute(), runtimeRoute(), eventsRoute(hub)]
   if (display !== undefined) routes.push(layerRoute(display))
   // 共享设置：不依赖显示层（测试里也可能只给 home）。
-  if (typeof home === 'string' && home !== '') routes.push(settingsRoute(home))
+  if (typeof home === 'string' && home !== '') routes.push(settingsRoute(home), soundRoute(home))
   return routes
 }
 

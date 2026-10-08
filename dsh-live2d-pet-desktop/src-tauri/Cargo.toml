@@ -33,6 +33,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 # 随包宠物的内容指纹（.synced.json 的判定靠它）。
 sha2 = "0.10"
+base64 = "0.22.1"
 
 [target.'cfg(windows)'.dependencies]
 # `Win32_UI_Shell` 是给托盘诊断用的：`Shell_NotifyIconW` / `NOTIFYICONDATAW` 在 Shell 里，

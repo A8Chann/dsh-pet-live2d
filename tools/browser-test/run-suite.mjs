@@ -16,6 +16,7 @@
 //   node run-suite.mjs --jobs 1        # serial, for debugging the suite itself
 //   node run-suite.mjs --jobs 6        # more parallelism on a big machine
 import { spawn, execFileSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { rmSync } from 'node:fs'
 import { cpus } from 'node:os'
@@ -55,7 +56,7 @@ async function startServer(port) {
   // scan (which reads the whole model directory) can take well over the six
   // seconds a single-driver run needed.
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const proc = spawn(process.execPath, [new URL('./server.mjs', import.meta.url).pathname.replace(/^\//, ''), String(port)], { stdio: ['ignore', 'pipe', 'pipe'] })
+    const proc = spawn(process.execPath, [fileURLToPath(new URL('./server.mjs', import.meta.url)), String(port)], { stdio: ['ignore', 'pipe', 'pipe'] })
     let died = false
     proc.stdout.on('data', () => {})
     proc.stderr.on('data', (d) => { process.stderr.write('[server ' + port + '] ' + d) })
@@ -135,7 +136,7 @@ async function runDriver(file, slot) {
   const base = server?.base
   try {
     return await new Promise((resolve) => {
-      const child = spawn(process.execPath, [new URL('./' + file, import.meta.url).pathname.replace(/^\//, '')], {
+      const child = spawn(process.execPath, [fileURLToPath(new URL('./' + file, import.meta.url))], {
         stdio: ['ignore', 'pipe', 'pipe'],
         env: { ...process.env, ...(base === undefined ? {} : { PET_BASE: base, PET_PORT: String(PORT_BASE + slot) }) },
       })
@@ -229,7 +230,8 @@ try {
             results.push({ file, label, ok, ms: r.ms, out: r.out })
             if (!ok) failedHere.push([file, label])
             console.log((ok ? 'PASS ' : 'FAIL ') + file.padEnd(22) + label + '  (' + r.ms + 'ms)')
-            if (!ok) console.log(r.out.split('\n').slice(-25).join('\n'))
+            if (!ok) console.log(process.env.DSH_SUITE_FULL_FAILURE === '1'
+              ? r.out : r.out.split('\n').slice(-25).join('\n'))
             if (next >= lane.length && running === 0) resolve()
             else pump()
           })

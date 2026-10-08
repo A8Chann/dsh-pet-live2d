@@ -54,6 +54,8 @@ pub const BUNDLED_PET_HASHES: &[(&str, &[&str])] = &[(
         "18840cd90fe70aa68632c45f77b4af1254595b5f963d261d2cbf34f6fbcaf579",
         // 1.0.1（2.3.0 ~ 2.3.2 随包的那份）：内容与上面那条相同，只是换了插件版本号
         "7c6cdb9c9f3d92636c388bffb3229c439cf01a65fe6a8a88499a8e4071f7884a",
+        // 1.1.0（会话提示音进入随包宠物之前）
+        "31eb2a210d3d99d2f2d53462b8a074ae22209579f7b8fcaa41dd5516e0a861b3",
     ],
 )];
 
@@ -766,6 +768,11 @@ pub fn scan_pet(dir: &Path, id: &str) -> Option<PetEntry> {
         "tailParts": parts_matching(dir, &model_path, TAIL_HINTS),
         "partNames": Value::Object(part_names(dir, &model_path)),
         "lines": object_or_empty(block.get("lines")),
+        "sounds": block
+            .get("sounds")
+            .filter(|value| value.is_object())
+            .cloned()
+            .unwrap_or(Value::Null),
         "patReactions": reaction_list(block.get("patReactions")),
         "tailReactions": reaction_list(block.get("tailReactions")),
         "spinReactions": reaction_list(block.get("spinReactions")),
@@ -1176,6 +1183,34 @@ mod tests {
 
     fn read(path: &Path) -> String {
         std::fs::read_to_string(path).unwrap_or_default()
+    }
+
+    /// Rust 宿主把宠物声明的提示音原样送给浏览器；旧宠物的 null 交给客户端兜底。
+    #[test]
+    fn catalog_forwards_pet_sounds_and_marks_legacy_absence() {
+        let temp = TempDir::new("sounds");
+        let dir = temp.path();
+        std::fs::write(
+            dir.join("model.model3.json"),
+            br#"{"FileReferences":{"Moc":"model.moc3"}}"#,
+        )
+        .unwrap();
+        let manifest = |sounds: &str| {
+            format!(r#"{{"renderer":"live2d","live2d":{{"model":"model.model3.json"{sounds}}}}}"#)
+        };
+        std::fs::write(
+            dir.join("pet.json"),
+            manifest(r#", "sounds":{"done":[[660,0],[880,0.13]],"failed":[]}"#),
+        )
+        .unwrap();
+        let pet = scan_pet(dir, "test-pet").expect("宠物可被扫描");
+        assert_eq!(
+            pet.json["sounds"],
+            json!({"done": [[660, 0], [880, 0.13]], "failed": []})
+        );
+        std::fs::write(dir.join("pet.json"), manifest("")).unwrap();
+        let old = scan_pet(dir, "test-pet").expect("旧宠物可被扫描");
+        assert!(old.json["sounds"].is_null(), "缺席与空表必须可区分");
     }
 
     /// 边界 1：目标不存在 → 装一份，并写进同步记录。

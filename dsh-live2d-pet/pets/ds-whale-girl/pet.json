@@ -3,7 +3,7 @@
   "id": "ds-whale-girl",
   "displayName": "DS鲸鱼娘",
   "description": "氵六青的 DS 鲸鱼娘 Live2D 桌宠：8 组动作 + 44 个表情/道具，点她会有反应。",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "author": "模型：上善无形 / ZipZipPipe / 氵六青 · 插件：A8Chann",
   "license": "CC BY-NC-SA 4.0 (attribution, NON-COMMERCIAL, share-alike). Character: original OC by 上善无形 (https://www.pixiv.net/users/62155430); DeepSeek maid redesign by ZipZipPipe (https://www.pixiv.net/users/18604994); this Live2D model by 氵六青 (https://space.bilibili.com/11272072), who authorised redistribution here — which does NOT lift the base NC/SA terms. Commercial use requires permission from each rights holder. See NOTICE.md.",
   "homepage": "https://space.bilibili.com/11272072",
@@ -660,6 +660,12 @@
         "done": "搞定！",
         "failed": "呜…出错了"
       }
+    },
+    "sounds": {
+      "done": [[660, 0], [880, 0.13]],
+      "failed": [[370, 0], [277, 0.16]],
+      "waiting": [[520, 0], [660, 0.16]],
+      "asking": [[520, 0], [780, 0.16]]
     },
     "patReactions": [
       "重锤出击",
