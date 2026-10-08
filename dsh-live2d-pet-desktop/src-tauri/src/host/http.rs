@@ -15,12 +15,17 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
+use base64::{engine::general_purpose::STANDARD, Engine};
+use sha2::{Digest, Sha256};
+use std::fs::{self, OpenOptions};
 
 use super::catalog::{self, API};
 use super::shared::{Point, Shared};
 
-/// 一次请求里最多读多少 body（判定答案是几十字节，够用且防呆）。
-const MAX_BODY: usize = 64 * 1024;
+/// JSON base64 音频最大 2 MiB；超限直接回 413 并关闭连接。
+const MAX_BODY: usize = 2 * 1024 * 1024;
+const MAX_AUDIO: usize = 1024 * 1024;
+const SOUND_PHASES: [&str; 8] = ["thinking", "tool", "waiting", "asking", "helper", "queued", "done", "failed"];
 /// 页面还没领任务时的等待上限：超过就当"穿透"，不能让壳一直等。
 const PROBE_WAIT: Duration = Duration::from_millis(2500);
 /// SSE 心跳间隔。
@@ -119,6 +124,10 @@ struct Request {
     method: String,
     path: String,
     body: String,
+    origin: Option<String>,
+    host: Option<String>,
+    content_type: Option<String>,
+    too_large: bool,
 }
 
 /// 读一条请求（请求行 + 头 + 按 content-length 读 body）。
@@ -131,6 +140,9 @@ fn read_request(reader: &mut BufReader<TcpStream>) -> std::io::Result<Option<Req
     let method = parts.next().unwrap_or("GET").to_string();
     let target = parts.next().unwrap_or("/").to_string();
     let mut length = 0usize;
+    let mut origin = None;
+    let mut host = None;
+    let mut content_type = None;
     loop {
         let mut header = String::new();
         if reader.read_line(&mut header)? == 0 {
@@ -140,30 +152,32 @@ fn read_request(reader: &mut BufReader<TcpStream>) -> std::io::Result<Option<Req
         if trimmed.is_empty() {
             break;
         }
-        if let Some(value) = trimmed.strip_prefix("content-length:") {
-            length = value.trim().parse().unwrap_or(0);
-        } else if let Some(value) = trimmed.strip_prefix("Content-Length:") {
-            length = value.trim().parse().unwrap_or(0);
-        }
-    }
-    let mut body = String::new();
-    if length > 0 {
-        let take = length.min(MAX_BODY);
-        let mut buffer = vec![0u8; take];
-        reader.read_exact(&mut buffer)?;
-        body = String::from_utf8_lossy(&buffer).to_string();
-        // 多出来的部分丢掉（我们不会发那么大的请求，但别把连接搞脏）。
-        for _ in take..length {
-            let mut byte = [0u8; 1];
-            if reader.read_exact(&mut byte).is_err() {
-                break;
+        if let Some((key, value)) = trimmed.split_once(':') {
+            match key.to_ascii_lowercase().as_str() {
+                "content-length" => length = value.trim().parse().unwrap_or(MAX_BODY + 1),
+                "content-type" => content_type = Some(value.trim().to_string()),
+                "origin" => origin = Some(value.trim().to_string()),
+                "host" => host = Some(value.trim().to_string()),
+                _ => {}
             }
         }
+    }
+    // 不截断 body：超限响应后必须断开，否则剩余字节会被误读作新请求。
+    let too_large = length > MAX_BODY;
+    let mut body = String::new();
+    if length > 0 && !too_large {
+        let mut buffer = vec![0u8; length];
+        reader.read_exact(&mut buffer)?;
+        body = String::from_utf8(buffer).unwrap_or_default();
     }
     Ok(Some(Request {
         method,
         path: target,
         body,
+        origin,
+        host,
+        content_type,
+        too_large,
     }))
 }
 
@@ -200,6 +214,10 @@ fn send_bytes(
         403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        413 => "Payload Too Large",
+        415 => "Unsupported Media Type",
+        500 => "Internal Server Error",
+        502 => "Bad Gateway",
         _ => "OK",
     };
     let mut head = format!(
@@ -222,7 +240,7 @@ fn send_json(stream: &mut TcpStream, status: u16, payload: &Value) -> std::io::R
         status,
         "application/json; charset=utf-8",
         &body,
-        &[("cache-control", "no-store".to_string())],
+        &[("cache-control", "no-store".to_string()), ("x-content-type-options", "nosniff".to_string())],
     )
 }
 
@@ -234,12 +252,16 @@ fn handle(mut stream: TcpStream, state: Arc<HostState>) -> std::io::Result<()> {
         let Some(request) = read_request(&mut reader)? else {
             return Ok(());
         };
+        if request.too_large {
+            send_json(&mut stream, 413, &json!({ "ok": false, "error": "body-too-large" }))?;
+            return Ok(());
+        }
         let (path, query) = match request.path.split_once('?') {
             Some((path, query)) => (path.to_string(), query.to_string()),
             None => (request.path.clone(), String::new()),
         };
         let _ = query;
-        if !route(&mut stream, &state, &request.method, &path, &request.body)? {
+        if !route(&mut stream, &state, &request, &path)? {
             return Ok(());
         }
     }
@@ -249,10 +271,11 @@ fn handle(mut stream: TcpStream, state: Arc<HostState>) -> std::io::Result<()> {
 fn route(
     stream: &mut TcpStream,
     state: &HostState,
-    method: &str,
+    request: &Request,
     path: &str,
-    body: &str,
 ) -> std::io::Result<bool> {
+    let method = request.method.as_str();
+    let body = request.body.as_str();
     // ---- 挂载模式：插件那一整套原样转发给 DSH ----
     //
     // 这就是"改 bug 只改一处"的落点：挂载时本机的宠物扫描、catalog、资产路由**一次都不
@@ -264,8 +287,14 @@ fn route(
     // 真兜底由用户显式选择：不加 `--attach` 就是独立模式。
     if let Some(upstream) = &state.attach {
         if path.starts_with(&format!("{API}/")) || path == API {
+            if path.starts_with(&format!("{API}/sound/")) && method == "POST" {
+                if let Err(error) = check_sound_post(request, stream.local_addr()?.port()) {
+                    send_json(stream, error.0, &json!({ "ok": false, "error": error.1 }))?;
+                    return Ok(true);
+                }
+            }
             if relay_to_upstream(stream, upstream, method, path, body)? {
-                return Ok(true);
+                return Ok(false);
             }
             eprintln!("[host] 挂载模式：连不上上游 {upstream}（{path}）");
             send_json(
@@ -284,6 +313,9 @@ fn route(
     }
 
     // ---- 插件 API ----
+    if let Some(rest) = path.strip_prefix(&format!("{API}/sound/")) {
+        return serve_sound(stream, state, request, rest);
+    }
     if path == format!("{API}/catalog") {
         // **先同步随包宠物，再扫目录**：第一次运行时宠物还不存在，顺序反了会返回空列表
         // （JS 版的 buildCatalog() 也是这么排的）。
@@ -546,6 +578,240 @@ fn route(
     Ok(true)
 }
 
+fn sound_mime(bytes: &[u8]) -> Option<&'static str> {
+    if valid_wav(bytes) { Some("audio/wav") }
+    else if valid_ogg(bytes) { Some("audio/ogg") }
+    else if valid_mp3(bytes) { Some("audio/mpeg") }
+    else { None }
+}
+
+fn valid_wav(bytes: &[u8]) -> bool {
+    if bytes.get(..4) != Some(b"RIFF") || bytes.get(8..12) != Some(b"WAVE") { return false; }
+    let Some(size) = bytes.get(4..8).and_then(|b| b.try_into().ok()).map(u32::from_le_bytes) else { return false; };
+    if size as usize != bytes.len().saturating_sub(8) { return false; }
+    let (mut offset, mut block_align, mut data_size) = (12usize, None, None);
+    while offset < bytes.len() {
+        let Some(header) = bytes.get(offset..offset + 8) else { return false; };
+        let size = u32::from_le_bytes(header[4..8].try_into().unwrap()) as usize;
+        let Some(end) = offset.checked_add(8).and_then(|start| start.checked_add(size)) else { return false; };
+        let Some(chunk) = bytes.get(offset + 8..end) else { return false; };
+        if &header[..4] == b"fmt " {
+            if block_align.is_some() || chunk.len() < 16 { return false; }
+            let format = u16::from_le_bytes([chunk[0], chunk[1]]);
+            let channels = u16::from_le_bytes([chunk[2], chunk[3]]);
+            let rate = u32::from_le_bytes(chunk[4..8].try_into().unwrap());
+            let byte_rate = u32::from_le_bytes(chunk[8..12].try_into().unwrap());
+            let align = u16::from_le_bytes([chunk[12], chunk[13]]);
+            let bits = u16::from_le_bytes([chunk[14], chunk[15]]);
+            if !matches!(format, 1 | 3) || channels == 0 || rate == 0 || bits == 0 || bits % 8 != 0
+                || (format == 3 && !matches!(bits, 32 | 64))
+                || usize::from(align) != usize::from(channels) * usize::from(bits / 8)
+                || u64::from(byte_rate) != u64::from(rate) * u64::from(align) {
+                return false;
+            }
+            block_align = Some(usize::from(align));
+        } else if &header[..4] == b"data" {
+            if data_size.is_some() { return false; }
+            data_size = Some(size);
+        }
+        let Some(next) = end.checked_add(size % 2) else { return false; };
+        if next > bytes.len() { return false; }
+        offset = next;
+    }
+    match (block_align, data_size) {
+        (Some(align), Some(size)) => size > 0 && size % align == 0,
+        _ => false,
+    }
+}
+
+fn valid_ogg(bytes: &[u8]) -> bool {
+    let Some(header) = bytes.get(..27) else { return false; };
+    if &header[..4] != b"OggS" || header[4] != 0 || header[5] != 2
+        || u32::from_le_bytes(header[18..22].try_into().unwrap()) != 0 { return false; }
+    let Some(segments) = bytes.get(27..27 + usize::from(header[26])) else { return false; };
+    let payload_size: usize = segments.iter().map(|&size| usize::from(size)).sum();
+    let start = 27 + segments.len();
+    let Some(page) = bytes.get(..start + payload_size) else { return false; };
+    let checksum = u32::from_le_bytes(header[22..26].try_into().unwrap());
+    if ogg_checksum(page) != checksum { return false; }
+    let Some(packet_end) = segments.iter().position(|&size| size < 255) else { return false; };
+    let packet_size: usize = segments[..=packet_end].iter().map(|&size| usize::from(size)).sum();
+    let packet = &page[start..start + packet_size];
+    if packet.starts_with(b"OpusHead") {
+        packet.len() >= 19 && packet[8] == 1 && packet[9] != 0
+            && (if packet[18] == 0 { packet[9] <= 2 && packet.len() == 19 }
+                else { packet[18] != 255 && packet.len() >= 21 + usize::from(packet[9]) })
+    } else if packet.starts_with(b"\x01vorbis") {
+        packet.len() == 30 && packet[7..11] == [0; 4] && packet[11] != 0
+            && packet[12..16] != [0; 4] && packet[28] & 15 >= 6
+            && packet[28] >> 4 >= packet[28] & 15 && packet[28] >> 4 <= 13
+            && packet[29] == 1
+    } else { false }
+}
+
+fn ogg_checksum(page: &[u8]) -> u32 {
+    let mut crc = 0u32;
+    for (index, &byte) in page.iter().enumerate() {
+        crc ^= u32::from(if (22..26).contains(&index) { 0 } else { byte }) << 24;
+        for _ in 0..8 {
+            crc = (crc << 1) ^ if crc & 0x8000_0000 != 0 { 0x04c1_1db7 } else { 0 };
+        }
+    }
+    crc
+}
+
+fn valid_mp3(bytes: &[u8]) -> bool {
+    let mut offset = 0usize;
+    if bytes.starts_with(b"ID3") {
+        let Some(tag) = bytes.get(..10) else { return false; };
+        if !(2..=4).contains(&tag[3]) || tag[4] == 0xff
+            || tag[6..10].iter().any(|&byte| byte & 0x80 != 0)
+            || tag[5] & (if tag[3] == 4 { 0x0f } else if tag[3] == 3 { 0x1f } else { 0x3f }) != 0 { return false; }
+        let tag_size = tag[6..10].iter().fold(0usize, |size, &byte| size * 128 + usize::from(byte));
+        offset = 10 + tag_size + if tag[3] == 4 && tag[5] & 0x10 != 0 { 10 } else { 0 };
+    }
+    let Some(frame) = bytes.get(offset..offset + 4) else { return false; };
+    if frame[0] != 0xff || frame[1] & 0xe0 != 0xe0 { return false; }
+    let version = (frame[1] >> 3) & 3;
+    let layer = (frame[1] >> 1) & 3;
+    let bitrate_index = usize::from(frame[2] >> 4);
+    let rate_index = usize::from((frame[2] >> 2) & 3);
+    if version == 1 || layer == 0 || bitrate_index == 0 || bitrate_index == 15 || rate_index == 3 { return false; }
+    let bitrates: &[u16; 16] = match (version == 3, layer) {
+        (true, 3) => &[0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448, 0],
+        (true, 2) => &[0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 0],
+        (true, 1) => &[0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0],
+        (false, 3) => &[0, 32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256, 0],
+        _ => &[0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0],
+    };
+    let rate = [44100usize, 48000, 32000][rate_index] / match version { 3 => 1, 2 => 2, _ => 4 };
+    let bitrate = usize::from(bitrates[bitrate_index]) * 1000;
+    let padding = usize::from((frame[2] >> 1) & 1);
+    let frame_size = if layer == 3 { (12 * bitrate / rate + padding) * 4 }
+        else { (if layer == 1 && version != 3 { 72 } else { 144 }) * bitrate / rate + padding };
+    frame[3] & 3 != 2 && bytes.len().saturating_sub(offset) >= frame_size
+}
+
+fn check_sound_post(request: &Request, port: u16) -> Result<(), (u16, &'static str)> {
+    let host = request.host.as_deref().unwrap_or("").to_ascii_lowercase();
+    if host != format!("127.0.0.1:{port}") && host != format!("localhost:{port}")
+        && host != format!("[::1]:{port}") {
+        return Err((403, "untrusted-host"));
+    }
+    if let Some(origin) = &request.origin {
+        let origin = origin.to_ascii_lowercase();
+        if origin != format!("http://{host}") && origin != format!("https://{host}") {
+            return Err((403, "cross-origin"));
+        }
+    }
+    let content_type = request.content_type.as_deref().unwrap_or("").to_ascii_lowercase();
+    if content_type != "application/json" && !content_type.starts_with("application/json;") {
+        return Err((415, "json-required"));
+    }
+    Ok(())
+}
+
+// 目录和文件都不接受符号链接；名字只由已验证的 id 和相位拼出。
+fn sound_path(home: &Path, id: &str, phase: &str, create: bool) -> std::io::Result<PathBuf> {
+    if !id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_') || id.is_empty() || !SOUND_PHASES.contains(&phase) {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid-path"));
+    }
+    if create { fs::create_dir_all(home)?; }
+    let dir = home.join("pet-sounds");
+    if create && !dir.exists() { fs::create_dir(&dir)?; }
+    let meta = fs::symlink_metadata(&dir)?;
+    if meta.file_type().is_symlink() || !meta.is_dir() {
+        return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "unsafe-path"));
+    }
+    Ok(dir.join(format!("{id}--{phase}.audio")))
+}
+
+fn read_sound(home: &Path, id: &str, phase: &str) -> Option<(Vec<u8>, &'static str, String)> {
+    let file = sound_path(home, id, phase, false).ok()?;
+    let meta = fs::symlink_metadata(&file).ok()?;
+    if !meta.is_file() || meta.file_type().is_symlink() || meta.len() > MAX_AUDIO as u64 { return None; }
+    let bytes = fs::read(file).ok()?;
+    if bytes.len() > MAX_AUDIO { return None; }
+    let mime = sound_mime(&bytes)?;
+    let token = format!("{:x}", Sha256::digest(&bytes));
+    Some((bytes, mime, token))
+}
+
+fn sound_error(stream: &mut TcpStream, status: u16, error: &str) -> std::io::Result<bool> {
+    send_json(stream, status, &json!({ "ok": false, "error": error }))?;
+    Ok(true)
+}
+
+fn serve_sound(stream: &mut TcpStream, state: &HostState, request: &Request, rest: &str) -> std::io::Result<bool> {
+    let segments: Vec<&str> = rest.split('/').collect();
+    if segments.is_empty() || segments.len() > 2 { return sound_error(stream, 404, "not-found"); }
+    let id = segments[0];
+    if id.is_empty() || !id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+        || (segments.len() == 2 && !SOUND_PHASES.contains(&segments[1]))
+        || !pets(state).iter().any(|pet| pet.id() == id) {
+        return sound_error(stream, 404, "not-found");
+    }
+    let phase = segments.get(1).copied();
+    match request.method.as_str() {
+        "POST" => {
+            let Some(phase) = phase else { return sound_error(stream, 405, "method-not-allowed"); };
+            if let Err((status, error)) = check_sound_post(request, stream.local_addr()?.port()) {
+                return sound_error(stream, status, error);
+            }
+            let Ok(value) = serde_json::from_str::<Value>(&request.body) else { return sound_error(stream, 400, "bad-body"); };
+            let Some(map) = value.as_object() else { return sound_error(stream, 400, "bad-body"); };
+            if map.len() != 1 { return sound_error(stream, 400, "bad-body"); }
+            if map.get("action").and_then(Value::as_str) == Some("reset") {
+                if fs::symlink_metadata(state.home.join("pet-sounds")).is_ok() {
+                    let Ok(file) = sound_path(&state.home, id, phase, false) else { return sound_error(stream, 500, "write-failed"); };
+                    if let Ok(meta) = fs::symlink_metadata(&file) {
+                        if meta.file_type().is_symlink() || !meta.is_file() { return sound_error(stream, 500, "write-failed"); }
+                        if fs::remove_file(file).is_err() { return sound_error(stream, 500, "write-failed"); }
+                    }
+                }
+            } else if let Some(encoded) = map.get("base64").and_then(Value::as_str) {
+                if encoded.is_empty() || encoded.len() > (MAX_AUDIO + 2) / 3 * 4 {
+                    return sound_error(stream, 400, "invalid-audio");
+                }
+                let Ok(bytes) = STANDARD.decode(encoded) else { return sound_error(stream, 400, "invalid-audio"); };
+                if bytes.is_empty() || bytes.len() > MAX_AUDIO || STANDARD.encode(&bytes) != encoded || sound_mime(&bytes).is_none() {
+                    return sound_error(stream, 400, "invalid-audio");
+                }
+                let Ok(path) = sound_path(&state.home, id, phase, true) else { return sound_error(stream, 500, "write-failed"); };
+                if let Ok(meta) = fs::symlink_metadata(&path) {
+                    if meta.file_type().is_symlink() || !meta.is_file() { return sound_error(stream, 500, "write-failed"); }
+                }
+                static NEXT_TEMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                let nonce = NEXT_TEMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let temp = path.with_file_name(format!(".{}-{nonce}.tmp", std::process::id()));
+                let written = OpenOptions::new().write(true).create_new(true).open(&temp)
+                    .and_then(|mut file| file.write_all(&bytes))
+                    .and_then(|_| fs::rename(&temp, &path));
+                if written.is_err() { let _ = fs::remove_file(temp); return sound_error(stream, 500, "write-failed"); }
+            } else { return sound_error(stream, 400, "bad-body"); }
+            send_json(stream, 200, &json!({ "ok": true }))?;
+            Ok(true)
+        }
+        "GET" | "HEAD" => {
+            if let Some(phase) = phase {
+                let Some((bytes, mime, _)) = read_sound(&state.home, id, phase) else { return sound_error(stream, 404, "not-found"); };
+                let payload = if request.method == "HEAD" { &[][..] } else { &bytes[..] };
+                send_bytes(stream, 200, mime, payload, &[("cache-control", "no-store".into()), ("x-content-type-options", "nosniff".into())])?;
+            } else {
+                let mut sounds = serde_json::Map::new();
+                for phase in SOUND_PHASES {
+                    if let Some((bytes, mime, token)) = read_sound(&state.home, id, phase) {
+                        sounds.insert(phase.into(), json!({ "url": format!("{API}/sound/{id}/{phase}?token={token}"), "mime": mime, "bytes": bytes.len(), "token": token }));
+                    }
+                }
+                send_json(stream, 200, &json!({ "ok": true, "sounds": sounds }))?;
+            }
+            Ok(true)
+        }
+        _ => sound_error(stream, 405, "method-not-allowed"),
+    }
+}
+
 fn page_name() -> String {
     std::env::var("PET_DESKTOP_PAGE").unwrap_or_else(|_| "pet".to_string())
 }
@@ -698,7 +964,7 @@ fn relay_to_upstream(
     };
     server.set_read_timeout(Some(UPSTREAM_CONNECT))?;
     let request = format!(
-        "{method} {path} HTTP/1.1\r\nhost: {authority}\r\naccept: */*\r\nconnection: close\r\ncontent-length: {}\r\n\r\n{body}",
+        "{method} {path} HTTP/1.1\r\nhost: {authority}\r\naccept: */*\r\ncontent-type: application/json\r\nconnection: close\r\ncontent-length: {}\r\n\r\n{body}",
         body.as_bytes().len()
     );
     server.write_all(request.as_bytes())?;
@@ -744,7 +1010,7 @@ fn relay_to_upstream(
     // 回给客户端：只带这几个头，**故意声明 connection: close**。
     let reason = status_line.split_whitespace().nth(2).unwrap_or("OK");
     let mut head = format!(
-        "HTTP/1.1 {status} {reason}\r\ncontent-type: {}\r\nconnection: close\r\ncache-control: no-store\r\n\r\n",
+        "HTTP/1.1 {status} {reason}\r\ncontent-type: {}\r\nconnection: close\r\ncache-control: no-store\r\nx-content-type-options: nosniff\r\n\r\n",
         header_of("content-type").unwrap_or_else(|| "application/octet-stream".to_string())
     );
     if !chunked {
@@ -908,6 +1174,94 @@ fn layer_payload(state: &HostState) -> Value {
         map.insert("download".to_string(), json!({ "state": "idle", "at": 0 }));
     }
     payload
+}
+
+#[cfg(test)]
+mod sound_tests {
+    use super::*;
+
+    #[test]
+    fn formats_and_post_headers() {
+        let wav = [
+            b'R', b'I', b'F', b'F', 38, 0, 0, 0, b'W', b'A', b'V', b'E',
+            b'f', b'm', b't', b' ', 16, 0, 0, 0, 1, 0, 1, 0,
+            0x40, 0x1f, 0, 0, 0x80, 0x3e, 0, 0, 2, 0, 16, 0,
+            b'd', b'a', b't', b'a', 2, 0, 0, 0, 0, 0,
+        ];
+        assert_eq!(sound_mime(&wav), Some("audio/wav"));
+        let mut float_wav = wav;
+        float_wav[20] = 3;
+        float_wav[34] = 32;
+        float_wav[32] = 4;
+        float_wav[28..32].copy_from_slice(&32000u32.to_le_bytes());
+        float_wav[4..8].copy_from_slice(&40u32.to_le_bytes());
+        float_wav[40..44].copy_from_slice(&4u32.to_le_bytes());
+        let mut float_wav = float_wav.to_vec();
+        float_wav.extend_from_slice(&[0, 0]);
+        assert_eq!(sound_mime(&float_wav), Some("audio/wav"));
+        let mut opus = vec![0u8; 27];
+        opus[..4].copy_from_slice(b"OggS");
+        opus[5] = 2;
+        opus[26] = 1;
+        opus.push(19);
+        opus.extend_from_slice(b"OpusHead");
+        opus.extend_from_slice(&[1, 2, 0, 0, 0x80, 0xbb, 0, 0, 0, 0, 0]);
+        let crc = ogg_checksum(&opus);
+        opus[22..26].copy_from_slice(&crc.to_le_bytes());
+        assert_eq!(sound_mime(&opus), Some("audio/ogg"));
+        let mut vorbis = opus[..27].to_vec();
+        vorbis.push(30);
+        vorbis.extend_from_slice(b"\x01vorbis");
+        vorbis.extend_from_slice(&[0; 4]);
+        vorbis.push(2);
+        vorbis.extend_from_slice(&44100u32.to_le_bytes());
+        vorbis.extend_from_slice(&[0; 12]);
+        vorbis.extend_from_slice(&[0x66, 1]);
+        let crc = ogg_checksum(&vorbis);
+        vorbis[22..26].copy_from_slice(&crc.to_le_bytes());
+        assert_eq!(sound_mime(&vorbis), Some("audio/ogg"));
+        let mut mp3 = vec![0u8; 417];
+        mp3[..4].copy_from_slice(&[0xff, 0xfb, 0x90, 0]);
+        assert_eq!(sound_mime(&mp3), Some("audio/mpeg"));
+        let mut tagged = b"ID3\x04\0\0\0\0\0\x04abcd".to_vec();
+        tagged.extend_from_slice(&mp3);
+        assert_eq!(sound_mime(&tagged), Some("audio/mpeg"));
+        for truncated in [&b"RIFF0000WAVE"[..], &wav[..44], &b"OggS"[..], &opus[..27],
+            &opus[..opus.len() - 1], &b"ID3"[..], &tagged[..14], &mp3[..4], &mp3[..416]] {
+            assert_eq!(sound_mime(truncated), None);
+        }
+        let mut bad_wav = wav;
+        bad_wav[4] = 39;
+        assert_eq!(sound_mime(&bad_wav), None);
+        let mut bad_ogg = opus.clone();
+        bad_ogg[27] = 20;
+        assert_eq!(sound_mime(&bad_ogg), None);
+        let mut bad_ogg = opus.clone();
+        bad_ogg[30] ^= 1;
+        assert_eq!(sound_mime(&bad_ogg), None);
+        let mut bad_mp3 = mp3.clone();
+        bad_mp3[2] = 0xf0;
+        assert_eq!(sound_mime(&bad_mp3), None);
+        assert_eq!(sound_mime(b"<script>"), None);
+        let request = Request {
+            method: "POST".into(), path: "".into(), body: "".into(), too_large: false,
+            host: Some("127.0.0.1:123".into()), origin: Some("http://evil.test".into()),
+            content_type: Some("application/json".into()),
+        };
+        assert_eq!(check_sound_post(&request, 123), Err((403, "cross-origin")));
+        let valid = Request { origin: Some("http://127.0.0.1:123".into()), ..request };
+        assert_eq!(check_sound_post(&valid, 123), Ok(()));
+        let rebound = Request { host: Some("evil.example:123".into()),
+            origin: Some("http://evil.example:123".into()), ..valid };
+        assert_eq!(check_sound_post(&rebound, 123), Err((403, "untrusted-host")));
+    }
+
+    #[test]
+    fn rejects_invalid_file_names() {
+        let home = Path::new("/nonexistent-sound-home");
+        assert!(sound_path(home, "../evil", "thinking", true).is_err());
+        assert!(sound_path(home, "pet", "idle", true).is_err());
+    }
 }
 
 /// 给测试用：`Path` 存在性（避免测试里到处 use std::path）。

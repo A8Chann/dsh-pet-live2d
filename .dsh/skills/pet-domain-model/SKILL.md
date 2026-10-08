@@ -12,10 +12,15 @@ whenToUse: >
 
 这一层是"宠物怎么决定自己长什么样"的规则，既不是 Cubism 引擎的事、也不是 React 的事。
 
-## 一切可配置项都是三层兜底：**用户覆盖 <- 宠物声明 <- 内置默认**
+## 默认可配置项是三层兜底：**用户覆盖 <- 宠物声明 <- 内置默认**
 
 台词（`linesNow`）、摸鱼池（`fidgetEntriesFor`）、相位池（`phasePoolsFor`）、互动反应候选
-（`interactionReactions`）全是这一个形状。**写新可配置项时把三层写全**，别只写前两层：
+（`interactionReactions`）、相位音符（`soundNotesFor`）都有这三层。提示音的宠物
+`live2d.sounds` 是整张相位表：字段缺席才沿用内置四声，已声明的空表代表这只宠物
+完全没有音符；某个相位的空数组代表该相位无音符。用户上传的音频是额外的播放源，优先于音符；
+`PHASE_OVERRIDES.sounds[phase] = []` 的静音优先于上传音频。上传文件按宠物和相位放在独立的
+`$DSH_HOME/pet-sounds/`，状态通过宿主 HTTP 接口轮询，不塞进 `pet.json`、共享设置 JSON 或
+localStorage。**写新可配置项时把默认三层写全**，别只写前两层：
 
 - 只认"宠物声明"的那一层，等于**把"最小 pet.json"判了死刑**。互动反应候选就是这么漏的：
   代码里没有任何默认值（`HEAD_PAT_REACTIONS` 是上一版留下的死常量，谁都没读），

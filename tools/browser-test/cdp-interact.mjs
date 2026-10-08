@@ -116,8 +116,12 @@ for (const key of (fields?.plain ?? [])) {
   if (found !== true) missing.push(key)
 }
 for (const key of (fields?.phase ?? [])) {
-  const found = await ev('document.querySelector("#dsh-settings-probe [data-line-input=\\"phase:' + key + '\\"]") !== null')
+  const toggle = '#dsh-settings-probe [data-phase-toggle="' + key + '"]'
+  const opened = await ev('(() => { const target = document.querySelector(' + JSON.stringify(toggle)
+    + '); if (!target) return false; target.click(); return true })()')
+  const found = opened === true && await ev('document.querySelector("#dsh-settings-probe [data-line-input=\\"phase:' + key + '\\"]") !== null')
   if (found !== true) missing.push('phase:' + key)
+  if (opened) await ev('document.querySelector(' + JSON.stringify(toggle) + ').click()')
 }
 check('每条台词都有输入框（问候/摸头/相位…全都能改）',
   (fields?.plain?.length ?? 0) > 0 && missing.length === 0, '缺: ' + JSON.stringify(missing))

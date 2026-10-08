@@ -3456,32 +3456,70 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     scope + " [data-relation-remove]:hover{opacity:1;background:rgba(127,127,127,.22)}",
 
     // ---- × 删除 --------------------------------------------------------
-    scope + " [data-pool-remove]," + scope + " [data-phase-remove],"
-      + scope + " [data-pool-remove-slot]{justify-self:center;"
+    scope + " [data-pool-remove]," + scope + " [data-pool-remove-slot]{justify-self:center;"
       + "width:20px;height:20px;line-height:1;font-size:13px;border-radius:6px;"
       + "opacity:.4;color:inherit}",
-    scope + " [data-pool-remove]:hover," + scope + " [data-phase-remove]:hover,"
-      + " [data-pool-remove-slot]:hover{opacity:1;"
+    scope + " [data-pool-remove]:hover," + scope + " [data-pool-remove-slot]:hover{opacity:1;"
       + "background:rgba(232,120,120,.2);color:#e87878}",
     // 槽位那一行的 × 贴在右边（它是"整张表"的动作，不是"这一条"的）。
     scope + " [data-pool-remove-slot]{margin-left:auto}",
 
-    // ---- 相位：一张卡片套若干张槽位小卡 --------------------------------
+    // ---- 相位：概览、台词/音符、动作槽位分层 ----------------------------
     scope + " [data-phase]{border:1px solid rgba(127,127,127,.24);border-radius:10px;"
-      + "margin:0 0 8px;overflow:hidden}",
-    scope + " [data-phase-head]{display:flex;align-items:center;gap:8px;padding:6px 10px;"
-      + "background:rgba(127,127,127,.07);border-bottom:1px solid rgba(127,127,127,.16)}",
+      + "margin:0 0 9px;overflow:hidden}",
+    scope + " [data-phase-head]{padding:7px 10px 8px;background:rgba(127,127,127,.07);"
+      + "border-bottom:1px solid rgba(127,127,127,.16)}",
     scope + " [data-phase-head][data-collapsed]{border-bottom:0}",
+    scope + " [data-phase-head-main]{display:flex;align-items:center;gap:6px;min-width:0}",
+    scope + " [data-phase-remove]{flex:none;font-size:10px;color:inherit;opacity:.75;"
+      + "border:1px solid rgba(127,127,127,.3);border-radius:999px;padding:1px 7px}",
+    scope + " [data-phase-remove]:hover{opacity:1;border-color:rgba(120,170,255,.7);"
+      + "background:rgba(120,170,255,.12)}",
     scope + " [data-phase-toggle]{display:flex;align-items:center;gap:7px;flex:1;min-width:0;"
       + "font-size:12px;font-weight:600;text-align:left;color:inherit}",
-    scope + " [data-caret]{font-size:9px;opacity:.55;width:9px}",
-    scope + " [data-phase-meta]{font-size:10px;opacity:.5;font-weight:400;"
-      + "font-variant-numeric:tabular-nums;white-space:nowrap}",
+    scope + " [data-phase-toggle]:focus-visible{outline:2px solid rgba(120,170,255,.7);"
+      + "outline-offset:2px;border-radius:4px}",
+    scope + " [data-caret]{font-size:10px;opacity:.7;width:9px;flex:none}",
+    scope + " [data-phase-name]{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
+    scope + " [data-phase-toggle] code{font:400 10px/1.4 inherit;opacity:.55;flex:none}",
+    scope + " [data-phase-meta]{display:flex;flex-wrap:wrap;gap:4px;margin:5px 0 0 16px;"
+      + "font-size:10px;font-variant-numeric:tabular-nums}",
+    scope + " [data-phase-chip]{display:inline-block;padding:0 6px;border-radius:999px;"
+      + "border:1px solid rgba(127,127,127,.2);background:rgba(127,127,127,.05);opacity:.7}",
+    scope + " [data-phase-chip][data-custom]{border-color:rgba(120,170,255,.5);"
+      + "background:rgba(120,170,255,.13);opacity:1}",
+    scope + " [data-phase-details]{padding:8px 10px 9px;background:rgba(127,127,127,.025);"
+      + "border-bottom:1px solid rgba(127,127,127,.16)}",
+    scope + " [data-phase-section-title]{font-size:10px;font-weight:600;opacity:.65;margin-bottom:3px}",
+    scope + " [data-phase-line]{display:flex;align-items:center;gap:6px;min-width:0}",
+    scope + " [data-phase-line] [data-line-row]{grid-template-columns:84px minmax(0,1fr);"
+      + "flex:1;min-width:0}",
+    scope + " [data-phase-line] [data-reset]{flex:none;white-space:nowrap}",
+    scope + " [data-phase-sound]{display:grid;grid-template-columns:84px minmax(0,1fr);"
+      + "align-items:center;gap:6px;padding:3px 0;min-width:0}",
+    scope + " [data-phase-sound-control]{display:flex;align-items:center;gap:7px;min-width:0}",
+    scope + " [data-phase-sound] input{margin:0;flex:none}",
+    scope + " [data-phase-sound] [data-note-inline]{min-width:0;margin-left:0;"
+      + "line-height:1.5;overflow-wrap:anywhere}",
+    scope + " [data-phase-upload]{display:flex;align-items:center;flex-wrap:wrap;gap:6px;"
+      + "min-width:0;margin:6px 0 0 90px}",
+    scope + " [data-upload-picker]," + scope + " [data-upload-reset]{position:relative;"
+      + "border:1px solid rgba(120,170,255,.5);border-radius:7px;"
+      + "background:rgba(120,170,255,.1);color:inherit;font-size:10px;"
+      + "padding:2px 8px;line-height:1.7;cursor:pointer}",
+    scope + " [data-upload-picker]:focus-within{outline:2px solid rgba(120,170,255,.7);outline-offset:2px}",
+    scope + " [data-upload-picker] input[type=file]{position:absolute;inset:0;opacity:0;"
+      + "width:100%;height:100%;cursor:pointer}",
+    scope + " [data-upload-hint]{font-size:10px;opacity:.55}",
+    scope + " [data-upload-error]{flex-basis:100%;font-size:10px;"
+      + "background:rgba(232,120,120,.16);border-radius:5px;padding:2px 6px}",
+    scope + " [data-phase-motion-head]{display:flex;align-items:center;gap:8px;"
+      + "padding:7px 10px 5px;font-size:10px;font-weight:600;opacity:.8}",
+    scope + " [data-phase-motion-hint]{font-weight:400;opacity:.65}",
+    scope + " [data-phase-motion-head]+[data-pool-empty]{padding:4px 10px}",
     scope + " [data-pool]{padding:7px 10px 8px 12px;"
       + "border-top:1px solid rgba(127,127,127,.13)}",
-    // 相位头下面紧挨着的那张表不要再来一条分隔线（`[data-pool]:first-of-type`
-    // 不可靠：空态那个 div 也是 div，会把它顶掉）。
-    scope + " [data-phase-head]+[data-pool]{border-top:0}",
+    scope + " [data-phase-motion-head]+[data-pool]{border-top:0}",
     scope + " [data-pool-head]{display:flex;align-items:center;gap:8px;padding:0 0 3px}",
     scope + " [data-pool-title]{font-size:11px;font-weight:600;opacity:.88}",
     scope + " [data-pool-meta]{font-size:10px;opacity:.42;font-variant-numeric:tabular-nums}",
@@ -3492,8 +3530,24 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     scope + " [data-note]{font-size:10.5px;opacity:.55;padding-top:4px}",
     scope + " label{display:flex;align-items:center;gap:7px}",
   ]));
-  // CSS 是一整个字符串（上面已经 join 过），不是数组 —— 别对它 concat 数组。
-  const STYLE_TEXT = CSS + "\n" + SETTINGS_CSS.join("\n");
+  // DSH 设置页用两列概览；右键窄面板仍沿用单列，以免池子表格被挤窄。
+  const PAGE_PHASE_CSS = [
+    SETTINGS_SEL + "{max-width:880px;container:pet-settings/inline-size}",
+    SETTINGS_SEL + " [data-setting=phases]{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}",
+    SETTINGS_SEL + " [data-setting=phases] [data-phase]{margin:0;min-width:0}",
+    SETTINGS_SEL + " [data-setting=phases] [data-phase][data-expanded]{grid-column:1/-1}",
+    SETTINGS_SEL + " [data-phase-head]{padding:10px 12px 11px}",
+    SETTINGS_SEL + " [data-phase-toggle]{font-size:13px}",
+    SETTINGS_SEL + " [data-phase-meta]{font-size:11px;gap:5px;margin-top:7px}",
+    SETTINGS_SEL + " [data-phase-chip]{padding:1px 7px}",
+    SETTINGS_SEL + " [data-phase-details]{padding:11px 14px}",
+    SETTINGS_SEL + " [data-phase-section-title]{font-size:11px;opacity:.8}",
+    SETTINGS_SEL + " [data-phase][data-expanded] [data-phase-head]{background:rgba(120,170,255,.1)}",
+    "@container pet-settings (max-width:620px){"
+      + SETTINGS_SEL + " [data-setting=phases]{grid-template-columns:minmax(0,1fr)}",
+    "}",
+  ];
+  const STYLE_TEXT = CSS + "\n" + SETTINGS_CSS.join("\n") + "\n" + PAGE_PHASE_CSS.join("\n");
 
   function ensureStyle() {
     if (document.getElementById(STYLE_ID) !== null) return;
@@ -3617,6 +3671,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     /** 鼠标绕圈：在 spinWindowMs 内累计转过 spinTurns 圈就算转晕。 */
     spinTurns: 2,
     spinWindowMs: 1600,
+    /** 会话提示音音量，0 为无声。 */
+    soundVolume: 0.35,
   };
 
   /** 出厂值快照（「恢复默认」用）。 */
@@ -3648,6 +3704,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     { key: "bubbleHoldMs", label: "一句话停留 ms", min: 800, max: 15000, step: 200, group: "bubble" },
     { key: "spinTurns", label: "转几圈算晕", min: 1, max: 6, step: 0.5, group: "interact" },
     { key: "spinWindowMs", label: "要在多少 ms 内", min: 300, max: 6000, step: 100, group: "interact" },
+    { key: "soundVolume", label: "提示音音量", min: 0, max: 1, step: 0.05, group: "sound" },
   ];
   /** 可调项的分组（没写 group 的都归「手感」）。hint 显示在卡片右上角。 */
   const TUNING_GROUPS = [
@@ -3825,6 +3882,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
    *   relations: { "<槽位>:<标签>": { pairs, requires } }
    *   interactions: { <patReactions|tailReactions|spinReactions>: [标签] }
    *   lines: { <键>: [台词] , phase: { <相位>: 台词 } }
+   *   sounds: { <相位>: [[频率 Hz, 起始秒数], ...] }（空数组 = 静音）
    */
   /** 当前宠物的清单，给设置界面用（DSH 设置页拿不到组件里的 pet）。 */
   const MANIFEST = { current: null };
@@ -3839,10 +3897,10 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
    * 姿势本身的性质 —— 在摸鱼表里改它，右键面板点同一个姿势、相位池里抽到它，
    * 行为必须一致。所以它单独存一层，而不是挂在条目上。
    */
-  // 五个键都要在这里给出来（哪怕只是空壳）：`applyOverride()` 是**原地往这个对象上写**的，
+  // 六个键都要在这里给出来（哪怕只是空壳）：`applyOverride()` 是**原地往这个对象上写**的，
   // 少一个键就等于那条路径第一次改设置时静默丢掉 —— 互动反应候选原来就是这么漏的
   // （读的地方全写着 `?.`，所以"能读、写不进去"，只有正面写它的界面会踩到）。
-  const PHASE_OVERRIDES = { phases: {}, fidget: {}, relations: {}, interactions: {}, lines: {} };
+  const PHASE_OVERRIDES = { phases: {}, fidget: {}, relations: {}, interactions: {}, lines: {}, sounds: {} };
 
   /** 槽位 id -> 中文标签（关系行显示「贴纸」而不是 `sticker`）。 */
   const slotLabelOf = (slotId) =>
@@ -3968,9 +4026,166 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     tailEnabled: true,
     /** 鼠标绕圈转晕。 */
     spinEnabled: true,
+    /** 首次使用默认静音，避免装上插件后突然响铃。 */
+    soundEnabled: false,
   };
   const FLAG_DEFAULTS = Object.freeze(Object.assign({}, FLAGS));
   const OVERRIDE_KEY = "dsh-pet-live2d.settings.v2";
+
+  // 浏览器只允许用户操作后播放声音；文件由宿主按宠物和相位保存在独立目录。
+  const SOUND_URL = "/api/live2d-pet/sound";
+  const UPLOADED_SOUNDS = { petId: null, sounds: {} };
+  let playingUploaded = null;
+  let playingUploadedPhase = null;
+  const stopUploadedSound = () => {
+    if (playingUploaded !== null) playingUploaded.pause();
+    playingUploaded = null;
+    playingUploadedPhase = null;
+  };
+  const uploadedSoundFor = (phase) => UPLOADED_SOUNDS.petId === MANIFEST.current?.id
+    ? UPLOADED_SOUNDS.sounds[phase] : undefined;
+  const pullUploadedSounds = async () => {
+    const id = MANIFEST.current?.id;
+    if (typeof id !== "string") return false;
+    try {
+      const response = await fetch(SOUND_URL + "/" + encodeURIComponent(id), { cache: "no-store" });
+      if (!response.ok) return false;
+      const payload = await response.json();
+      if (MANIFEST.current?.id !== id || payload?.ok !== true) return false;
+      const sounds = {};
+      for (const phase of PHASE_LINE_KEYS) {
+        const entry = payload.sounds?.[phase];
+        if (entry !== null && typeof entry === "object" && /^[a-f0-9]{64}$/.test(entry.token)
+          && ["audio/wav", "audio/mpeg", "audio/ogg"].includes(entry.mime)) sounds[phase] = entry;
+      }
+      if (UPLOADED_SOUNDS.petId !== id || JSON.stringify(UPLOADED_SOUNDS.sounds) !== JSON.stringify(sounds)) {
+        UPLOADED_SOUNDS.petId = id;
+        UPLOADED_SOUNDS.sounds = sounds;
+        notifySettings();
+      }
+      return true;
+    } catch { return false; }
+  };
+  const changeUploadedSound = async (phase, file) => {
+    const id = MANIFEST.current?.id;
+    if (typeof id !== "string" || !PHASE_LINE_KEYS.includes(phase)) throw new Error("宠物尚未加载");
+    if (file && file.size > 1024 * 1024) throw new Error("音频文件不能超过 1 MB");
+    if (file !== null) {
+      const previewUrl = URL.createObjectURL(file);
+      const preview = new window.Audio();
+      let timer;
+      try {
+        await new Promise((resolve, reject) => {
+          preview.preload = "metadata";
+          preview.onloadedmetadata = () => resolve();
+          preview.onerror = () => reject(new Error("音频文件损坏或格式不受支持"));
+          timer = window.setTimeout(() => reject(new Error("读取音频超时，请换一个文件")), 5000);
+          preview.src = previewUrl;
+          preview.load();
+        });
+      } finally {
+        window.clearTimeout(timer);
+        preview.removeAttribute("src");
+        preview.load();
+        URL.revokeObjectURL(previewUrl);
+      }
+    }
+    const base64 = file === null ? null : await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result).split(",")[1] ?? "");
+      reader.onerror = () => reject(new Error("读取音频文件失败"));
+      reader.readAsDataURL(file);
+    });
+    const response = await fetch(SOUND_URL + "/" + encodeURIComponent(id) + "/" + phase, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify(file === null ? { action: "reset" } : { base64 }),
+    });
+    if (!response.ok) {
+      const result = await response.json().catch(() => ({}));
+      throw new Error(result.error === "invalid-audio" ? "仅支持 MP3、WAV、OGG 音频（最大 1 MB）"
+        : result.error === "body-too-large" ? "音频文件不能超过 1 MB"
+          : "保存音频失败（" + response.status + "）");
+    }
+    await pullUploadedSounds();
+  };
+  let soundContext = null;
+  const unlockSound = () => {
+    if (!FLAGS.soundEnabled) return;
+    try {
+      if (soundContext === null) {
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        if (AudioContext === undefined) return;
+        soundContext = new AudioContext();
+      }
+      if (soundContext.state === "suspended") void soundContext.resume().catch(() => {});
+    } catch {
+      /* 无音频设备或浏览器禁用 Web Audio：只保留视觉状态 */
+    }
+  };
+  // 未声明 sounds 的旧宠物沿用原来的四声；声明了 sounds 的宠物只响自己列出的相位。
+  const BUILTIN_SOUNDS = {
+    done: [[660, 0], [880, 0.13]],
+    failed: [[370, 0], [277, 0.16]],
+    waiting: [[520, 0], [660, 0.16]],
+    asking: [[520, 0], [780, 0.16]],
+  };
+  const cleanSoundNotes = (raw) => Array.isArray(raw) && raw.length <= 8
+    && raw.every((note) => Array.isArray(note) && note.length === 2
+      && typeof note[0] === "number" && Number.isFinite(note[0]) && note[0] >= 80 && note[0] <= 4000
+      && typeof note[1] === "number" && Number.isFinite(note[1]) && note[1] >= 0 && note[1] <= 2)
+    ? raw.map((note) => note.slice()) : [];
+  const petSoundNotesFor = (phase) => cleanSoundNotes(
+    MANIFEST.current?.sounds === null || MANIFEST.current?.sounds === undefined
+      ? BUILTIN_SOUNDS[phase] : MANIFEST.current.sounds[phase]);
+  const soundNotesFor = (phase) => Object.prototype.hasOwnProperty.call(PHASE_OVERRIDES.sounds, phase)
+    ? PHASE_OVERRIDES.sounds[phase] : petSoundNotesFor(phase);
+  const setPhaseSoundMuted = (phase, muted) => {
+    if (muted) {
+      PHASE_OVERRIDES.sounds[phase] = [];
+      if (playingUploadedPhase === phase) stopUploadedSound();
+    }
+    else delete PHASE_OVERRIDES.sounds[phase];
+    saveOverrides();
+    notifySettings();
+  };
+  const playPhaseSound = (phase) => {
+    stopUploadedSound();
+    if (!FLAGS.soundEnabled || !(TUNING.soundVolume > 0)) return;
+    if (Object.prototype.hasOwnProperty.call(PHASE_OVERRIDES.sounds, phase)
+      && PHASE_OVERRIDES.sounds[phase].length === 0) return;
+    const uploaded = uploadedSoundFor(phase);
+    if (uploaded !== undefined) {
+      try {
+        const audio = new window.Audio(SOUND_URL + "/" + encodeURIComponent(MANIFEST.current.id)
+          + "/" + phase + "?token=" + uploaded.token);
+        audio.volume = TUNING.soundVolume;
+        playingUploaded = audio;
+        playingUploadedPhase = phase;
+        void audio.play().catch(() => { /* 浏览器阻止自动播放时不影响相位动画 */ });
+      } catch { /* 音频设备不可用时不影响相位动画 */ }
+      return;
+    }
+    const notes = soundNotesFor(phase);
+    if (notes.length === 0 || soundContext?.state !== "running") return;
+    try {
+      const now = soundContext.currentTime;
+      for (const [frequency, offset] of notes) {
+        const oscillator = soundContext.createOscillator();
+        const gain = soundContext.createGain();
+        oscillator.type = "sine";
+        oscillator.frequency.value = frequency;
+        gain.gain.setValueAtTime(0, now + offset);
+        gain.gain.linearRampToValueAtTime(TUNING.soundVolume * 0.12, now + offset + 0.015);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + offset + 0.15);
+        oscillator.connect(gain);
+        gain.connect(soundContext.destination);
+        oscillator.start(now + offset);
+        oscillator.stop(now + offset + 0.16);
+      }
+    } catch {
+      /* 音频异常不能中断相位动画 */
+    }
+  };
 
   const saveOverrides = () => {
     // 走共享落点（宿主优先）：相位池子覆盖与开关两个窗口共用同一份。
@@ -3981,6 +4196,13 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   const applyFlag = (key, value) => {
     if (!Object.prototype.hasOwnProperty.call(FLAGS, key)) return;
     FLAGS[key] = value === true;
+    if (key === "soundEnabled") {
+      if (FLAGS[key]) unlockSound();
+      else {
+        if (soundContext !== null) void soundContext.suspend().catch(() => {});
+        stopUploadedSound();
+      }
+    }
     if (key === "outfitArchive" && FLAGS[key] === false) {
       try {
         storage.removeItem(OUTFIT_KEY);
@@ -4095,11 +4317,21 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         if (Object.keys(next).length > 0) PHASE_OVERRIDES.relations[key] = next;
       }
     }
+    // 每次重建这一层：另一个窗口恢复默认后，不能把本窗口上次的静音覆盖留下。
+    PHASE_OVERRIDES.sounds = {};
+    if (saved.sounds !== null && typeof saved.sounds === "object" && !Array.isArray(saved.sounds)) {
+      for (const phase of PHASE_LINE_KEYS) {
+        if (Object.prototype.hasOwnProperty.call(saved.sounds, phase) && Array.isArray(saved.sounds[phase])) {
+          PHASE_OVERRIDES.sounds[phase] = cleanSoundNotes(saved.sounds[phase]);
+        }
+      }
+    }
     const flags = saved.flags;
     if (flags !== null && typeof flags === "object") {
       for (const key of Object.keys(FLAGS)) {
         if (typeof flags[key] === "boolean") FLAGS[key] = flags[key];
       }
+      if (!FLAGS.soundEnabled) stopUploadedSound();
     }
     // 互动反应候选：三组标签数组。
     const interactions = saved.interactions;
@@ -4114,6 +4346,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     }
     // 台词覆盖：两层（每条一组 + 相位的单句）。数组要清掉空串，否则 `[""]` 会被
     // 当成"用户改过"，`linesNow()` 就永远拿不到宠物默认了。
+    PHASE_OVERRIDES.lines = {};
     const lines = saved.lines;
     if (lines !== null && typeof lines === "object") {
       const next = {};
@@ -4361,6 +4594,10 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       const field = TUNING_FIELDS.find((entry) => entry.key === key);
       TUNING[key] = field === undefined ? value : clampSetting(field, value);
     }
+    if (playingUploaded !== null) {
+      if (!(TUNING.soundVolume > 0)) stopUploadedSound();
+      else playingUploaded.volume = TUNING.soundVolume;
+    }
     // 走共享落点：有宿主就写宿主（DSH 与桌面端两个窗口都能看见），本地留一份兜底。
     persistShared({ tuning: Object.assign({}, TUNING) });
     notifySettings();
@@ -4387,6 +4624,10 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       if (typeof value !== "number" || !Number.isFinite(value)) continue;
       TUNING[field.key] = clampSetting(field, value);
       restored = true;
+    }
+    if (playingUploaded !== null) {
+      if (!(TUNING.soundVolume > 0)) stopUploadedSound();
+      else playingUploaded.volume = TUNING.soundVolume;
     }
     if (restored) notifySettings();
   };
@@ -5366,6 +5607,10 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       phaseExpressionRef.current = Object.assign({}, phaseBaseRef.current.expressions);
       // 设置界面（含 DSH 设置页那个独立组件）需要清单里有哪些动作/表情/槽位。
       MANIFEST.current = pet;
+      UPLOADED_SOUNDS.petId = null;
+      UPLOADED_SOUNDS.sounds = {};
+      stopUploadedSound();
+      void pullUploadedSounds();
       // 头部部件（宿主从 cdi3 的作者命名里挑的，21 个）交给控制器：摸头判定按这些
       // 部件的**真实三角面**测，而不是一个手调内边距的方框。
       motion.current.setHeadParts(pet.headParts ?? []);
@@ -6720,6 +6965,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       });
       // The motion subscription (declared above) flushes a deferred phase here.
       flushPhaseRef.current = applyPhase;
+      let receivedInitialPhase = false;
       const onMessage = (event) => {
         let payload;
         try {
@@ -6729,9 +6975,13 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         }
         const phase = payload?.phase;
         if (typeof phase !== "string") return;
+        const initial = !receivedInitialPhase;
+        receivedInitialPhase = true;
         setPhaseState(phase);
         if (phase === phaseRef.current) return;
         phaseRef.current = phase;
+        // 只提示真正的新相位；首次 SSE 快照和相同相位重发都不响。
+        if (!initial) playPhaseSound(phase);
         // A phase animation may replace another phase animation, but must never
         // cut off something the user just triggered (tap / fidget / panel).
         const owner = motion.current.kind();
@@ -6748,6 +6998,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       source.addEventListener("message", onMessage);
       return () => {
         source.close();
+        stopUploadedSound();
         phaseRef.current = "idle";
         phasePinsRef.current = {};
         phaseSlotsRef.current = [];
@@ -7391,7 +7642,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
             // 桌面端专属：设置正文（和 DSH 设置页那一节是同一个组件、同一份 store）。
             // 外面这层 `data-settings` 把作用域带进来 —— 面板只有 270→340px 宽，
             // 样式表里已经为窄容器收过一档列宽。
-            ? h("div", { "data-settings": "", "data-panel-settings": "" }, h(PetSettingsBody, null))
+            ? h("div", { "data-settings": "", "data-panel-settings": "" }, h(PetSettingsBody, { compact: true }))
             : null,
           ),
           h("div", { "data-hintrow": "" }, "在宠物身上点右键打开这里 · Esc 或点空白处关闭"),
@@ -7528,19 +7779,36 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
    * 列表里只出现**被定制过**的相位（一行 = 一条定制）；新增一个相位会先按 pet.json
    * 的 `looksByPhase` 把默认池子显示出来，改哪张表就物化哪张表。
    */
-  function PhaseControls() {
+  function PhaseControls({ compact = false } = {}) {
     useSettings();
-    // 折叠状态是**每个界面自己的**（设置页和右键面板互不影响），默认全展开：
-    // 折叠是给"配好之后收起来"用的，不是默认藏起来。
+    // 设置页先概览全部相位，一次展开一个；窄面板保持原有逐行折叠行为。
     const [folded, setFolded] = useState({});
+    const [selected, setSelected] = useState(null);
+    const [uploading, setUploading] = useState({});
+    const [uploadErrors, setUploadErrors] = useState({});
+    const updateUploaded = async (phase, file) => {
+      setUploading((previous) => Object.assign({}, previous, { [phase]: true }));
+      setUploadErrors((previous) => Object.assign({}, previous, { [phase]: "" }));
+      try {
+        await changeUploadedSound(phase, file);
+        if (file !== null && PHASE_OVERRIDES.sounds[phase]?.length === 0) setPhaseSoundMuted(phase, false);
+      } catch (error) {
+        setUploadErrors((previous) => Object.assign({}, previous, {
+          [phase]: error instanceof Error ? error.message : "保存音频失败",
+        }));
+      } finally {
+        setUploading((previous) => Object.assign({}, previous, { [phase]: false }));
+      }
+    };
     const pet = MANIFEST.current;
     if (pet === null) return h("div", { "data-empty": "phases" }, "宠物还没加载好");
     const slots = pet.expressionSlots ?? [];
     const known = Array.from(new Set([
+      ...PHASE_LINE_KEYS,
       ...Object.keys(PHASE_MOTION),
       ...Object.keys(pet.looksByPhase ?? {}),
       ...Object.keys(PHASE_OVERRIDES.phases),
-    ])).sort();
+    ]));
     // **全部相位都列出来**，不再是"只列定制过的"。
     //
     // 用户问过："会话相位里是空的，但点了添加有默认值，这正常吗？应该初始就带上默认值吧。"
@@ -7549,7 +7817,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     // **看不出宠物默认会演什么**，而且和「摸鱼」那张卡不一致（摸鱼永远列着它的池子）。
     //
     // 现在每行显示的是**有效池子**（有覆盖用覆盖，没有就用 pet.json 的默认），行头标出
-    // 「默认 / 已改过」，只有改过的那行才有 ×（= 恢复默认）。覆盖依然**只在真的编辑时**
+    // 「默认 / 已改过」，只有改过的那行才显示「重置动作」。覆盖依然**只在真的编辑时**
     // 才落盘（`setPhasePool` 会把有效池子整份物化），所以"看一眼"不留痕迹、
     // 以后默认值改进了也照样能吃到。
     return h("div", { "data-settings": "", "data-setting": "phases" },
@@ -7561,32 +7829,118 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         const pools = phasePoolsFor(phase);
         const used = Object.keys(pools);
         const free = slots.filter((slot) => used.indexOf(slot.id) === -1);
-        const open = folded[phase] !== true;
+        const open = compact ? folded[phase] !== true : selected === phase;
         const candidates = used.reduce((sum, slotId) => sum + (pools[slotId] ?? []).length, 0);
-        return h("div", { key: phase, "data-phase": phase, ...(custom ? { "data-phase-custom": "" } : {}) },
+        const soundFile = uploadedSoundFor(phase);
+        return h("div", { key: phase, "data-phase": phase,
+          ...(open ? { "data-expanded": "" } : {}),
+          ...(custom ? { "data-phase-custom": "" } : {}) },
           h("div", { "data-phase-head": "", ...(open ? {} : { "data-collapsed": "" }) },
-            h("button", {
-              type: "button",
-              "data-phase-toggle": phase,
-              title: open ? "收起来" : "展开",
-              onClick: () => setFolded((prev) => Object.assign({}, prev, { [phase]: !(prev[phase] === true) })),
-            },
-            h("span", { "data-caret": "" }, open ? "▾" : "▸"),
-            h("span", null, phase),
-            h("span", { "data-phase-meta": "" },
-              used.length + " 槽位 · " + candidates + " 条候选 · " + (custom ? "已改过" : "默认")),
+            h("div", { "data-phase-head-main": "" },
+              h("button", {
+                type: "button",
+                "data-phase-toggle": phase,
+                "aria-expanded": open,
+                title: open ? "收起" : "展开",
+                onClick: () => compact
+                  ? setFolded((prev) => Object.assign({}, prev, { [phase]: !(prev[phase] === true) }))
+                  : setSelected((prev) => prev === phase ? null : phase),
+              },
+                h("span", { "data-caret": "" }, open ? "▾" : "▸"),
+                h("span", { "data-phase-name": "" }, PHASE_LINE_FIELDS.find((field) => field.key === phase)?.label ?? phase),
+                h("code", null, phase),
+              ),
+              custom ? h("button", {
+                type: "button",
+                "data-phase-remove": phase,
+                title: "恢复此相位的动作槽位默认值",
+                "aria-label": "恢复" + phase + "的动作槽位默认值",
+                onClick: () => removePhaseRow(phase),
+              }, "重置动作") : null,
             ),
-            // × 只在**改过**的行上出现：它就是"恢复默认"（删掉整个覆盖）。
-            custom ? h("button", {
-              type: "button",
-              "data-phase-remove": phase,
-              title: "恢复默认（删掉这个相位的全部改动）",
-              onClick: () => removePhaseRow(phase),
-            }, "×") : null,
+            h("div", { "data-phase-meta": "" },
+              h("span", { "data-phase-chip": "motion", ...(custom ? { "data-custom": "" } : {}) },
+                "动作 " + used.length + " 槽 · " + candidates + " 候选" + (custom ? " · 已改" : "")),
+              h("span", { "data-phase-chip": "line",
+                ...(PHASE_OVERRIDES.lines.phase?.[phase] !== undefined ? { "data-custom": "" } : {}) },
+                "台词 " + (PHASE_OVERRIDES.lines.phase?.[phase] !== undefined ? "已改" : "默认")),
+              h("span", { "data-phase-chip": "sound",
+                ...(PHASE_OVERRIDES.sounds[phase] !== undefined || soundFile !== undefined ? { "data-custom": "" } : {}) },
+                "音频 " + (PHASE_OVERRIDES.sounds[phase] !== undefined ? "已静音"
+                  : soundFile !== undefined ? "已上传" : petSoundNotesFor(phase).length === 0 ? "未配置" : "宠物默认")),
+            ),
           ),
           open ? [
+            h("div", { key: "details", "data-phase-details": "" },
+              h("div", { "data-phase-section-title": "" }, "气泡与提示音"),
+              h("div", { "data-phase-line": phase },
+                h("label", { "data-line-row": "phase:" + phase },
+                  h("span", { "data-row-label": "" }, "气泡台词"),
+                  h("input", {
+                    type: "text",
+                    "data-line-input": "phase:" + phase,
+                    value: linesNow().phase?.[phase] ?? "",
+                    placeholder: pet.lines?.phase?.[phase] ?? "",
+                    onChange: (event) => applyOverride({ lines: { phase: { [phase]: event.target.value } } }),
+                  })),
+                Object.prototype.hasOwnProperty.call(PHASE_OVERRIDES.lines.phase ?? {}, phase)
+                  ? h("button", {
+                    type: "button",
+                    "data-reset": "",
+                    "data-phase-line-reset": phase,
+                    onClick: () => {
+                      delete PHASE_OVERRIDES.lines.phase[phase];
+                      saveOverrides();
+                      notifySettings();
+                    },
+                  }, "恢复默认") : null,
+              ),
+              h("label", { "data-phase-sound": phase },
+                h("span", { "data-row-label": "" }, "提示音"),
+                petSoundNotesFor(phase).length === 0 && soundFile === undefined
+                  ? h("span", { "data-note-inline": "" }, "未配置；可上传音频")
+                  : h("span", { "data-phase-sound-control": "" },
+                    h("input", {
+                      type: "checkbox",
+                      "aria-label": (PHASE_LINE_FIELDS.find((field) => field.key === phase)?.label ?? phase) + "提示音",
+                      checked: PHASE_OVERRIDES.sounds[phase] === undefined
+                        ? soundFile !== undefined || soundNotesFor(phase).length > 0
+                        : soundNotesFor(phase).length > 0,
+                      onChange: (event) => setPhaseSoundMuted(phase, !event.target.checked),
+                    }),
+                    h("span", { "data-note-inline": "" },
+                      soundFile === undefined
+                        ? petSoundNotesFor(phase).map((note) => note[0] + "Hz").join(" → ")
+                          + (PHASE_OVERRIDES.sounds[phase] === undefined ? " · 宠物默认" : " · 已静音")
+                        : "已上传 " + (soundFile.mime === "audio/mpeg" ? "MP3"
+                          : soundFile.mime.replace("audio/", "").toUpperCase())
+                          + " · " + (soundFile.bytes < 1024 ? "<1" : Math.round(soundFile.bytes / 1024)) + " KB"
+                          + (PHASE_OVERRIDES.sounds[phase] === undefined ? "" : " · 已静音")))),
+              h("div", { "data-phase-upload": phase },
+                h("label", { "data-upload-picker": phase, "data-busy": uploading[phase] === true ? "" : undefined },
+                  h("input", {
+                    type: "file", accept: ".mp3,.wav,.ogg,audio/mpeg,audio/wav,audio/ogg",
+                    "data-upload-input": phase, disabled: uploading[phase] === true,
+                    onChange: (event) => {
+                      const file = event.target.files?.[0];
+                      event.target.value = "";
+                      if (file) void updateUploaded(phase, file);
+                    },
+                  }),
+                  uploading[phase] ? "上传中…" : soundFile === undefined ? "上传音频" : "替换音频"),
+                h("span", { "data-upload-hint": "" }, "MP3 / WAV / OGG，最多 1 MB"),
+                soundFile === undefined ? null : h("button", {
+                  type: "button", "data-upload-reset": phase, disabled: uploading[phase] === true,
+                  onClick: () => { void updateUploaded(phase, null); },
+                }, "移除上传"),
+                uploadErrors[phase] ? h("span", { role: "alert", "data-upload-error": phase }, uploadErrors[phase]) : null,
+              ),
+            ),
+            h("div", { key: "motion-head", "data-phase-motion-head": "" },
+              h("span", null, "动作槽位"),
+              h("span", { "data-phase-motion-hint": "" }, "按候选权重抽取")),
             used.length === 0
-              ? h("div", { "data-pool-empty": "", key: "empty" }, "空相位：什么都不改 —— 在下面加一个槽位")
+              ? h("div", { "data-pool-empty": "", key: "empty" }, "没有动作槽位，可在下方添加")
               : null,
             ...used.map((slotId) => {
               // 槽位 id 来自池子的键：清单里没有它（换了宠物）就退化成一个空槽位，
@@ -8014,7 +8368,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   }
 
   /**
-   * 台词：所有气泡文本。
+   * 台词：非会话相位的气泡文本；相位台词在对应相位行。
    *
    * 一组 = 一行输入，**用 `|` 分隔多个变体**（随机挑一句）；相位台词是单句。
    * 留空就退回宠物默认（`pet.json` 的 `live2d.lines`），所以"看一眼"不会把默认改掉。
@@ -8041,14 +8395,6 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         joinLineInput(effective[field.key]),
         (text) => setLines({ [field.key]: splitLineInput(text) }),
         joinLineInput(MANIFEST.current?.lines?.[field.key]),
-      )),
-      h("div", { "data-row-label": "", "data-note": "" }, "会话相位"),
-      ...PHASE_LINE_FIELDS.map((field) => row(
-        "phase:" + field.key,
-        field.label,
-        effective.phase?.[field.key] ?? "",
-        (text) => setLines({ phase: { [field.key]: text } }),
-        MANIFEST.current?.lines?.phase?.[field.key] ?? "",
       )),
     );
   }
@@ -8164,7 +8510,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     );
   }
 
-  function PetSettingsBody() {    useSettings();
+  function PetSettingsBody({ compact = false } = {}) {
+    useSettings();
     const card = (key, title, hint, body) => h("div", { key, "data-card": key },
       h("div", { "data-card-head": "" },
         h("span", { "data-card-title": "" }, title),
@@ -8177,7 +8524,20 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         "tune-" + group.id, group.label, group.hint, h(TuningControls, { group: group.id }))),
       // 显示层放最上面：它是"这只宠物在哪"的问题，比手感/池子更先要回答。
       card("layer", "显示位置", "页面内 / 桌面上", h(LayerControls, null)),
-      card("phases", "会话相位", "每个相位一组池子", h(PhaseControls, null)),
+      card("sound", "会话提示音", "总开关 · 音量", [
+        h("label", { key: "enabled", "data-flag-row": "soundEnabled" },
+          h("input", {
+            type: "checkbox",
+            checked: FLAGS.soundEnabled === true,
+            "data-flag": "soundEnabled",
+            onChange: (event) => applyFlag("soundEnabled", event.target.checked),
+          }),
+          h("span", { "data-row-label": "" }, "开启会话提示音"),
+          h("span", { "data-note-inline": "" }, FLAGS.soundEnabled ? "" : "默认静音"),
+        ),
+        h(TuningControls, { key: "volume", group: "sound" }),
+      ]),
+      card("phases", "会话相位", "点开相位调整台词 · 音频 · 动作", h(PhaseControls, { compact })),
       // 「摸鱼节奏」（多久摸一次）和「摸鱼」（摸鱼做什么）是同一件事的两半，原来
       // 被「会话相位」隔成两张卡，调摸鱼要上下跳。合成一张：节奏在上、池子在下。
       card("pools", "摸鱼", "多久摸一次 · 摸鱼做什么", [
@@ -8185,10 +8545,10 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         h(FidgetControls, { key: "pools" }),
       ]),
       card("outfit", "装扮", null, h(OutfitControls, null)),
-      // 互动与气泡：开关、反应候选、以及**所有**气泡文本都在这两张卡里。
+      // 相位台词在相位卡；气泡卡只保留互动台词、开关和位置。
       card("interact", "互动", "摸头 / 摸尾巴 / 转圈", h(InteractControls, null)),
       card("bubble", "气泡", "显示什么 · 在哪 · 停留多久", [
-        h("label", { "data-flag-row": "bubbleEnabled" },
+        h("label", { key: "enabled", "data-flag-row": "bubbleEnabled" },
           h("input", {
             type: "checkbox",
             checked: FLAGS.bubbleEnabled === true,
@@ -8230,6 +8590,15 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     // 先按本地存档起来（宿主不在时这就是全部）。
     restoreTuning();
     restoreOverrides();
+    // 刷新后浏览器会锁住声音；下次用户点击页面时再解锁，不自动播放。
+    window.addEventListener("pointerdown", unlockSound);
+    ctx.effect(() => () => {
+      window.removeEventListener("pointerdown", unlockSound);
+      if (soundContext !== null) {
+        void soundContext.close().catch(() => {});
+        soundContext = null;
+      }
+    }, "live2d-pet: notification audio");
     // 再问宿主要"共享的那一份"：桌面端与 DSH 是两个 origin，localStorage 互不可见，
     // 所以跨窗口一致只能靠宿主。拉回来会覆盖本地（宿主是权威），并广播给两个界面。
     const applyRemote = (payload) => {
@@ -8250,7 +8619,10 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     void pullShared(applyRemote);
     // 3 秒轮询：另一个窗口改了，这个窗口跟着变。`storage` 事件不跨 origin，只能轮询。
     if (sharedPoll === 0) {
-      sharedPoll = window.setInterval(() => { void pullShared(applyRemote); }, SHARED_POLL_MS);
+      sharedPoll = window.setInterval(() => {
+        void pullShared(applyRemote);
+        void pullUploadedSounds();
+      }, SHARED_POLL_MS);
     }
     applySettings(ctx);
     // Takeover: an earlier instance — a hot reload, or one left behind by a

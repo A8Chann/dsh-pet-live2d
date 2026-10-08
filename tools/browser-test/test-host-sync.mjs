@@ -85,6 +85,15 @@ try {
     check('全新安装：宠物被装进去了', existsSync(join(dir, 'pet.json')))
     check('全新安装：装的是随包那一版', readManifest(dir).version === BUNDLED_VERSION,
       '装了 ' + readManifest(dir).version + '，随包 ' + BUNDLED_VERSION)
+    const pet = host.scanPet(dir, PET_ID)
+    check('Web 宿主将宠物声明的相位音符送进 catalog',
+      JSON.stringify(pet?.sounds?.done) === JSON.stringify([[660, 0], [880, 0.13]]),
+      JSON.stringify(pet?.sounds))
+    const old = readManifest(dir)
+    delete old.live2d.sounds
+    writeFileSync(join(dir, 'pet.json'), JSON.stringify(old))
+    check('Web 宿主区分旧宠物缺席与显式空音效表', host.scanPet(dir, PET_ID)?.sounds === null)
+    cpSync(join(BUNDLED, 'pet.json'), join(dir, 'pet.json'))
     // 同步记录不能落在宠物目录里：那是用户自己的地盘，多一个文件就是污染。
     check('全新安装：同步记录写在 pets/ 下、不在宠物目录里',
       !existsSync(join(dir, '.synced.json')) && existsSync(join(home, 'pets', '.synced.json')))
@@ -134,6 +143,8 @@ try {
       after.live2d.lines !== undefined && after.live2d.fidgetSlots !== undefined
       && after.live2d.looksByPhase.asking !== undefined,
       JSON.stringify(Object.keys(after.live2d.looksByPhase)))
+    check('老用户：宠物声明的提示音随升级到达',
+      JSON.stringify(after.live2d.sounds?.asking) === JSON.stringify([[520, 0], [780, 0.16]]))
     check('老用户：模型文件也在（整份拷，不是只补 pet.json）',
       existsSync(join(dir, 'model', 'c_0120.moc3')))
     check('老用户：用户自己放进去的文件还在（逐文件覆盖，不是整目录替换）',

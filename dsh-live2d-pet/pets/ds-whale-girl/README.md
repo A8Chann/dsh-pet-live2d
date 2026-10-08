@@ -58,6 +58,8 @@
 | pet.json 字段 | 变成设置页里的什么 |
 |---|---|
 | `live2d.looksByPhase` | 每个相位的默认池子：一个槽位一个选择 = 那个槽位池子里"权重 1 的一条" |
+| `live2d.lines.phase` | 每个相位的默认气泡台词 |
+| `live2d.sounds` | 每个相位的提示音符 `[频率 Hz, 起始秒数]`；这只宠物的完成、失败、待批准、待回答各有两音 |
 | `live2d.motions` | 每个相位的默认动作（`done` 吹泡泡糖、`failed` 鲸鱼喷水就是这么来的）|
 | `expressionSlots[].options[].pairs` | 该选项的「同时」关系（选了它就一起点亮哪个槽位） |
 | `expressionSlots[].options[].requires` | 该选项的「前提」关系（必须先处于哪个状态才播得出来） |

@@ -13,7 +13,7 @@
 import { mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { BASE, browserPath, HERE, PROFILES } from './paths.mjs'
-import { killBrowser } from './ready.mjs'
+import { killBrowser, waitReady } from './ready.mjs'
 
 const PORT = Number(process.env.PET_PORT ?? 8793)
 const PROFILE = join(PROFILES, '_cdp-settings-render')
@@ -50,7 +50,7 @@ const browser = spawn(browserPath(), [
   '--no-default-browser-check',
   '--window-size=1280,900',
   BASE + '/',
-], { stdio: 'ignore' })
+], { stdio: 'ignore', detached: process.platform !== 'win32' })
 
 const waitForCdp = async () => {
   for (let i = 0; i < 80; i += 1) {
@@ -139,6 +139,220 @@ if (!applied) {
 
   const flags = JSON.parse(await evaluate('JSON.stringify([...document.querySelectorAll("#dsh-settings-probe [data-flag]")].map((n) => n.getAttribute("data-flag")))'))
   check('互动开关还在', flags.includes('patEnabled') && flags.includes('tailEnabled'), flags.join(','))
+  const soundControls = JSON.parse(await evaluate(`JSON.stringify((() => {
+    const card = document.querySelector('#dsh-settings-probe [data-card="sound"]');
+    const phaseCard = document.querySelector('#dsh-settings-probe [data-card="phases"]');
+    const toggle = card?.querySelector('[data-flag="soundEnabled"]');
+    const volume = card?.querySelector('input[type="range"]');
+    return { toggle: toggle?.checked, volume: volume?.value, min: volume?.min, max: volume?.max,
+      isolated: !phaseCard?.querySelector('[data-flag="soundEnabled"], input[type="range"]'),
+      adjacent: card?.nextElementSibling === phaseCard };
+  })())`))
+  check('总提示音开关与音量独立成卡，紧挨会话相位', soundControls.toggle === false
+    && soundControls.volume === '0.35' && soundControls.min === '0' && soundControls.max === '1'
+    && soundControls.isolated && soundControls.adjacent,
+  JSON.stringify(soundControls))
+  // 相位来自异步宠物目录；等模型就绪后再读布局，不能用固定五秒当加载信号。
+  const petReady = await waitReady(evaluate)
+  check('相位默认值已加载', petReady)
+  let overview = null
+  for (let i = 0; i < 20; i += 1) {
+    overview = JSON.parse(await evaluate(`JSON.stringify((() => {
+      const rows = [...document.querySelectorAll('#dsh-settings-probe [data-card="phases"] [data-phase]')];
+      return { count: rows.length, order: rows.map((row) => row.getAttribute('data-phase')),
+        expanded: rows.filter((row) => row.hasAttribute('data-expanded')).length,
+        twoColumns: rows.length > 1 && Math.abs(rows[0].getBoundingClientRect().top - rows[1].getBoundingClientRect().top) < 2 };
+    })())`))
+    if (overview.count === 8) break
+    await sleep(250)
+  }
+  check('设置页八相位按工作流程成对排列、默认收起', overview.count === 8
+    && overview.order?.join(',') === 'thinking,tool,waiting,asking,helper,queued,done,failed'
+    && overview.expanded === 0 && overview.twoColumns, JSON.stringify(overview))
+  await evaluate(`document.querySelector('#dsh-settings-probe [data-phase="done"] [data-phase-toggle="done"]')?.click()`)
+  let phaseDetails = null
+  for (let i = 0; i < 20; i += 1) {
+    phaseDetails = JSON.parse(await evaluate(`JSON.stringify((() => {
+      const phase = document.querySelector('#dsh-settings-probe [data-card="phases"] [data-phase="done"]');
+      const line = phase?.querySelector('[data-line-input="phase:done"]');
+      const sound = phase?.querySelector('[data-phase-sound="done"]');
+      const soundControl = phase?.querySelector('[data-phase-sound-control]');
+      return { line: Boolean(line), sound: sound?.textContent,
+        chips: [...(phase?.querySelectorAll('[data-phase-chip]') ?? [])].map((el) => el.getAttribute('data-phase-chip')),
+        sections: [...(phase?.querySelectorAll('[data-phase-section-title], [data-phase-motion-head]') ?? [])].map((el) => el.textContent),
+        aligned: Boolean(line && soundControl && Math.abs(line.getBoundingClientRect().left - soundControl.getBoundingClientRect().left) < 3),
+        bubblePhaseDuplicate: Boolean(document.querySelector('#dsh-settings-probe [data-card="bubble"] [data-line-input="phase:done"]')) };
+    })())`))
+    if (phaseDetails.line) break
+    await sleep(250)
+  }
+  check('同一相位内有气泡台词和宠物提示音，气泡卡不重复', phaseDetails.line
+    && phaseDetails.sound?.includes('660Hz') && !phaseDetails.bubblePhaseDuplicate,
+  JSON.stringify(phaseDetails))
+  check('相位概览展示动作/台词/音符，展开后按两块分组且输入对齐',
+    phaseDetails.chips?.join(',') === 'motion,line,sound'
+      && phaseDetails.sections?.[0] === '气泡与提示音'
+      && phaseDetails.sections?.[1]?.startsWith('动作槽位') && phaseDetails.aligned,
+    JSON.stringify(phaseDetails))
+  if (phaseDetails.line) {
+    const narrow = JSON.parse(await evaluate(`JSON.stringify((() => {
+      const host = document.querySelector('#dsh-settings-probe');
+      const prior = host.style.width;
+      host.style.width = '300px';
+      const phase = host.querySelector('[data-phase="done"]');
+      const summary = [...phase.querySelectorAll('[data-phase-chip]')];
+      const input = phase.querySelector('[data-line-input="phase:done"]');
+      const notes = phase.querySelector('[data-phase-sound-control]');
+      const upload = phase.querySelector('[data-phase-upload="done"]');
+      const right = phase.getBoundingClientRect().right + 1;
+      const result = { rows: new Set(summary.map((el) => Math.round(el.getBoundingClientRect().top))).size,
+        inputWidth: input.getBoundingClientRect().width,
+        contained: [summary[2], input, notes, upload].every((el) => el.getBoundingClientRect().right <= right) };
+      host.style.width = prior;
+      return result;
+    })())`))
+    check('窄面板相位概览、台词和音符不溢出', narrow.rows >= 1
+      && narrow.inputWidth >= 70 && narrow.contained, JSON.stringify(narrow))
+
+    const checkbox = '#dsh-settings-probe [data-phase="done"] [data-phase-sound="done"] input[type="checkbox"]'
+    const clickControl = async (selector) => {
+      const point = JSON.parse(await evaluate(`JSON.stringify((() => {
+        const target = document.querySelector(${JSON.stringify(selector)});
+        target.scrollIntoView({ block: 'center' });
+        const rect = target.getBoundingClientRect();
+        return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+      })())`))
+      await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y, buttons: 0 })
+      await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', buttons: 1, clickCount: 1 })
+      await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', buttons: 0, clickCount: 1 })
+    }
+    const sample = Buffer.alloc(46)
+    sample.write('RIFF', 0); sample.writeUInt32LE(38, 4); sample.write('WAVEfmt ', 8)
+    sample.writeUInt32LE(16, 16); sample.writeUInt16LE(1, 20); sample.writeUInt16LE(1, 22)
+    sample.writeUInt32LE(8000, 24); sample.writeUInt32LE(16000, 28)
+    sample.writeUInt16LE(2, 32); sample.writeUInt16LE(16, 34)
+    sample.write('data', 36); sample.writeUInt32LE(2, 40)
+    const fileInput = '#dsh-settings-probe [data-phase="done"] [data-upload-input="done"]'
+    await evaluate(`(() => {
+      const input = document.querySelector(${JSON.stringify(fileInput)});
+      const transfer = new DataTransfer();
+      transfer.items.add(new File(['not an audio file'], 'bad.wav', { type: 'audio/wav' }));
+      input.files = transfer.files;
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    })()`)
+    let uploadError = ''
+    for (let i = 0; i < 30 && !uploadError.includes('不受支持'); i += 1) {
+      uploadError = await evaluate('document.querySelector("#dsh-settings-probe [data-upload-error=done]")?.textContent') ?? ''
+      if (!uploadError.includes('不受支持')) await sleep(100)
+    }
+    check('错误音频被拒绝并在相位内说明原因', uploadError.includes('不受支持'), uploadError)
+    const initiated = await evaluate(`(() => {
+      const input = document.querySelector(${JSON.stringify(fileInput)});
+      if (!input) return false;
+      const raw = atob(${JSON.stringify(sample.toString('base64'))});
+      const bytes = Uint8Array.from(raw, (char) => char.charCodeAt(0));
+      const transfer = new DataTransfer();
+      transfer.items.add(new File([bytes], 'done.wav', { type: 'audio/wav' }));
+      input.files = transfer.files;
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    })()`)
+    let uploaded = null
+    for (let i = 0; i < 30 && !uploaded; i += 1) {
+      const status = await (await fetch(BASE + '/api/live2d-pet/sound/ds-whale-girl')).json()
+      uploaded = status.sounds?.done
+      if (!uploaded) await sleep(100)
+    }
+    check('设置页能给当前宠物的 done 相位上传 WAV', initiated === true
+      && uploaded?.mime === 'audio/wav' && uploaded.bytes === sample.length, JSON.stringify(uploaded))
+    let uploadedSummary = ''
+    for (let i = 0; i < 30 && !uploadedSummary.includes('已上传'); i += 1) {
+      uploadedSummary = await evaluate('document.querySelector("#dsh-settings-probe [data-phase=done] [data-phase-chip=sound]")?.textContent') ?? ''
+      if (!uploadedSummary.includes('已上传')) await sleep(100)
+    }
+    check('上传成功后相位概览即时显示已上传', uploadedSummary.includes('已上传'), String(uploadedSummary))
+    if (uploadedSummary.includes('已上传')) await clickControl('#dsh-settings-probe [data-phase="done"] [data-upload-reset="done"]')
+    else await fetch(BASE + '/api/live2d-pet/sound/ds-whale-girl/done', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'reset' }),
+    })
+    let removed = false
+    for (let i = 0; i < 30 && !removed; i += 1) {
+      const status = await (await fetch(BASE + '/api/live2d-pet/sound/ds-whale-girl')).json()
+      removed = status.sounds?.done === undefined
+      if (!removed) await sleep(100)
+    }
+    check('移除上传音频后恢复宠物音符', removed)
+    await clickControl(checkbox)
+    const muted = await evaluate(`String(document.querySelector(${JSON.stringify(checkbox)})?.checked === false)`)
+    const muteSummary = await evaluate('document.querySelector("#dsh-settings-probe [data-phase=done] [data-phase-chip=sound]")?.textContent')
+    check('单独静音 done 后相位概览立即显示已静音', muted === 'true'
+      && muteSummary?.includes('已静音'), JSON.stringify({ muted, muteSummary }))
+    let storedMute = false
+    for (let i = 0; i < 20 && !storedMute; i += 1) {
+      const shared = await (await fetch(BASE + '/api/live2d-pet/settings')).json()
+      storedMute = Array.isArray(shared.overrides?.sounds?.done)
+        && shared.overrides.sounds.done.length === 0
+      if (!storedMute) await sleep(100)
+    }
+    check('单相位静音写进跨窗口共享设置', storedMute)
+    await clickControl(checkbox)
+    const restored = await evaluate(`String(document.querySelector(${JSON.stringify(checkbox)})?.checked === true)`)
+    check('再次开启 done 恢复宠物默认音符', restored === 'true', String(restored))
+    let storedRestore = false
+    for (let i = 0; i < 20 && !storedRestore; i += 1) {
+      const shared = await (await fetch(BASE + '/api/live2d-pet/settings')).json()
+      storedRestore = shared.overrides?.sounds?.done === undefined
+      if (!storedRestore) await sleep(100)
+    }
+    check('恢复宠物音符会从共享设置删掉覆盖', storedRestore)
+    const line = '#dsh-settings-probe [data-phase="done"] [data-line-input="phase:done"]'
+    const originalLine = await evaluate(`document.querySelector(${JSON.stringify(line)})?.value`)
+    await evaluate(`(() => {
+      const input = document.querySelector(${JSON.stringify(line)});
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(input, '会话台词测试');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`)
+    await sleep(100)
+    const reset = '#dsh-settings-probe [data-phase="done"] [data-phase-line-reset="done"]'
+    const resetVisible = await evaluate(`String(document.querySelector(${JSON.stringify(reset)}) !== null)`)
+    check('修改相位台词后提供恢复宠物默认的入口', resetVisible === 'true', String(resetVisible))
+    if (resetVisible === 'true') {
+      const customNarrow = JSON.parse(await evaluate(`JSON.stringify((() => {
+        const host = document.querySelector('#dsh-settings-probe');
+        const prior = host.style.width;
+        host.style.width = '300px';
+        const phase = host.querySelector('[data-phase="done"]');
+        const input = host.querySelector(${JSON.stringify(line)}).getBoundingClientRect();
+        const button = host.querySelector(${JSON.stringify(reset)}).getBoundingClientRect();
+        const right = phase.getBoundingClientRect().right + 1;
+        host.style.width = prior;
+        return { inputWidth: input.width, contained: input.right <= right && button.right <= right };
+      })())`))
+      check('窄面板台词改动后恢复按钮不挤掉输入框', customNarrow.inputWidth >= 70
+        && customNarrow.contained, JSON.stringify(customNarrow))
+      await clickControl(reset)
+      const returned = await evaluate(`document.querySelector(${JSON.stringify(line)})?.value`)
+      check('恢复默认还原宠物台词', returned === originalLine,
+        JSON.stringify({ returned, originalLine }))
+      let lineRestored = false
+      for (let i = 0; i < 20 && !lineRestored; i += 1) {
+        const shared = await (await fetch(BASE + '/api/live2d-pet/settings')).json()
+        lineRestored = shared.overrides?.lines?.phase?.done === undefined
+        if (!lineRestored) await sleep(100)
+      }
+      check('恢复台词会从共享设置删掉覆盖', lineRestored)
+    }
+    const fold = '#dsh-settings-probe [data-phase="done"] [data-phase-toggle="done"]'
+    await clickControl(fold)
+    const collapsed = await evaluate(`String(document.querySelector(${JSON.stringify(fold)})?.getAttribute('aria-expanded') === 'false'
+      && document.querySelector('#dsh-settings-probe [data-phase="done"] [data-phase-details]') === null
+      && document.querySelectorAll('#dsh-settings-probe [data-phase="done"] [data-phase-chip]').length === 3)`)
+    check('收起相位仍显示三类状态概览', collapsed === 'true', String(collapsed))
+    await clickControl(fold)
+    const expanded = await evaluate(`String(document.querySelector(${JSON.stringify(fold)})?.getAttribute('aria-expanded') === 'true'
+      && document.querySelector('#dsh-settings-probe [data-phase="done"] [data-phase-details]') !== null)`)
+    check('展开相位仍能编辑台词和音符', expanded === 'true', String(expanded))
+  }
 
   // 页面侧**没有未捕获异常** —— "整节崩掉"必然在这里留下痕迹。
   const errors = JSON.parse(await evaluate('JSON.stringify(window.__errors ?? [])'))
