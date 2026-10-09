@@ -8705,6 +8705,12 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     window.addEventListener("pointerdown", unlockSound);
     ctx.effect(() => () => {
       window.removeEventListener("pointerdown", unlockSound);
+      // 卸载前把还没触发的音量试听定时器清掉：否则它 160ms 后醒来会**新建**一个
+      // AudioContext 并放出一声 —— 宠物都已经走了。
+      if (volumePreviewTimer !== 0) {
+        window.clearTimeout(volumePreviewTimer);
+        volumePreviewTimer = 0;
+      }
       if (soundContext !== null) {
         void soundContext.close().catch(() => {});
         soundContext = null;
