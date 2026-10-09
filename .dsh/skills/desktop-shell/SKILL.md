@@ -729,6 +729,24 @@ isDesktopShell ? layer.owner !== "desktop" : layer.owner !== "inline"   // → v
 `probe-catalog.mjs` 拿 JS 的 `buildRoutes()` 逐条对——**只比路径，不发请求**（发请求会有
 副作用：JS 的 `/layer` 会 reconcile，mode=desktop 时真的会拉起一只）。
 
+### 两份实现的判据，靠"合同向量"对齐（别各测各的）
+
+同一套规则写两遍（Rust 一份、JS 一份）时，**各写各的测试等于没测**：两边都绿，分叉照样在。
+2026-10 的实例是音频容器判据 —— JS 侧 `lib/sound-files.js` 的 `soundMime` 当时只认魔数
+（一个 4 字节的 `OggS`、一个乱改过长度的 WAV 都收下），Rust 侧 `host/http.rs` 的
+`valid_wav` / `valid_ogg` / `valid_mp3` 会完整解析容器，于是同一个文件
+"网页端传得进、桌面端读不出来"，相位的"已上传"在桌面端凭空消失，**两边都不报错**。
+
+现在两边读**同一份数据**：`tools/sound-vectors.json`（生成器 `tools/make-sound-vectors.mjs`，
+20 条向量；`mime` 为 `null` = 必须拒绝）：
+
+* JS：`tools/browser-test/test-sound-upload.mjs` 开头的合同循环；
+* Rust：`host::http::sound_tests::sound_vectors_contract`（`cargo test --lib sound`）。
+
+改判据时**两边一起改**，然后跑这两条。WAV 的长度字段额外放行 `0` / `0xFFFFFFFF`：
+流式录音这类文件浏览器照样能播，精确匹配会把它们错杀（用户看到的是"浏览器里能放，
+你们说不支持"）。
+
 ## 「双击 exe，她没显示出来」（2026-09 用户报，两个根因叠在一起）
 
 用户的原话：**"我直接跑 Release 里的 exe，桌宠没显示出来，但是我插件起的桌面是好的。"**

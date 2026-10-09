@@ -82,6 +82,12 @@ node tools/lab.mjs raw "<一段 JS>"             # 直接在试验台页面里�
 （它拿两份真实宿主逐字段对拍）。这条是纪律，不是建议 —— 两边分叉的症状是"网页端正常、
 桌面端少一段"，很难往实现差异上想。
 
+同一纪律也适用于**音频容器判据**（`lib/sound-files.js` 的 `soundMime` ↔ `host/http.rs` 的
+`sound_mime`）：两边一起改，并跑 `tools/sound-vectors.json` 的**合同向量** —— JS 侧在
+`tools/browser-test/test-sound-upload.mjs`、Rust 侧在 `host::http::sound_tests::sound_vectors_contract`，
+两边读同一份文件。分叉的症状是"网页端传得进、桌面端读不出来（相位的已上传凭空消失）"，
+两边都不报错。
+
 **② 挂载模式（`--attach`）下，只有插件 API 转发给 DSH；页面的 `client.js` 仍然由壳自己
 发** —— `host/http.rs` 里写死了 `path == "/plugins/dsh-pet-live2d/client.js"` →
 `serve_embed("client.js")`，发的是**编译进 exe 的那一份**。

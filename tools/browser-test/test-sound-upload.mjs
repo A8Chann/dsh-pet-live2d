@@ -1,12 +1,28 @@
 // 上传音频宿主路由：用私有 HOME + 随机回环端口验证路径、类型、大小和恢复默认。
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
-import { mkdtempSync, realpathSync, rmdirSync, rmSync, symlinkSync } from 'node:fs'
+import { mkdtempSync, readFileSync, realpathSync, rmdirSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, sep } from 'node:path'
 import { once } from 'node:events'
 import { buildRoutes } from '../../dsh-live2d-pet/lib/index.js'
+import { soundMime } from '../../dsh-live2d-pet/lib/sound-files.js'
 import { PLUGIN } from './paths.mjs'
+
+// ---- 容器判据的合同向量：与桌面端 Rust 宿主对同一份数据给出同样的结论 ----------
+//
+// 判据有两份手写实现（`lib/sound-files.js` 与 `host/http.rs`），它们靠
+// `tools/sound-vectors.json` 对齐：**任何一边改歪了，另一边立刻红**。Rust 侧的对应断言是
+// `host::http::sound_tests::sound_vectors_contract`。
+{
+  const contract = JSON.parse(readFileSync(join(PLUGIN, '..', 'tools', 'sound-vectors.json'), 'utf8'))
+  assert(Array.isArray(contract.vectors) && contract.vectors.length >= 10, '合同向量文件读不出内容')
+  for (const vector of contract.vectors) {
+    const got = soundMime(Buffer.from(vector.base64, 'base64')) ?? null
+    assert.equal(got, vector.mime, '判据与合同不符：' + vector.name + '（' + (vector.note ?? '') + '）')
+  }
+  console.log('PASS: ' + contract.vectors.length + ' 条容器判据合同向量（JS 宿主）')
+}
 
 const home = mkdtempSync(join(tmpdir(), 'pet-sound-upload-'))
 const root = realpathSync(home)

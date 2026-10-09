@@ -588,7 +588,13 @@ fn sound_mime(bytes: &[u8]) -> Option<&'static str> {
 fn valid_wav(bytes: &[u8]) -> bool {
     if bytes.get(..4) != Some(b"RIFF") || bytes.get(8..12) != Some(b"WAVE") { return false; }
     let Some(size) = bytes.get(4..8).and_then(|b| b.try_into().ok()).map(u32::from_le_bytes) else { return false; };
-    if size as usize != bytes.len().saturating_sub(8) { return false; }
+    // 长度字段：流式录音这类文件常写 0 或 0xFFFFFFFF（"长度未知/一直写到尾"），浏览器
+    // 照样能播，所以只对这三个值放行，其余仍要求精确匹配（畸形头照旧拒绝）。
+    // **JS 宿主 `lib/sound-files.js` 的 `validWav` 是同一条规则**，改这里必须一起改。
+    let declared = size as usize;
+    if declared != 0 && declared != u32::MAX as usize && declared != bytes.len().saturating_sub(8) {
+        return false;
+    }
     let (mut offset, mut block_align, mut data_size) = (12usize, None, None);
     while offset < bytes.len() {
         let Some(header) = bytes.get(offset..offset + 8) else { return false; };
@@ -1180,80 +1186,53 @@ fn layer_payload(state: &HostState) -> Value {
 mod sound_tests {
     use super::*;
 
+    /// 音频容器判据的**合同向量**：与网页宿主 `lib/sound-files.js` 读同一份
+    /// `tools/sound-vectors.json`，对同一组字节流必须给出同一个 mime。
+    ///
+    /// 这里原来是一堆手写向量，改成读文件是因为判据有两份手写实现（Rust 一份、JS 一份）：
+    /// 各测各的等于没测 —— 分叉的症状（"网页端传得进、桌面端读不出来"）两边都不报错。
     #[test]
-    fn formats_and_post_headers() {
-        let wav = [
-            b'R', b'I', b'F', b'F', 38, 0, 0, 0, b'W', b'A', b'V', b'E',
-            b'f', b'm', b't', b' ', 16, 0, 0, 0, 1, 0, 1, 0,
-            0x40, 0x1f, 0, 0, 0x80, 0x3e, 0, 0, 2, 0, 16, 0,
-            b'd', b'a', b't', b'a', 2, 0, 0, 0, 0, 0,
-        ];
-        assert_eq!(sound_mime(&wav), Some("audio/wav"));
-        let mut float_wav = wav;
-        float_wav[20] = 3;
-        float_wav[34] = 32;
-        float_wav[32] = 4;
-        float_wav[28..32].copy_from_slice(&32000u32.to_le_bytes());
-        float_wav[4..8].copy_from_slice(&40u32.to_le_bytes());
-        float_wav[40..44].copy_from_slice(&4u32.to_le_bytes());
-        let mut float_wav = float_wav.to_vec();
-        float_wav.extend_from_slice(&[0, 0]);
-        assert_eq!(sound_mime(&float_wav), Some("audio/wav"));
-        let mut opus = vec![0u8; 27];
-        opus[..4].copy_from_slice(b"OggS");
-        opus[5] = 2;
-        opus[26] = 1;
-        opus.push(19);
-        opus.extend_from_slice(b"OpusHead");
-        opus.extend_from_slice(&[1, 2, 0, 0, 0x80, 0xbb, 0, 0, 0, 0, 0]);
-        let crc = ogg_checksum(&opus);
-        opus[22..26].copy_from_slice(&crc.to_le_bytes());
-        assert_eq!(sound_mime(&opus), Some("audio/ogg"));
-        let mut vorbis = opus[..27].to_vec();
-        vorbis.push(30);
-        vorbis.extend_from_slice(b"\x01vorbis");
-        vorbis.extend_from_slice(&[0; 4]);
-        vorbis.push(2);
-        vorbis.extend_from_slice(&44100u32.to_le_bytes());
-        vorbis.extend_from_slice(&[0; 12]);
-        vorbis.extend_from_slice(&[0x66, 1]);
-        let crc = ogg_checksum(&vorbis);
-        vorbis[22..26].copy_from_slice(&crc.to_le_bytes());
-        assert_eq!(sound_mime(&vorbis), Some("audio/ogg"));
-        let mut mp3 = vec![0u8; 417];
-        mp3[..4].copy_from_slice(&[0xff, 0xfb, 0x90, 0]);
-        assert_eq!(sound_mime(&mp3), Some("audio/mpeg"));
-        let mut tagged = b"ID3\x04\0\0\0\0\0\x04abcd".to_vec();
-        tagged.extend_from_slice(&mp3);
-        assert_eq!(sound_mime(&tagged), Some("audio/mpeg"));
-        for truncated in [&b"RIFF0000WAVE"[..], &wav[..44], &b"OggS"[..], &opus[..27],
-            &opus[..opus.len() - 1], &b"ID3"[..], &tagged[..14], &mp3[..4], &mp3[..416]] {
-            assert_eq!(sound_mime(truncated), None);
+    fn sound_vectors_contract() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/sound-vectors.json");
+        let raw = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("读不到合同向量 {}：{error}", path.display()));
+        let contract: Value = serde_json::from_str(&raw).expect("合同向量是 JSON");
+        let vectors = contract["vectors"].as_array().expect("合同向量里有 vectors 数组").clone();
+        assert!(vectors.len() >= 10, "合同向量太少，等于没测");
+        for vector in vectors {
+            let name = vector["name"].as_str().unwrap_or("?");
+            let expected = vector["mime"].as_str();
+            let bytes = STANDARD
+                .decode(vector["base64"].as_str().expect("向量带 base64"))
+                .unwrap_or_else(|_| panic!("向量的 base64 坏了：{name}"));
+            assert_eq!(sound_mime(&bytes), expected, "判据与合同不符：{name}");
         }
-        let mut bad_wav = wav;
-        bad_wav[4] = 39;
-        assert_eq!(sound_mime(&bad_wav), None);
-        let mut bad_ogg = opus.clone();
-        bad_ogg[27] = 20;
-        assert_eq!(sound_mime(&bad_ogg), None);
-        let mut bad_ogg = opus.clone();
-        bad_ogg[30] ^= 1;
-        assert_eq!(sound_mime(&bad_ogg), None);
-        let mut bad_mp3 = mp3.clone();
-        bad_mp3[2] = 0xf0;
-        assert_eq!(sound_mime(&bad_mp3), None);
-        assert_eq!(sound_mime(b"<script>"), None);
-        let request = Request {
+    }
+
+    #[test]
+    fn post_headers_require_loopback_host_and_json() {
+        let build = |host: &str, origin: Option<&str>, content_type: &str| Request {
             method: "POST".into(), path: "".into(), body: "".into(), too_large: false,
-            host: Some("127.0.0.1:123".into()), origin: Some("http://evil.test".into()),
-            content_type: Some("application/json".into()),
+            host: Some(host.into()), origin: origin.map(|value| value.to_string()),
+            content_type: Some(content_type.into()),
         };
-        assert_eq!(check_sound_post(&request, 123), Err((403, "cross-origin")));
-        let valid = Request { origin: Some("http://127.0.0.1:123".into()), ..request };
-        assert_eq!(check_sound_post(&valid, 123), Ok(()));
-        let rebound = Request { host: Some("evil.example:123".into()),
-            origin: Some("http://evil.example:123".into()), ..valid };
-        assert_eq!(check_sound_post(&rebound, 123), Err((403, "untrusted-host")));
+        // 官方客户端（`dsh-app://app` 页面）转发来的请求**不带 Origin**（实测），此时只看 Host。
+        assert_eq!(check_sound_post(&build("127.0.0.1:123", None, "application/json"), 123), Ok(()));
+        // 浏览器发的跨源请求带 Origin：必须与 Host 同源。
+        assert_eq!(
+            check_sound_post(&build("127.0.0.1:123", Some("http://evil.test"), "application/json"), 123),
+            Err((403, "cross-origin"))
+        );
+        // Host 也被伪造成重绑定域名：拒。
+        assert_eq!(
+            check_sound_post(&build("evil.example:123", Some("http://evil.example:123"), "application/json"), 123),
+            Err((403, "untrusted-host"))
+        );
+        // localhost / [::1] 两种本机写法都认。
+        assert_eq!(check_sound_post(&build("localhost:123", Some("http://localhost:123"), "application/json"), 123), Ok(()));
+        assert_eq!(check_sound_post(&build("[::1]:123", Some("http://[::1]:123"), "application/json"), 123), Ok(()));
+        // 上传必须声明 JSON：跨源页面发不了这个 content-type 而不触发预检，而路由不答 CORS。
+        assert_eq!(check_sound_post(&build("127.0.0.1:123", None, "text/plain"), 123), Err((415, "json-required")));
     }
 
     #[test]
