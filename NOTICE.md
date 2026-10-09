@@ -21,6 +21,7 @@ MIT License — Copyright (c) 2026 A8Chann
 ## 2. 美术资源 —— CC BY-NC-SA 4.0
 
 适用于：`dsh-live2d-pet/pets/ds-whale-girl/`、`model-packs/DS鼠控版/` 中的**模型、贴图、表情、动作**等一切美术内容，
+`dsh-live2d-pet/icon.png`（插件图标：由模型待机画面的截屏**裁切并缩放**而来，属于改编），
 以及 `dsh-live2d-pet/docs/` 中的截图。
 
 **这些文件不是 MIT，也不可以按 MIT 使用。**

@@ -1,8 +1,8 @@
 {
   "name": "dsh-pet-live2d",
-  "version": "3.3.0",
+  "version": "3.3.1",
   "description": "Live2D 桌宠插件：为 DSH Web GUI 挂一只可拖动、会跟随鼠标、能换动作与表情的 Live2D 宠物。",
-  "icon": "./icon.svg",
+  "icon": "./icon.png",
   "type": "module",
   "main": "lib/index.js",
   "license": "MIT",
@@ -20,7 +20,7 @@
     "docs",
     "pets",
     "locale",
-    "icon.svg",
+    "icon.png",
     "cordis.patch.yml",
     "screenshots.json",
     "README.md",
@@ -53,8 +53,8 @@
     }
   },
   "optionalDependencies": {
-    "dsh-pet-live2d-desktop-darwin-arm64": "3.3.0",
-    "dsh-pet-live2d-desktop-win32-x64": "3.3.0"
+    "dsh-pet-live2d-desktop-darwin-arm64": "3.3.1",
+    "dsh-pet-live2d-desktop-win32-x64": "3.3.1"
   },
   "devDependencies": {
     "esbuild": "^0.25.10",

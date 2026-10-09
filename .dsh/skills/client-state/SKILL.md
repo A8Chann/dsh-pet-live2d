@@ -99,7 +99,25 @@ store，同时开两个界面也不会打架，但没必要留两份入口。
 | 界面元素 | 来源 | 写法 |
 |---|---|---|
 | 标题 / 描述 | `<specifier>/locale/<lang>.json` 里的 `meta.title` / `meta.description` | 必须有 `locale/en.json`，其余同目录（`zh.json`…）；`exports` 要导出 `"./locale/*.json"` |
-| 图标 | `package.json` 的 `"icon": "./icon.svg"`，或导出的 `./icon` | 包内相对路径；SVG/PNG/JPEG/WebP ≤256 KiB；页面渲染成 `<img width=36 height=36>` + `object-fit:contain`，**不能依赖 currentColor** |
+| 图标 | `package.json` 的 `"icon": "./icon.png"`，或导出的 `./icon` | 包内相对路径；SVG/PNG/JPEG/WebP ≤256 KiB；页面渲染成 `<img width=36 height=36>` + `object-fit:contain` |
+
+**图标就用托盘那套美术**（3.3.1 定下来的）：第一版我手画了个 SVG，用户一句"太丑了，为什么不用
+托盘的 icon"就否了 —— 卡片上要的是**这只宠物本人**，不是抽象图形。做法是拿
+`dsh-live2d-pet-desktop/src-tauri/icons/icon.png`（1323×1154、573 KB、带透明边）裁一版 256×256：
+
+- 尺寸必须自己算：573 KB **超过宿主 256 KiB 上限**，而且 1323×1154 不是正方形；
+- **裁脸，不要整只**。整只缩到 36px 是一团蓝（托盘 32px 能用是因为那里只有它一个图标，
+  插件页旁边都是干净的字形）；脸的特写在 36px 下仍认得出。
+- 工具：`dsh-live2d-pet-desktop/tools/make-plugin-icon.ps1`（GDI+，先按 alpha 求墨迹包围盒，
+  再出 `face` / `face-l1..l3` / `face-r1..r2` / `upper` / `full` 各版 + 各自的 36px 预览
+  + 一张对照拼图 `sheet-face.png`）。
+  **最终选的是 `face-l3`**（裁切窗口在墨迹框 40% 处：头占满 36px 的框、又没切掉要紧的地方）：
+  `... -Size 256 -Pick face-l3` 会直接把它装成 `dsh-live2d-pet/icon.png`。
+- 位置是**口味**问题，别自己拍：先出对照图给人指（我第一版按墨迹框居中裁，用户当场说"往左挪一点"，
+  于是把 0.40 / 0.44 / 0.48 / 0.52 / 0.56 / 0.60 六个位置连 36px 预览拼成一张图让他挑）。
+
+判据（`probe-plugin-page-meta.mjs` 里已经钉住）：**PNG 的 IHDR** 读宽高（正方形且 ≥128）、
+colorType 带 alpha（不能自带白底）、data URL 解码后与磁盘逐字节相同、≤256 KiB。
 
 配置区注册进 `plugins.bundle.config`，**键就是组合包的包名**（这里是 `dsh-pet-live2d`）：
 

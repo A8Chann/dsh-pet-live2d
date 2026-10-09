@@ -378,6 +378,7 @@ cd ../../tools/browser-test && npm install && npm run suite
 - Cubism Core：Live2D 专有，**不随包分发**；缺失时由宿主半区从 Live2D 官方 CDN 取一份并缓存到本地
 - DS鲸鱼娘模型：**CC BY-NC-SA 4.0**（署名 · **非商业** · 相同方式共享），见
   [`pets/ds-whale-girl/LICENSE`](pets/ds-whale-girl/LICENSE)。
+  **插件图标 `icon.png` 同属这一许可**（由模型待机画面裁切缩放而来，属于改编）。
 
   版权链：**上善无形**（鲸鱼娘角色原作，原创 OC「溟月」）→ **ZipZipPipe**（DeepSeek 女仆二创）
   → **氵六青**（本模型）。氵六青已授权本项目转载开源，但该授权**不解除基础版权**，

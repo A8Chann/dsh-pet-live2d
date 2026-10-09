@@ -70,19 +70,27 @@ check('标题不是包名本身（说明 locale 真的被读到了）', title !=
   'zh=' + String(title?.zh))
 
 // ---- 图标：宿主把文件读成 data URL ----------------------------------------
-check('图标是 SVG 的 data URL', typeof meta.icon === 'string' && meta.icon.startsWith('data:image/svg+xml;base64,'),
+check('图标是 PNG 的 data URL', typeof meta.icon === 'string' && meta.icon.startsWith('data:image/png;base64,'),
   String(meta.icon).slice(0, 32))
 let decoded = null
 if (typeof meta.icon === 'string' && meta.icon.includes(',')) {
   decoded = Buffer.from(meta.icon.slice(meta.icon.indexOf(',') + 1), 'base64')
 }
-const iconPath = join(PLUGIN, 'icon.svg')
+const iconPath = join(PLUGIN, 'icon.png')
 const onDisk = readFileSync(iconPath)
-check('data URL 的内容与 icon.svg 逐字节相同', decoded !== null && decoded.equals(onDisk),
+check('data URL 的内容与 icon.png 逐字节相同', decoded !== null && decoded.equals(onDisk),
   decoded === null ? '没解析出内容' : decoded.length + ' vs ' + onDisk.length + ' 字节')
 check('图标在 256 KiB 上限之内', statSync(iconPath).size <= 256 * 1024,
   Math.round(statSync(iconPath).size / 1024) + 'KB')
-check('图标画布是 36×36（卡片按 36 渲染）', /viewBox="0 0 36 36"/.test(onDisk.toString('utf8')))
+// 尺寸从 PNG 的 IHDR 直接读，不信文件名也不信构建脚本 —— 卡片按 36px 渲染，
+// 图太小会糊成马赛克（托盘那份 32×32 用在这儿就不够）。
+const ihdr = onDisk.subarray(0, 24)
+const pngWidth = ihdr.readUInt32BE(16)
+const pngHeight = ihdr.readUInt32BE(20)
+check('图标是正方形且 ≥128px（卡片按 36 渲染，太小会糊）',
+  pngWidth === pngHeight && pngWidth >= 128, pngWidth + '×' + pngHeight)
+check('图标有 alpha 通道（卡片底色是宿主的，不能自带白底）',
+  onDisk[25] === 6 || onDisk[25] === 4, 'colorType=' + onDisk[25])
 
 // ---- 行（组合包里的插件行）用的是同一个模块名，元信息也是同一份 -------------
 const rowMeta = readPluginMeta(PACKAGE, parentURL)
