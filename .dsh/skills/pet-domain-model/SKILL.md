@@ -29,6 +29,14 @@ localStorage。**写新可配置项时把默认三层写全**，别只写前两�
 同理。真实播放与试听**共用** `playUploadedSound` / `scheduleSoundNotes` 两个原语，
 别各写一份：试听听到的和真响的不一样，比没有试听更糟。
 
+**拖音量滑杆**的即时试听（`previewVolumeSound`，由 `applyTuning` 里那条
+`soundVolume` 分支防抖触发）与上面只差音量处理，而这一条**故意不兜底**：
+音量 0 就该听不到 —— "0 有多大声"的答案本来就是没声。音源取这只宠物"最像提示音"
+的那段（优先 `done`，否则第一个有音的相位），整只宠物都没音源时安静地什么都不做。
+它**不** `stopUploadedSound()`：正在播的上传音频会跟着 `playingUploaded.volume`
+实时变音量，那本身就是更好的反馈。防抖 160ms：滑杆一次拖动会来几十次 onChange，
+不防抖就是电音。
+
 - 只认"宠物声明"的那一层，等于**把"最小 pet.json"判了死刑**。互动反应候选就是这么漏的：
   代码里没有任何默认值（`HEAD_PAT_REACTIONS` 是上一版留下的死常量，谁都没读），
   于是没声明 `patReactions` / `tailReactions` / `spinReactions` 的宠物上，摸头只有台词、

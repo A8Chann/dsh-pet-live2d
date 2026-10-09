@@ -4245,6 +4245,48 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     } catch { return false; }
   };
 
+  /**
+   * 拖音量滑杆时的即时试听：音量只有数字时，用户只能靠"下一次相位切换"猜它有多大。
+   *
+   * 与上面那个「试听」按钮**只差音量处理**：这里按**真实音量**播（音量 0 就是静音），
+   * 因为"0 听起来是什么样"的答案本来就是"没声"；按钮那边用兜底音量，避免点了没反应。
+   * 音源取这只宠物"最像提示音"的那段（优先 `done`，否则第一个有音的相位）。
+   */
+  const volumePreviewNotes = () => {
+    const done = previewNotesFor("done");
+    if (done.length > 0) return done;
+    for (const phase of PHASE_LINE_KEYS) {
+      const notes = previewNotesFor(phase);
+      if (notes.length > 0) return notes;
+    }
+    return [];
+  };
+  const previewVolumeSound = () => {
+    try {
+      const volume = TUNING.soundVolume;
+      if (!(volume > 0)) return false; // 0 = 静音，这里就该听不到，不许兜底
+      const notes = volumePreviewNotes();
+      if (notes.length === 0) return false; // 这只宠物没有任何音源：滑杆只给数字反馈
+      const context = ensureSoundContext();
+      if (context === null) return false;
+      if (context.state === "suspended") {
+        void context.resume().then(() => { scheduleSoundNotes(context, notes, volume); }).catch(() => {});
+        return true;
+      }
+      return scheduleSoundNotes(context, notes, volume);
+    } catch { return false; }
+  };
+  /** 拖滑杆会连着来几十次 onChange：防抖到停手再响，否则是电音。 */
+  const VOLUME_PREVIEW_DEBOUNCE_MS = 160;
+  let volumePreviewTimer = 0;
+  const scheduleVolumePreview = () => {
+    if (volumePreviewTimer !== 0) window.clearTimeout(volumePreviewTimer);
+    volumePreviewTimer = window.setTimeout(() => {
+      volumePreviewTimer = 0;
+      previewVolumeSound();
+    }, VOLUME_PREVIEW_DEBOUNCE_MS);
+  };
+
   const saveOverrides = () => {
     // 走共享落点（宿主优先）：相位池子覆盖与开关两个窗口共用同一份。
     persistShared({ overrides: Object.assign({}, PHASE_OVERRIDES, { flags: FLAGS }) });
@@ -4656,6 +4698,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       if (!(TUNING.soundVolume > 0)) stopUploadedSound();
       else playingUploaded.volume = TUNING.soundVolume;
     }
+    // 动的是音量就顺手试听一小段 —— 否则"这个音量到底多大声"只能等下一次相位切换才知道。
+    if (Object.prototype.hasOwnProperty.call(patch, "soundVolume")) scheduleVolumePreview();
     // 走共享落点：有宿主就写宿主（DSH 与桌面端两个窗口都能看见），本地留一份兜底。
     persistShared({ tuning: Object.assign({}, TUNING) });
     notifySettings();
@@ -8591,7 +8635,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         "tune-" + group.id, group.label, group.hint, h(TuningControls, { group: group.id }))),
       // 显示层放最上面：它是"这只宠物在哪"的问题，比手感/池子更先要回答。
       card("layer", "显示位置", "页面内 / 桌面上", h(LayerControls, null)),
-      card("sound", "会话提示音", "总开关 · 音量", [
+      card("sound", "会话提示音", "总开关 · 音量（拖滑杆会试听）", [
         h("label", { key: "enabled", "data-flag-row": "soundEnabled" },
           h("input", {
             type: "checkbox",

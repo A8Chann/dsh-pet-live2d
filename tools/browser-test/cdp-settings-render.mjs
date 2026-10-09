@@ -145,6 +145,7 @@ if (!applied) {
     const toggle = card?.querySelector('[data-flag="soundEnabled"]');
     const volume = card?.querySelector('input[type="range"]');
     return { toggle: toggle?.checked, volume: volume?.value, min: volume?.min, max: volume?.max,
+      hint: card?.querySelector('[data-card-head]')?.textContent ?? '',
       isolated: !phaseCard?.querySelector('[data-flag="soundEnabled"], input[type="range"]'),
       adjacent: card?.nextElementSibling === phaseCard };
   })())`))
@@ -152,6 +153,22 @@ if (!applied) {
     && soundControls.volume === '0.35' && soundControls.min === '0' && soundControls.max === '1'
     && soundControls.isolated && soundControls.adjacent,
   JSON.stringify(soundControls))
+  check('音量卡的提示写明拖滑杆会试听', String(soundControls.hint).includes('试听'), String(soundControls.hint))
+  // 拖音量滑杆会触发防抖试听（无头浏览器没有声卡，这里只验这条链不炸）：
+  // 真正"按新音量发声"由 test-sound.mjs 用假音频设备断言。
+  const volumeDrag = await evaluate(`(() => {
+    const input = document.querySelector('#dsh-settings-probe [data-card="sound"] input[type="range"]');
+    if (input === null) return 'no-slider';
+    try {
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(input, '0.65');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      return 'ok';
+    } catch (error) { return 'THREW: ' + String(error) }
+  })()`)
+  await sleep(400)
+  const volumeAfterDrag = await evaluate(`document.querySelector('#dsh-settings-probe [data-card="sound"] input[type="range"]')?.value`)
+  check('拖音量滑杆不抛异常且音量落到位', volumeDrag === 'ok' && volumeAfterDrag === '0.65',
+    volumeDrag + ' / ' + volumeAfterDrag)
   // 相位来自异步宠物目录；等模型就绪后再读布局，不能用固定五秒当加载信号。
   const petReady = await waitReady(evaluate)
   check('相位默认值已加载', petReady)

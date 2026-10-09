@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { PLUGIN } from './paths.mjs'
 
 const frequencies = []
+const gains = []
 const files = []
 let suspends = 0
 class FakeAudio {
@@ -25,7 +26,12 @@ class FakeAudioContext {
     return oscillator
   }
   createGain() {
-    return { gain: { setValueAtTime() {}, linearRampToValueAtTime() {}, exponentialRampToValueAtTime() {} }, connect() {} }
+    return { gain: {
+      setValueAtTime() {},
+      // 音量就是从这里看出来的：真实代码用 volume * 0.12 作为包络目标。
+      linearRampToValueAtTime: (value) => gains.push(value),
+      exponentialRampToValueAtTime() {},
+    }, connect() {} }
   }
   suspend() { suspends++; this.state = 'suspended'; return Promise.resolve() }
   resume() { this.state = 'running'; return Promise.resolve() }
@@ -42,11 +48,14 @@ const window = {
     removeItem: (key) => store.delete(key),
   },
   __ModuleLoader__: { load: ({ factory }) => { window.plugin = factory(() => ({ createElement() {} })) } },
+  // 音量滑杆的试听是防抖的，所以这里得有真的定时器才能验"停手才响一次"。
+  setTimeout: (fn, ms) => setTimeout(fn, ms),
+  clearTimeout: (id) => clearTimeout(id),
 }
 const source = readFileSync(join(PLUGIN, 'lib/client.js'), 'utf8')
 const seam = '  exports.apply = apply;'
 assert.equal(source.split(seam).length, 2, '客户端测试入口只能有一处')
-runInNewContext(source.replace(seam, `  exports.testSound = { applyFlag, applyTuning, playPhaseSound, previewPhaseSound, canPreviewPhaseSound, restoreTuning, restoreOverrides, setPhaseSoundMuted, soundNotesFor, linesNow, manifest: MANIFEST, uploads: UPLOADED_SOUNDS, getVolume: () => TUNING.soundVolume };\n${seam}`), {
+runInNewContext(source.replace(seam, `  exports.testSound = { applyFlag, applyTuning, playPhaseSound, previewPhaseSound, previewVolumeSound, canPreviewPhaseSound, restoreTuning, restoreOverrides, setPhaseSoundMuted, soundNotesFor, linesNow, manifest: MANIFEST, uploads: UPLOADED_SOUNDS, getVolume: () => TUNING.soundVolume };\n${seam}`), {
   window, document: {}, console, Map, Set, fetch: () => Promise.resolve({ status: 404 }),
 })
 const { testSound: sound } = window.plugin
@@ -165,4 +174,39 @@ assert.equal(files.at(-1).volume, 0.35, '音量为 0 时试听用兜底音量，
 sound.manifest.current = null
 assert.equal(sound.previewPhaseSound('done'), false, '宠物还没加载好时不做任何事')
 
-console.log('PASS: pet sounds, default mute, phase overrides, preview, validation')
+// ---- 调音量时的即时试听 ------------------------------------------------------
+//
+// 与「试听」按钮的区别只有音量：这里按**真实音量**播，音量 0 就是静音（不许兜底）。
+sound.manifest.current = { id: 'pet-a', sounds: { done: [[660, 0], [880, 0.13]] } }
+sound.uploads.petId = null
+sound.uploads.sounds = {}
+sound.applyTuning({ soundVolume: 0.8 })
+sound.applyFlag('soundEnabled', true) // 只为了让 AudioContext 处于 running；试听本身不看这个开关
+await tick()
+const gainsBeforeVolume = gains.length
+const freqBeforeVolume = frequencies.length
+assert.equal(sound.previewVolumeSound(), true, '有音源时调音量能试听')
+assert.deepEqual(frequencies.slice(freqBeforeVolume), [660, 880], '调音量试听放的是 done 那两音')
+assert.equal(gains.length, gainsBeforeVolume + 2, '两个音各一条包络')
+assert.equal(gains.at(-1), 0.8 * 0.12, '调音量试听按真实音量（0.8 × 0.12）')
+
+sound.applyTuning({ soundVolume: 0 })
+await tick()
+const silentBefore = frequencies.length
+assert.equal(sound.previewVolumeSound(), false, '音量 0 时不给兜底声音')
+assert.equal(frequencies.length, silentBefore, '音量 0 时什么都不排')
+
+// 拖滑杆是防抖的：连改三次只响最后一下，且用的是最终音量。
+sound.applyTuning({ soundVolume: 0.4 })
+sound.applyTuning({ soundVolume: 0.5 })
+sound.applyTuning({ soundVolume: 0.6 })
+const debounceBefore = frequencies.length
+await new Promise((resolve) => { setTimeout(resolve, 350) })
+assert.equal(frequencies.length, debounceBefore + 2, '拖滑杆只在停手后响一次')
+assert.equal(gains.at(-1), 0.6 * 0.12, '响的是最终音量')
+
+// 整只宠物都没有音源：滑杆只给数字反馈，不出声也不报错。
+sound.manifest.current = { id: 'pet-a', sounds: {} }
+assert.equal(sound.previewVolumeSound(), false, '宠物没有任何音符时调音量不出声')
+
+console.log('PASS: pet sounds, default mute, phase overrides, preview, volume preview, validation')
