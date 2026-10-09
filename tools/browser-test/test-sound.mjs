@@ -46,7 +46,7 @@ const window = {
 const source = readFileSync(join(PLUGIN, 'lib/client.js'), 'utf8')
 const seam = '  exports.apply = apply;'
 assert.equal(source.split(seam).length, 2, '客户端测试入口只能有一处')
-runInNewContext(source.replace(seam, `  exports.testSound = { applyFlag, applyTuning, playPhaseSound, restoreTuning, restoreOverrides, setPhaseSoundMuted, soundNotesFor, linesNow, manifest: MANIFEST, uploads: UPLOADED_SOUNDS, getVolume: () => TUNING.soundVolume };\n${seam}`), {
+runInNewContext(source.replace(seam, `  exports.testSound = { applyFlag, applyTuning, playPhaseSound, previewPhaseSound, canPreviewPhaseSound, restoreTuning, restoreOverrides, setPhaseSoundMuted, soundNotesFor, linesNow, manifest: MANIFEST, uploads: UPLOADED_SOUNDS, getVolume: () => TUNING.soundVolume };\n${seam}`), {
   window, document: {}, console, Map, Set, fetch: () => Promise.resolve({ status: 404 }),
 })
 const { testSound: sound } = window.plugin
@@ -123,4 +123,46 @@ sound.restoreOverrides({ lines: { phase: { done: '用户台词' } } })
 assert.equal(sound.linesNow().phase.done, '用户台词', '气泡显示用户覆盖')
 sound.restoreOverrides({ lines: {} })
 assert.equal(sound.linesNow().phase.done, '宠物台词', '另一窗口恢复默认后不留旧气泡覆盖')
-console.log('PASS: pet sounds, default mute, phase overrides, validation')
+
+// ---- 试听：设置页那个「试听」按钮走的就是这条路 ------------------------------
+//
+// 它和真实播放的差别只有两点（都是故意的）：不看总开关/单相位静音、音量为 0 时用兜底音量。
+// 这里钉的就是这两点，否则默认静音下点试听必然"没反应"。
+const tick = () => new Promise((resolve) => { setTimeout(resolve, 0) })
+sound.applyTuning({ soundVolume: 0.5 })
+sound.manifest.current = { id: 'pet-a', sounds: { done: [[900, 0], [1200, 0.12]], failed: [] } }
+sound.uploads.petId = null // 前面几段留下的上传音频要清掉，否则试听会走"上传优先"
+sound.uploads.sounds = {}
+sound.restoreOverrides({ sounds: {}, flags: { soundEnabled: false } })
+assert.equal(sound.canPreviewPhaseSound('done'), true, '有宠物音符 = 可以试听')
+assert.equal(sound.canPreviewPhaseSound('failed'), false, '宠物显式空表 = 没得试听')
+const previewBefore = frequencies.length
+assert.equal(sound.previewPhaseSound('done'), true, '总开关关着也能试听')
+await tick() // 首次点击时 AudioContext 是 suspended，resume 是异步的
+assert.deepEqual(frequencies.slice(previewBefore), [900, 1200], '试听放的是宠物声明的音符')
+
+sound.setPhaseSoundMuted('done', true)
+const mutedBefore = frequencies.length
+assert.equal(sound.canPreviewPhaseSound('done'), true, '单相位静音不影响"能不能试听"')
+sound.previewPhaseSound('done')
+await tick()
+assert.deepEqual(frequencies.slice(mutedBefore), [900, 1200], '静音的相位照样能试听')
+sound.setPhaseSoundMuted('done', false)
+
+sound.uploads.petId = 'pet-a'
+sound.uploads.sounds = { done: { token: 'b'.repeat(64), mime: 'audio/wav', bytes: 46 } }
+const filesBeforePreview = files.length
+const freqBeforePreview = frequencies.length
+assert.equal(sound.previewPhaseSound('done'), true, '有上传音频时试听也成功')
+assert.equal(files.length, filesBeforePreview + 1, '有上传音频时试听播上传的那段')
+assert.equal(frequencies.length, freqBeforePreview, '试听上传音频不会叠加宠物音符')
+assert.equal(files.at(-1).volume, 0.5, '试听用当前提示音音量')
+
+sound.applyTuning({ soundVolume: 0 })
+sound.previewPhaseSound('done')
+assert.equal(files.at(-1).volume, 0.35, '音量为 0 时试听用兜底音量，不是"点了没反应"')
+
+sound.manifest.current = null
+assert.equal(sound.previewPhaseSound('done'), false, '宠物还没加载好时不做任何事')
+
+console.log('PASS: pet sounds, default mute, phase overrides, preview, validation')

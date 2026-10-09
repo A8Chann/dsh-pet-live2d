@@ -194,6 +194,23 @@ if (!applied) {
       && phaseDetails.sections?.[0] === '气泡与提示音'
       && phaseDetails.sections?.[1]?.startsWith('动作槽位') && phaseDetails.aligned,
     JSON.stringify(phaseDetails))
+  // 「试听」：有宠物音符的相位必须点得动，而且**点它不能连带把静音勾选框点掉** ——
+  // 它会读出声音（无头浏览器里没有声卡，只要求不抛异常），所以它当初就不该塞进
+  // 那个 `<label>`（label 里的 button 点一下会把 label 的控件一起激活）。
+  const previewProbe = JSON.parse(await evaluate(`JSON.stringify((() => {
+    const phase = document.querySelector('#dsh-settings-probe [data-card="phases"] [data-phase="done"]');
+    const button = phase?.querySelector('[data-phase-preview="done"]');
+    const checkbox = phase?.querySelector('[data-phase-sound="done"] input[type="checkbox"]');
+    const mutedBefore = checkbox?.checked === true;
+    let clicked = false;
+    try { button?.click(); clicked = true } catch { clicked = false }
+    return { exists: Boolean(button), disabled: button?.disabled === true, clicked,
+      mutedBefore, mutedAfter: checkbox?.checked === true };
+  })())`))
+  check('每相位有「试听」按钮：可点、点了不改静音状态、不抛异常',
+    previewProbe.exists && previewProbe.disabled === false && previewProbe.clicked
+      && previewProbe.mutedBefore === previewProbe.mutedAfter,
+    JSON.stringify(previewProbe))
   if (phaseDetails.line) {
     const narrow = JSON.parse(await evaluate(`JSON.stringify((() => {
       const host = document.querySelector('#dsh-settings-probe');

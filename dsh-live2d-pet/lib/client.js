@@ -3503,10 +3503,13 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       + "line-height:1.5;overflow-wrap:anywhere}",
     scope + " [data-phase-upload]{display:flex;align-items:center;flex-wrap:wrap;gap:6px;"
       + "min-width:0;margin:6px 0 0 90px}",
-    scope + " [data-upload-picker]," + scope + " [data-upload-reset]{position:relative;"
+    scope + " [data-upload-picker]," + scope + " [data-upload-reset],"
+      + scope + " [data-phase-preview]{position:relative;"
       + "border:1px solid rgba(120,170,255,.5);border-radius:7px;"
       + "background:rgba(120,170,255,.1);color:inherit;font-size:10px;"
       + "padding:2px 8px;line-height:1.7;cursor:pointer}",
+    // 没有可试听的来源时按钮就该点不动 —— 别让它装作可点，那只会变成"点了没反应"。
+    scope + " [data-phase-preview]:disabled{opacity:.45;cursor:default}",
     scope + " [data-upload-picker]:focus-within{outline:2px solid rgba(120,170,255,.7);outline-offset:2px}",
     scope + " [data-upload-picker] input[type=file]{position:absolute;inset:0;opacity:0;"
       + "width:100%;height:100%;cursor:pointer}",
@@ -4109,15 +4112,24 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     await pullUploadedSounds();
   };
   let soundContext = null;
+  /**
+   * 按需建/恢复 AudioContext。相位提示音与设置页的「试听」共用同一个实例。
+   *
+   * 返回 null 表示这台机器没有 Web Audio（或浏览器禁用了）——调用方各自决定怎么退。
+   */
+  const ensureSoundContext = () => {
+    if (soundContext === null) {
+      const AudioContext = window.AudioContext || window.webkitAudioContext;
+      if (AudioContext === undefined) return null;
+      soundContext = new AudioContext();
+    }
+    if (soundContext.state === "suspended") void soundContext.resume().catch(() => {});
+    return soundContext;
+  };
   const unlockSound = () => {
     if (!FLAGS.soundEnabled) return;
     try {
-      if (soundContext === null) {
-        const AudioContext = window.AudioContext || window.webkitAudioContext;
-        if (AudioContext === undefined) return;
-        soundContext = new AudioContext();
-      }
-      if (soundContext.state === "suspended") void soundContext.resume().catch(() => {});
+      ensureSoundContext();
     } catch {
       /* 无音频设备或浏览器禁用 Web Audio：只保留视觉状态 */
     }
@@ -4148,43 +4160,89 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     saveOverrides();
     notifySettings();
   };
+  /**
+   * 播一段上传音频。真实相位与设置页的「试听」共用它 —— 两条路必须发出同一种声音，
+   * 分开写迟早会漂移（试听听到的和真响的不一样，比没有试听更糟）。
+   */
+  const playUploadedSound = (phase, entry, volume) => {
+    try {
+      const audio = new window.Audio(SOUND_URL + "/" + encodeURIComponent(MANIFEST.current.id)
+        + "/" + phase + "?token=" + entry.token);
+      audio.volume = volume;
+      playingUploaded = audio;
+      playingUploadedPhase = phase;
+      void audio.play().catch(() => { /* 浏览器阻止自动播放时不影响相位动画 */ });
+      return true;
+    } catch { return false; /* 音频设备不可用时不影响相位动画 */ }
+  };
+  /** 把一个相位的音符排进 AudioContext。同样是与「试听」共用的那一份。 */
+  const scheduleSoundNotes = (context, notes, volume) => {
+    try {
+      const now = context.currentTime;
+      for (const [frequency, offset] of notes) {
+        const oscillator = context.createOscillator();
+        const gain = context.createGain();
+        oscillator.type = "sine";
+        oscillator.frequency.value = frequency;
+        gain.gain.setValueAtTime(0, now + offset);
+        gain.gain.linearRampToValueAtTime(volume * 0.12, now + offset + 0.015);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + offset + 0.15);
+        oscillator.connect(gain);
+        gain.connect(context.destination);
+        oscillator.start(now + offset);
+        oscillator.stop(now + offset + 0.16);
+      }
+      return true;
+    } catch { return false; /* 音频异常不能中断相位动画 */ }
+  };
   const playPhaseSound = (phase) => {
     stopUploadedSound();
     if (!FLAGS.soundEnabled || !(TUNING.soundVolume > 0)) return;
     if (Object.prototype.hasOwnProperty.call(PHASE_OVERRIDES.sounds, phase)
       && PHASE_OVERRIDES.sounds[phase].length === 0) return;
     const uploaded = uploadedSoundFor(phase);
-    if (uploaded !== undefined) {
-      try {
-        const audio = new window.Audio(SOUND_URL + "/" + encodeURIComponent(MANIFEST.current.id)
-          + "/" + phase + "?token=" + uploaded.token);
-        audio.volume = TUNING.soundVolume;
-        playingUploaded = audio;
-        playingUploadedPhase = phase;
-        void audio.play().catch(() => { /* 浏览器阻止自动播放时不影响相位动画 */ });
-      } catch { /* 音频设备不可用时不影响相位动画 */ }
-      return;
-    }
+    if (uploaded !== undefined) { playUploadedSound(phase, uploaded, TUNING.soundVolume); return; }
     const notes = soundNotesFor(phase);
     if (notes.length === 0 || soundContext?.state !== "running") return;
+    scheduleSoundNotes(soundContext, notes, TUNING.soundVolume);
+  };
+
+  /**
+   * 试听：设置页里"我现在就要听一下这个相位"。（`PREVIEW_VOLUME` 是音量被拉到 0 时的兜底。）
+   *
+   * 与真实播放**只差两点，且都是故意的**：
+   *   1. 不看总开关、不看单相位静音 —— 默认总开关就是关的（`soundEnabled: false`），
+   *      跟着它走的话点试听必然没反应，等于没做；
+   *   2. 取音源时跳过"静音覆盖"（`sounds[phase] = []`），仍按"上传音频 > 宠物音符"拿
+   *      **有效来源**，这样静音着的相位也能先听再决定要不要开。
+   * 返回是否真的发出了声音（设置页与驱动都靠它判断，不靠听）。
+   */
+  const PREVIEW_VOLUME = 0.35;
+  const previewNotesFor = (phase) => {
+    const override = PHASE_OVERRIDES.sounds[phase];
+    return Array.isArray(override) && override.length > 0 ? override : petSoundNotesFor(phase);
+  };
+  const canPreviewPhaseSound = (phase) => uploadedSoundFor(phase) !== undefined
+    || previewNotesFor(phase).length > 0;
+  const previewPhaseSound = (phase) => {
     try {
-      const now = soundContext.currentTime;
-      for (const [frequency, offset] of notes) {
-        const oscillator = soundContext.createOscillator();
-        const gain = soundContext.createGain();
-        oscillator.type = "sine";
-        oscillator.frequency.value = frequency;
-        gain.gain.setValueAtTime(0, now + offset);
-        gain.gain.linearRampToValueAtTime(TUNING.soundVolume * 0.12, now + offset + 0.015);
-        gain.gain.exponentialRampToValueAtTime(0.001, now + offset + 0.15);
-        oscillator.connect(gain);
-        gain.connect(soundContext.destination);
-        oscillator.start(now + offset);
-        oscillator.stop(now + offset + 0.16);
+      if (typeof MANIFEST.current?.id !== "string" || !PHASE_LINE_KEYS.includes(phase)) return false;
+      stopUploadedSound();
+      const volume = TUNING.soundVolume > 0 ? TUNING.soundVolume : PREVIEW_VOLUME;
+      const uploaded = uploadedSoundFor(phase);
+      if (uploaded !== undefined) return playUploadedSound(phase, uploaded, volume);
+      const notes = previewNotesFor(phase);
+      if (notes.length === 0) return false;
+      const context = ensureSoundContext();
+      if (context === null) return false;
+      // 首次点击时 AudioContext 常常还是 suspended，而 resume() 是异步的：
+      // 等它落地再排音符，否则会像真实相位那样被 state 检查挡掉、又变成"点了没反应"。
+      if (context.state === "suspended") {
+        void context.resume().then(() => { scheduleSoundNotes(context, notes, volume); }).catch(() => {});
+        return true;
       }
-    } catch {
-      /* 音频异常不能中断相位动画 */
-    }
+      return scheduleSoundNotes(context, notes, volume);
+    } catch { return false; }
   };
 
   const saveOverrides = () => {
@@ -7917,6 +7975,15 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
                           + " · " + (soundFile.bytes < 1024 ? "<1" : Math.round(soundFile.bytes / 1024)) + " KB"
                           + (PHASE_OVERRIDES.sounds[phase] === undefined ? "" : " · 已静音")))),
               h("div", { "data-phase-upload": phase },
+                // 「试听」放在上传这一行：它既不为某个来源独占，也不该塞进上面那个
+                // `<label>`（label 里放 button，点试听会连带把静音勾选框点掉）。
+                h("button", {
+                  type: "button",
+                  "data-phase-preview": phase,
+                  disabled: !canPreviewPhaseSound(phase),
+                  title: "试听这个相位的有效来源（不受总开关与单相位静音影响，音量用当前提示音音量）",
+                  onClick: () => { previewPhaseSound(phase); },
+                }, "试听"),
                 h("label", { "data-upload-picker": phase, "data-busy": uploading[phase] === true ? "" : undefined },
                   h("input", {
                     type: "file", accept: ".mp3,.wav,.ogg,audio/mpeg,audio/wav,audio/ogg",

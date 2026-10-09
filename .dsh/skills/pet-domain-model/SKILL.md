@@ -22,6 +22,13 @@ whenToUse: >
 `$DSH_HOME/pet-sounds/`，状态通过宿主 HTTP 接口轮询，不塞进 `pet.json`、共享设置 JSON 或
 localStorage。**写新可配置项时把默认三层写全**，别只写前两层：
 
+设置页的**「试听」**（`previewPhaseSound`）是这套音源规则的一个特例，语义要记牢：
+它按同样的优先级取**有效来源**（上传 > 宠物音符），但**故意不看**总开关 `soundEnabled`
+与单相位静音覆盖 —— 试听的意思是"我现在就要听"，不是"模拟一次会话"；跟着总开关走的话，
+默认静音下点试听必然没反应（那等于没做）。音量为 0 时用 `PREVIEW_VOLUME`（0.35）兜底，
+同理。真实播放与试听**共用** `playUploadedSound` / `scheduleSoundNotes` 两个原语，
+别各写一份：试听听到的和真响的不一样，比没有试听更糟。
+
 - 只认"宠物声明"的那一层，等于**把"最小 pet.json"判了死刑**。互动反应候选就是这么漏的：
   代码里没有任何默认值（`HEAD_PAT_REACTIONS` 是上一版留下的死常量，谁都没读），
   于是没声明 `patReactions` / `tailReactions` / `spinReactions` 的宠物上，摸头只有台词、
