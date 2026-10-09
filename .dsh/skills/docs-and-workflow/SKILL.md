@@ -143,9 +143,14 @@ GIT_CONFIG_SYSTEM=<空配置> GIT_CONFIG_GLOBAL=<临时配置>
 ## 常用命令
 
 - 日常验证：`cd tools/browser-test && npm run dev -- <关键字>`（单个 driver 约 7 秒）
-- 提交前：`npm run suite`（19 个 driver/测试，约 4 分钟）；机器吃力时 `node run-suite.mjs --jobs 3`
-- 改了 `lib/client.js` **或 `lib/index.js`** 都要重启 `dsh web`：客户端 bundle 不做热重载，
-  宿主半区是启动时 import 的（`InstallBundledPets` 这类启动代码不会自己重跑）
+- 提交前：`npm run suite`（24 个 driver/测试：4 个纯 node + 20 个 CDP，约 4 分钟）；
+  机器吃力时 `node run-suite.mjs --jobs 3`
+- 改了 `lib/client.js`：DSH web 里**客户端图会跟着文件变化自己重挂**（实测：改完不刷新，
+  client `Slots` 查询里就能看到新注册）—— 但**别指望它**，宿主半区（`lib/index.js`）是启动时
+  import 的，改了必须重启 `dsh web`（`InstallBundledPets` 这类启动代码不会自己重跑）。
+- **DSH 会话里起不了无头浏览器**（Mojo 命名管道被沙箱拦），所以套件在会话里跑不了：
+  能给的只有 `probe-plugin-page-meta.mjs` 这类纯 node 检查 + 纯 node 测试。
+  详见 browser-cdp skill。
 
 ## 设置正文的渲染有一个专门的 driver（别再省）
 
@@ -165,6 +170,18 @@ ReferenceError: layerRef is not defined
 规矩：**往设置正文里加组件之后必须跑 `cdp-settings-render`**。它真的 render 一次、数卡片、
 数控件、并断言页面里没有未捕获异常。加完顺手验一下"把 bug 放回去它会不会红"
 （这次验过：2/7，异常信息直指那一行）。
+
+同一条规矩也适用于**官方「插件」页那一节**（`plugins.bundle.config`）：driver 是
+`cdp-plugin-page.mjs`（2026-10 加）。它挂在 `__pluginSections["dsh-pet-live2d"]` 上渲染，
+断言卡片/开关/滑杆的**数量与集合**（防止有人把设置页整份搬过来），并点一下开关、读
+`__dshLive2dPet.settingsOverrides().flags` —— 验的是"真的写进插件状态"，不是"DOM 变了"。
+它现在还不在 `PARALLEL_SAFE` 里（那份名单要用实测换，别凭感觉加）。
+
+**会话里跑不了浏览器时，结构性的那一半走 `test-plugin-page.mjs`**（纯 node，0.3 秒）：
+它用 `react-dom/server` 把两节各渲染一次，断言"渲染不抛 + 控件集合正确"。
+它替不了 CDP driver（布局、样式、点击不归它管），但"宠物正常、只有那一节崩"这类错它抓得住
+—— 已验过：故意在 `PetPluginConfig` 里读一个不存在的东西，它当场红（exit 1，栈直指那一行）。
+分层：**结构** → 纯 node（到处都能跑）；**布局与交互** → CDP driver（要真浏览器）。
 
 ## 并发：现在是**两条车道**（别再"全都 N 并发"）
 

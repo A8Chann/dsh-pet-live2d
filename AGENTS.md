@@ -31,6 +31,11 @@
   "在声明之前引用 `const`"这类**加载期 TDZ**。这类错 `node --check` 看不出来（不是语法错），
   症状是整个插件 import 失败、页面白屏报 "Failed to load plugins"。
   （我踩过：`const SHARED_KEYS = { overrides: OVERRIDE_KEY }` 写在 `OVERRIDE_KEY` 声明之前。）
+- **动过包级展示元信息（`icon` / `locale/*.json` / `exports`）就跑
+  `node dsh-live2d-pet-desktop/tools/probe-plugin-page-meta.mjs`**：它直接调**宿主的**
+  `readPluginMeta()`（不是我们自己照文档再实现一遍），判标题/描述/图标能不能被官方「插件」页读到。
+- **DSH 会话里起不了无头浏览器**（沙箱拦 Mojo 命名管道）⇒ 浏览器套件在会话内跑不了，
+  别把它当"没验"的借口，也别反复重试：能给的信号是纯 node 检查 + 活页面的 inspect 读口。
 - **回 issue 只在"这个版本完全发布完"之后**：npm 上 `latest` 已指到它、Release 附件齐、CI 绿
   —— 三样都确认过再回。版本还没上线就写"请升级到 x.y.z"，用户装到的其实是旧版，等于误导。
   （2026-09-30 用户明确要求。坑在于 npm 有**暂存窗口**：`npm publish` 打印 `+ pkg@ver`

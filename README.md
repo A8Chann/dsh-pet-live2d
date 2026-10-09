@@ -141,7 +141,9 @@ dsh plugin --profile web remove dsh-pet-live2d   # 卸载（%DSH_HOME%\pets\ 里
 
 ## 设置
 
-配置都在 **DSH 设置页 → 桌宠** 那一节（卡片 / 药丸 / 权重条，浅色深色都能用）：
+完整的配置都在 **DSH 设置页 → 桌宠** 那一节（卡片 / 药丸 / 权重条，浅色深色都能用）；
+**侧栏「插件」→ 本插件** 的卡片上另有一节常用开关（气泡 / 提示音 / 三个互动 / 记住装扮）、
+四根手感滑杆和「显示位置」，写的是同一份配置。
 
 - **摸鱼**：每个槽位一张条目表，可增删、带权重 —— 权重就是「多久动一次」。
 - **会话相位**：八个相位两列概览、点开一个再编辑台词与动作池；动作改动只在真的编辑时才落盘。
@@ -201,7 +203,7 @@ npm install
 npm run build:vendor
 ```
 
-回归测试在 `tools/browser-test/`：**1 个纯 Node 的宿主契约 + 18 个无头 Edge + CDP 的 driver**，
+回归测试在 `tools/browser-test/`：**4 个纯 Node 的测试 + 20 个无头 Edge + CDP 的 driver**，
 在真实 WebGL 里跑插件，覆盖状态机、点击剪影、注视、相位映射、渲染倍率、动作语义、装扮合成、
 设置界面等契约。断言一律读**引擎在帧内写进模型的参数值**，不做截图逐像素 / 哈希比对：
 
@@ -213,6 +215,9 @@ npm run suite        # 起测试服 -> 并发跑全部 driver -> 输出 PASS/FAI
 
 > 设置界面只挂在 DSH 设置页那一节里，所以 driver 用 `window.__pluginSections["pet-settings"]`
 > 把那一节渲染进探针容器（`#dsh-settings-probe`）再操作它，见 `cdp-gaze.mjs` 里的 `openSettings()`。
+> 官方「插件」页那一节同理，键是**包名**（`__pluginSections["dsh-pet-live2d"]`，容器
+> `#plugin-page-probe`），见 `cdp-plugin-page.mjs`。宿主侧的展示元信息（标题 / 描述 / 图标）
+> 由 `dsh-live2d-pet-desktop/tools/probe-plugin-page-meta.mjs` 用宿主自己的读取器验。
 > `drivers/` 下是开发过程中用过的一次性诊断脚本，留作参考，不在回归套件里。
 
 > **工程记录不写在 README 里**：踩坑、帧序、测量陷阱、验证写法按主题放在

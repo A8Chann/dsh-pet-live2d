@@ -26,6 +26,15 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   const { useCallback, useEffect, useRef, useState } = react;
 
   const name = "live2d-pet";
+  /**
+   * 本包的 npm 包名。
+   *
+   * 官方「插件」页按**包名**派发组合包的配置区（`plugins.bundle.config` 的 key 就是
+   * 组合包的包名，见 `dsh-client-ui-plugin-manager` 的 `configLedgerSource`），所以这个
+   * 字符串必须与 `package.json` 的 `name` 逐字相同 —— 写错的表现是"注册没报错、
+   * 页面上什么都没多出来"（页面按包名查不到这个键就不渲染那一节）。
+   */
+  const PACKAGE_NAME = "dsh-pet-live2d";
   // "slots" 是 DSH 客户端界面给插件的扩展点（设置页就是这么挂进去的）。
   const inject = ["slots"];
 
@@ -3550,7 +3559,20 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       + SETTINGS_SEL + " [data-setting=phases]{grid-template-columns:minmax(0,1fr)}",
     "}",
   ];
-  const STYLE_TEXT = CSS + "\n" + SETTINGS_CSS.join("\n") + "\n" + PAGE_PHASE_CSS.join("\n");
+  /**
+   * 官方「插件」页那一节的微调（作用域 = 两个属性同时在的那个根节点）。
+   *
+   * 只有两条，都是有理由的：
+   *  * 状态行（"她现在在哪"）本来借的是 `[data-note]` 的灰度 —— 那是给补充说明用的，
+   *    而这一行是这一节**最先要回答**的问题，按 55% 透明度画就太虚了；
+   *  * 插件页是窄栏，卡片间距收一档，四张卡不至于要滚半天。
+   */
+  const PLUGIN_PAGE_CSS = [
+    SETTINGS_SEL + "[data-pet-plugin-page]>[data-plugin-status]{font-size:11px;opacity:.85;padding:0 0 9px}",
+    SETTINGS_SEL + "[data-pet-plugin-page] [data-card]{margin-bottom:8px}",
+  ];
+  const STYLE_TEXT = CSS + "\n" + SETTINGS_CSS.join("\n") + "\n" + PLUGIN_PAGE_CSS.join("\n")
+    + "\n" + PAGE_PHASE_CSS.join("\n");
 
   function ensureStyle() {
     if (document.getElementById(STYLE_ID) !== null) return;
@@ -4752,8 +4774,13 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   function TuningControls(props) {
     useSettings();
     const only = props?.group;
-    const fields = TUNING_FIELDS.filter((field) => only === undefined || tuningGroupOf(field) === only);
-    return h("div", { "data-settings": "", "data-setting": only ?? "all" },
+    // 也能按**具体键**挑几根滑杆（官方插件页那一节只放最常用的四项，
+    // 不想把八根手感滑杆整套搬过去）。给了 keys 就按 keys 过滤，忽略 group。
+    const keys = Array.isArray(props?.keys) ? props.keys : null;
+    const fields = TUNING_FIELDS.filter((field) => keys === null
+      ? (only === undefined || tuningGroupOf(field) === only)
+      : keys.includes(field.key));
+    return h("div", { "data-settings": "", "data-setting": only ?? (keys === null ? "all" : "subset") },
       fields.map((field) => h("label", {
         key: field.key,
         "data-field": field.key,
@@ -4773,13 +4800,14 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       h("code", { "data-value": field.key }, String(TUNING[field.key])),
       )),
       // 恢复默认单独一行：它是"这一组"的动作，混在滑杆行里会看着像又一个控件。
+      // 只挑了四项时按钮说"全部" —— 它恢复的确实是整份 TUNING，不含糊。
       only === undefined || only === "feel"
         ? h("div", { "data-add-row": "" },
           h("button", {
             type: "button",
             "data-reset": "tuning",
             onClick: () => applyTuning(Object.assign({}, TUNING_DEFAULTS)),
-          }, "恢复默认"))
+          }, keys === null ? "恢复默认" : "全部恢复默认"))
         : null,
     );
   }
@@ -8621,15 +8649,25 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     );
   }
 
-  function PetSettingsBody({ compact = false } = {}) {
-    useSettings();
-    const card = (key, title, hint, body) => h("div", { key, "data-card": key },
+  /**
+   * 一张设置卡片：标题条（+ 右上角提示）+ 内容区。
+   *
+   * 提到模块作用域是因为现在**两个地方**要画同一种卡片：DSH 设置页那一节，和官方
+   * 「插件」页上这一组合包的配置区。各写一份的下场是两边慢慢长得不一样。
+   */
+  function settingsCard(key, title, hint, body) {
+    return h("div", { key, "data-card": key },
       h("div", { "data-card-head": "" },
         h("span", { "data-card-title": "" }, title),
         hint === null || hint === undefined ? null : h("span", { "data-card-hint": "" }, hint),
       ),
       h("div", { "data-card-body": "" }, body),
     );
+  }
+
+  function PetSettingsBody({ compact = false } = {}) {
+    useSettings();
+    const card = settingsCard;
     return [
       ...TUNING_GROUPS.filter((group) => !TUNING_GROUPS_INLINE.includes(group.id)).map((group) => card(
         "tune-" + group.id, group.label, group.hint, h(TuningControls, { group: group.id }))),
@@ -8680,6 +8718,61 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     return h("div", { "data-pet-settings": "" }, h(PetSettingsBody, null));
   }
 
+  /**
+   * 侧栏「插件」页上这一组合包的配置区（`plugins.bundle.config`，键 = 包名）。
+   *
+   * 为什么要有它：官方插件页把"插件自带配置"渲染在**组合包详情页**的描述与行之间
+   * （`dsh-client-ui-plugin-manager`；页面只在有人注册了这个键时才画那一节）。我们的
+   * 组合包只有一行（`live2d-pet`），所以"这一行的配置"就是"这只宠物的配置"。
+   *
+   * 它**不是**设置正文的第二个家：相位台词、池子编辑器、装扮与文案仍然只在
+   * 「设置 → 桌宠」里改（正文只写一份，这条是 2.0.0 定下来的）。这里是插件页上最常用的
+   * 那几项 —— 开关、四根滑杆、显示位置 —— 写进去的还是**同一份共享设置**
+   * （`persistShared` → `%DSH_HOME%\pet-settings.json`），所以两个界面永远一致。
+   *
+   * 样式直接复用设置正文那一套（`[data-pet-settings]` 作用域）：卡片、行、滑杆、药丸
+   * 按钮的观感与设置页逐字相同，不需要新写一份 CSS。
+   */
+  function PetPluginConfig() {
+    useSettings();
+    const layer = useLayerState();
+    const pet = MANIFEST.current ?? {};
+    const petLabel = typeof pet.label === "string" && pet.label !== ""
+      ? pet.label
+      : (typeof pet.id === "string" && pet.id !== "" ? pet.id : "还没加载");
+    const modeLabel = layer.mode === "inline" ? "页面内" : (layer.mode === "desktop" ? "桌面" : "自动");
+    const ownerLabel = layer.owner === "desktop" ? "现在在桌面上" : "现在在页面里";
+    const flagRow = (key, label, note) => h("label", { key, "data-flag-row": key },
+      h("input", {
+        type: "checkbox",
+        checked: FLAGS[key] === true,
+        "data-flag": key,
+        onChange: (event) => applyFlag(key, event.target.checked),
+      }),
+      h("span", { "data-row-label": "" }, label),
+      note === undefined ? null : h("span", { "data-note-inline": "" }, note),
+    );
+    return h("div", { "data-pet-settings": "", "data-pet-plugin-page": "" },
+      // 第一行先说"这只宠物现在在哪"：它比任何开关都更该先回答，
+      // 而且换过显示位置的人回来第一眼就是找这一句。
+      h("div", { "data-plugin-status": "" },
+        "当前宠物：" + petLabel + " · 显示位置：" + modeLabel + "（" + ownerLabel + "）"),
+      settingsCard("plugin-flags", "常用开关", "点一下立刻生效", [
+        flagRow("bubbleEnabled", "显示气泡", FLAGS.bubbleEnabled ? undefined : "已关：任何台词都不弹"),
+        flagRow("soundEnabled", "会话提示音", FLAGS.soundEnabled ? undefined : "默认静音"),
+        flagRow("patEnabled", "摸头有反应", undefined),
+        flagRow("tailEnabled", "摸尾巴有反应", undefined),
+        flagRow("spinEnabled", "鼠标绕着转圈会晕", undefined),
+        flagRow("outfitArchive", "跨启动记住装扮", FLAGS.outfitArchive ? undefined : "已关：也不再记录"),
+      ]),
+      settingsCard("plugin-tuning", "手感", "注视范围 · 摸鱼节奏 · 音量",
+        h(TuningControls, { keys: ["gazeRangePx", "gazeWatchingRatio", "fidgetQuietMs", "soundVolume"] })),
+      settingsCard("plugin-layer", "显示位置", "页面内 / 桌面上", h(LayerControls, null)),
+      h("div", { "data-note": "" },
+        "相位台词、池子编辑器、装扮与台词文案在「设置 → 桌宠」里改。"),
+    );
+  }
+
   function applySettings(ctx) {
     if (ctx === null || ctx === undefined) return;
     const slots = ctx.slots;
@@ -8693,6 +8786,30 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       }, () => h(PetSettingsSection, null)));
     } catch {
       /* 老版本 DSH 没有这个 slot：右键面板那份还在，不影响使用 */
+    }
+  }
+
+  /**
+   * 侧栏「插件」页里的配置区。
+   *
+   * 两个容易踩的点：
+   *
+   *  * **键必须写包名**（`PACKAGE_NAME`）—— 页面按组合包的包名派发这一格，写错的表现是
+   *    "注册成功、页面什么都不多"。
+   *  * **`slots.inject` 而不是"现在就注册"**：插件页是懒挂载的面板，它的子 slot 在页面
+   *    注册时才声明；`inject` 会等到那一刻再跑（页面重开/销毁也跟着走）。
+   */
+  function applyPluginPage(ctx) {
+    if (ctx === null || ctx === undefined) return;
+    const slots = ctx.slots;
+    if (slots === undefined || slots === null) return;
+    try {
+      slots.inject("plugins.bundle.config", () => slots.register({
+        name: "plugins.bundle.config",
+        key: PACKAGE_NAME,
+      }, () => h(PetPluginConfig, null)));
+    } catch {
+      /* 老版本 DSH 没有这条 slot：设置页那一节还在，不影响使用 */
     }
   }
 
@@ -8742,6 +8859,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       }, SHARED_POLL_MS);
     }
     applySettings(ctx);
+    applyPluginPage(ctx);
     // Takeover: an earlier instance — a hot reload, or one left behind by a
     // crashed reload — must not leave a second floating pet on the page.
     teardown();

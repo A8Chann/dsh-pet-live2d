@@ -99,3 +99,40 @@ const probe = (selector) => "#dsh-settings-probe " + selector
   `data-slot-option`）在 `[data-dsh-live2d-pet]` 下面；设置正文的钩子
   （`data-fidget-*` / `data-phase-*` / `data-relation*` / `data-pool*` / `data-input` …）
   在 `#dsh-settings-probe` 下面。
+- 官方「插件」页那一节（`__pluginSections["dsh-pet-live2d"]`，键是**包名**）用同样的挂法，
+  探针容器换成 `#plugin-page-probe`、钩子前缀换成 `[data-pet-plugin-page]`；
+  driver 是 `tools/browser-test/cdp-plugin-page.mjs`。
+
+## 在 DSH 会话里**起不了无头浏览器**（2026-10 实测，别再花时间）
+
+沙箱（workspace-write）里 headless Edge 起不来，报的是 Chromium 自己的 IPC：
+
+```
+FATAL:mojo\public\cpp\platform\platform_channel.cc:187] Check failed: . : 拒绝访问。 (0x5)
+ERROR:crashpad_client_win.cc:447] OpenProcess: 拒绝访问。 (0x5)
+```
+
+即 **Mojo 的命名管道被沙箱拦掉**（两种受限模式都拦）。症状是 `spawn` 后 CDP 端口永远
+不应答、`fetch /json/version` 一直失败 —— 不是 driver 写错了。同一台机器上，
+**DSH 会话里起不来的东西，普通终端里跑得好好的**。
+
+推论：
+
+- 浏览器类 driver（`tools/browser-test/*`）在这个环境里**跑不了**，套件运行器还会先在
+  `startServer` 上撞 `spawn EPERM`（它用管道 stdio 抓服务器输出）。
+- 因此本环境里能给的确定性信号只有：宿主的 `readPluginMeta`（见 verification-signals）、
+  TDZ/语法检查、纯 node 测试（`test-*.mjs` / `*.test.mjs`）、以及**活页面的 inspect 读口**
+  （`cordis_inspect_query` 的 Slots —— 它能证明"注册上了"，证明不了"画出来了"）。
+- 真要在浏览器里验，得让**人在自己的浏览器**里刷新页面看（会话内的无头浏览器指望不上）。
+
+## 页面的插件图会跟着文件变化重挂（DSH web 实测）
+
+改完 `dsh-live2d-pet/lib/client.js` 之后**不用刷新页面**：页面的
+`cordis_inspect_query`（client `Slots`）在下一次查询里就能看到新的注册
+（`plugins.bundle.config` 的 occupant 从无到有，`registrant: live2d-pet`）。
+`dsh-client-modules` 是按文件 `ctimeMs`/`size` 认版本的，变了就重挂整张插件图。
+
+**但宿主半区（`lib/index.js`）仍然要重启 `dsh web`** —— 那是启动时 import 的。
+
+⚠️ 桌面端是例外：壳发的是**编译进 exe 的那一份 `client.js`**（见 desktop-shell 那条），
+所以桌面端页面里看到的永远是上次构建时的客户端。

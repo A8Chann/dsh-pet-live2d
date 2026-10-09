@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Live2D Pet",
+    "description": "A Live2D pet docked in the DSH interface: she follows the pointer, reacts to clicks and changes expressions with each session phase, with configurable motions, expressions and lines."
+  }
+}

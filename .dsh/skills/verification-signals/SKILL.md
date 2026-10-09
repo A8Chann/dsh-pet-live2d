@@ -256,3 +256,29 @@ gazeTarget() 必须从「有值」变成 0。只验 UI 状态的话，改了没�
 想知道"张嘴应该是什么样"，别对着小图猜 —— 去读 `selfie.motion3.json` 的
 关键帧。我在小图上判断"负值 = 下巴掉下来"，放大后发现是**歪嘴**；
 作者用的是正值。**跟作者对齐，别跟我的猜测对齐。**
+
+## 验"宿主读得出来"，就用宿主那个函数（别照着文档再实现一遍）
+
+插件在官方「插件」页上的标题 / 描述 / 图标，是宿主 `dsh-app-boot` 的 `readPluginMeta()`
+读出来的（`dsh-app-boot/lib/index.js` 里 `readPluginMeta` 是**导出的**）。自己写一份
+"读 package.json + 拼 data URL"的检查，只能证明"我和文档一致"，证明不了"宿主读得出来"
+—— 而这类错的形态恰恰是宿主的校验规则（相对路径、包内、≤256 KiB、MIME 白名单）与
+文档不一致的那几条。
+
+```js
+// tools/probe-plugin-page-meta.mjs 的做法
+const entry = createRequire(join(INSTALL, 'package.json')).resolve('@deepseek-ai/dsh-app-boot')
+const { readPluginMeta } = await import(pathToFileURL(entry).href)
+const meta = readPluginMeta('dsh-pet-live2d', pathToFileURL(profilePackageJson).href)
+// meta.title / meta.description 是 {en, zh} 本地化对象；meta.icon 是 data URL；失败时 meta.error
+```
+
+判据要点：
+
+- **父基准取 profile 的 `package.json`**（`%DSH_HOME%\profiles\<p>\package.json`）——
+  页面/清单查的正是"profile 这一层能不能解析到这个包"，不是"工作区里那个文件在不在"。
+- 断言**图标 data URL 解码后与磁盘文件逐字节相同**，而不是只断言 `startsWith('data:')`。
+- 断言标题**不等于包名** —— 标题回退成包名正是 "locale 没被读到" 的症状（`exports` 漏了
+  `./locale/*.json`、或文件名不是语言 id）。
+- `readPluginMeta` 走 Node 的 ESM 解析（`ModuleLoader.fromInternal()`），**在普通 `node`
+  进程里跑得通**，所以这条检查不需要 DSH 在跑，也不需要浏览器。

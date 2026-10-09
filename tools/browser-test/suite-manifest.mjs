@@ -5,6 +5,7 @@
 // 都不能去 import 那个跑者 —— 一 import 就真的把整套跑起来了。
 export const SUITE = {
   'test-host-sync.mjs': '随包宠物升级：老装机拿得到新的默认值，改过的一个字都不碰',
+  'test-plugin-page.mjs': '官方「插件」页那一节与设置正文都渲染得出来（纯 node，不需要浏览器）',
   'test-sound.mjs': '会话提示音：宠物默认、旧宠物兜底、单相位静音与音量',
   'test-sound-upload.mjs': '自定义音频：上传、宠物隔离、读取、恢复与拒绝危险请求',
   'cdp-sm.mjs': '动作状态机：点击→播放→回待机、重播、连点、面板播放、归位',
@@ -26,6 +27,7 @@ export const SUITE = {
   'cdp-interact.mjs': '互动与气泡：摸尾巴/转圈转晕/相位台词/文本·位置·开关可配',
   'cdp-react-defaults.mjs': '互动反应候选的内置默认值：宠物没声明那三组也演得出来',
   'cdp-settings-render.mjs': '设置正文真的渲染得出来（挂在宠物组件之外的组件不许读到组件内的 ref）',
+  'cdp-plugin-page.mjs': '官方「插件」页的配置区：按包名注册、渲染得出来、开关真的写进插件状态',
 }
 
 /**

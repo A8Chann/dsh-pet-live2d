@@ -29,14 +29,22 @@ async function main() {
   if (exports === undefined) { report.error = window.__bootError || 'plugin bundle did not register'; return finish(null); }
   try {
     // 假 ctx：effect 是插件生命周期，slots 是 DSH 客户端界面的扩展点
-    // （设置页那一节就是这么挂上去的）。注册结果留在 window 上给 driver 用：
-    // 真实 DSH 里由宿主渲染，这里我们自己把它挂出来。
+    // （设置页那一节、官方「插件」页的配置区都是这么挂上去的）。注册结果留在 window 上
+    // 给 driver 用：真实 DSH 里由宿主渲染，这里我们自己把它挂出来。
+    //
+    // 身份两种：list 槽（`settings.section`）用 `id`，keyed 槽（`plugins.bundle.config`，
+    // 键是**组合包的包名**）用 `key`。只认 `id` 的话 keyed 那种会静默变成 `undefined` 键
+    // —— 收下来一个 `sections[undefined]`，driver 找 `["dsh-pet-live2d"]` 永远是 undefined。
     const sections = {};
     exports.apply({
       effect: (fn) => { try { return fn(); } catch { return () => {}; } },
       slots: {
         inject: (slotName, callback) => callback(),
-        register: (meta, render) => { sections[meta.id] = { meta, render }; return meta.id; },
+        register: (meta, render) => {
+          const identity = meta.key ?? meta.id;
+          sections[identity] = { meta, render };
+          return identity;
+        },
       },
     });
     window.__pluginSections = sections;

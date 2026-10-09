@@ -89,3 +89,38 @@ store，同时开两个界面也不会打架，但没必要留两份入口。
   previous render"，React 会把**整只宠物**卸载。
 - 样式作用域是 `[data-pet-settings]`（那一节渲染在宠物根节点**之外**，
   `[data-dsh-live2d-pet] ...` 那套选择器碰不到它）。
+
+## 官方「插件」页：卡片元信息 + `plugins.bundle.config`（3.3.0 加的那一节）
+
+侧栏「插件」页上那张卡片的三样东西（标题 / 描述 / 图标）**不是页面读 `package.json` 拼的**，
+而是宿主的 `dsh-app-boot` → `readPluginMeta()` 读出来、经 `pluginInventory/list` 的 `meta`
+字段送给页面。所以要让它们出现，得往**包里**加东西，不是改界面：
+
+| 界面元素 | 来源 | 写法 |
+|---|---|---|
+| 标题 / 描述 | `<specifier>/locale/<lang>.json` 里的 `meta.title` / `meta.description` | 必须有 `locale/en.json`，其余同目录（`zh.json`…）；`exports` 要导出 `"./locale/*.json"` |
+| 图标 | `package.json` 的 `"icon": "./icon.svg"`，或导出的 `./icon` | 包内相对路径；SVG/PNG/JPEG/WebP ≤256 KiB；页面渲染成 `<img width=36 height=36>` + `object-fit:contain`，**不能依赖 currentColor** |
+
+配置区注册进 `plugins.bundle.config`，**键就是组合包的包名**（这里是 `dsh-pet-live2d`）：
+
+```js
+ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register(
+  { name: 'plugins.bundle.config', key: PACKAGE_NAME },   // 键写错 = 注册成功但页面什么都不多
+  () => h(PetPluginConfig, null)))
+```
+
+四个坑：
+
+- **键写错不报错**：页面按包名派发，查不到这个键就整节不渲染（症状是"注册上了、页面没变化"）。
+- 用 `slots.inject` 而不是"apply 里直接注册"：插件页是**懒挂载**的面板，它的子 slot 在页面
+  注册时才声明；`inject` 会等到那一刻（页面关掉/重开也跟着走）。
+- 这一节的渲染函数和设置正文一样跑在**宠物组件之外**，不许读组件内的 ref/state。
+- 样式直接复用 `[data-pet-settings]` 作用域（里面再套 `data-pet-plugin-page` 做微调），别另写
+  一份卡片 CSS —— 两份会慢慢长得不一样。
+
+**设置正文仍然只有一个家**（DSH 设置页）：插件页那一节是"常用开关 + 显示位置"，写的是同一份
+共享设置（`persistShared` → `%DSH_HOME%\pet-settings.json`）；相位台词、池子编辑器、文案不搬过去。
+
+测试 harness（`tools/browser-test/harness.js`）的假 `ctx.slots.register` 原来只按 `meta.id`
+收注册 —— keyed 槽没有 `id`，于是它会静默记成 `sections[undefined]`，driver 找 `["dsh-pet-live2d"]`
+永远是 undefined。现在按 `meta.key ?? meta.id` 收。
