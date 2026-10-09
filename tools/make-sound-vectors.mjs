@@ -28,6 +28,19 @@ function oggCrc(page) {
   return crc
 }
 
+/** 把单个包封成一页 Ogg（段表一项、BOS 页、页序号 0），并写好 CRC。 */
+function oggPage(packet) {
+  if (packet.length === 0 || packet.length > 254) throw new Error('这个生成器只封单段短包：' + packet.length)
+  const b = Buffer.alloc(27 + 1 + packet.length)
+  b.write('OggS', 0, 'latin1')
+  b[5] = 2 // header type：BOS
+  b[26] = 1 // 段表 1 项
+  b[27] = packet.length
+  packet.copy(b, 28)
+  b.writeUInt32LE(oggCrc(b), 22)
+  return b
+}
+
 /** 最小的合法 WAV：46 字节，fmt 16 + data 2 字节 @ 8 kHz 单声道 16 bit。 */
 function wavPcm() {
   const b = Buffer.alloc(46)
@@ -60,46 +73,43 @@ function wavFloat32() {
   return Buffer.concat([b, Buffer.from([0, 0])]) // 48 字节
 }
 
-/** 合法的一页 Opus（47 字节，OpusHead 19 字节包）。 */
-function oggOpus() {
-  const b = Buffer.alloc(27 + 1 + 19)
-  b.write('OggS', 0, 'latin1')
-  b[5] = 2 // header type：BOS
-  b[26] = 1 // 段表 1 项
-  b[27] = 19
-  b.write('OpusHead', 28, 'latin1')
-  Buffer.from([1, 2, 0, 0, 0x80, 0xbb, 0, 0, 0, 0, 0]).copy(b, 36)
-  b.writeUInt32LE(oggCrc(b), 22)
-  return b
-}
+/** OpusHead（19 字节，channel mapping family 0）。 */
+const opusHead = (mapping) => Buffer.concat([
+  Buffer.from('OpusHead', 'latin1'),
+  // 版本 1 / 2 声道 / pre-skip 0 / 输入采样率 48000 / 输出增益 0 / mapping family / …
+  Buffer.from(mapping === 0 ? [1, 2, 0, 0, 0x80, 0xbb, 0, 0, 0, 0, 0] : [1, 2, 0, 0, 0x80, 0xbb, 0, 0, 0, 0, mapping, 1, 0, 0, 1]),
+])
 
-/** 合法的一页 Vorbis（58 字节，identification header 30 字节包）。 */
-function oggVorbis() {
-  const b = Buffer.alloc(27 + 1 + 30)
-  b.write('OggS', 0, 'latin1')
-  b[5] = 2
-  b[26] = 1
-  b[27] = 30
-  let at = 28
-  b[at] = 0x01
-  b.write('vorbis', at + 1, 'latin1')
-  at += 7
-  at += 4 // version = 0
-  b[at] = 2 // 2 声道
-  at += 1
-  b.writeUInt32LE(44100, at) // 采样率
-  at += 4
-  at += 12 // bitrate max / nominal / min = 0
-  b[at] = 0x66 // 块大小（小 6 / 大 6）
-  b[at + 1] = 1 // framing
-  b.writeUInt32LE(oggCrc(b), 22)
-  return b
+/** Vorbis identification header（30 字节包）。 */
+function vorbisIdent() {
+  const packet = Buffer.alloc(30)
+  packet[0] = 0x01
+  packet.write('vorbis', 1, 'latin1') // 1..6
+  packet[11] = 2 // 声道数
+  packet.writeUInt32LE(44100, 12) // 采样率
+  packet[28] = 0x66 // 块大小（小 6 / 大 6）
+  packet[29] = 1 // framing
+  return packet
 }
 
 /** 一个 MPEG1 Layer III、128 kbps、44.1 kHz、无 padding 的帧（正好 417 字节）。 */
 function mp3Frame() {
   const b = Buffer.alloc(417)
   Buffer.from([0xff, 0xfb, 0x90, 0x00]).copy(b, 0)
+  return b
+}
+
+/** MPEG2 Layer III、bitrate index 8（MPEG2 L2/L3 表 = 64 kbps）、22.05 kHz：也是 417 字节。 */
+function mp3Mpeg2Layer3() {
+  const b = Buffer.alloc(417)
+  Buffer.from([0xff, 0xf3, 0x80, 0x00]).copy(b, 0)
+  return b
+}
+
+/** MPEG1 Layer II、bitrate index 8（MPEG1 L2 表 = 128 kbps）、44.1 kHz：也是 417 字节。 */
+function mp3Mpeg1Layer2() {
+  const b = Buffer.alloc(417)
+  Buffer.from([0xff, 0xfd, 0x80, 0x00]).copy(b, 0)
   return b
 }
 
@@ -115,6 +125,8 @@ const withByte = (bytes, at, value) => {
   copy[at] = value
   return copy
 }
+
+const opusPage = oggPage(opusHead(0))
 
 const vectors = [
   { name: 'wav-pcm16', mime: 'audio/wav', bytes: wavPcm(), note: '最小合法 PCM WAV' },
@@ -145,13 +157,21 @@ const vectors = [
     bytes: (() => { const b = wavPcm(); b.writeUInt32LE(8000, 28); return b })(),
     note: '字节率与 采样率×块对齐 不符',
   },
-  { name: 'ogg-opus', mime: 'audio/ogg', bytes: oggOpus(), note: 'OpusHead 首包 + 正确 CRC' },
-  { name: 'ogg-vorbis', mime: 'audio/ogg', bytes: oggVorbis(), note: 'Vorbis identification header + 正确 CRC' },
-  { name: 'ogg-crc-broken', mime: null, bytes: withByte(oggOpus(), 30, oggOpus()[30] ^ 1), note: '改了一个字节：CRC 对不上' },
-  { name: 'ogg-payload-missing', mime: null, bytes: oggOpus().subarray(0, 27), note: '段表说要 19 字节，后面什么都没有' },
-  { name: 'ogg-truncated', mime: null, bytes: oggOpus().subarray(0, 46), note: '整页没读完' },
+  { name: 'ogg-opus', mime: 'audio/ogg', bytes: opusPage, note: 'OpusHead 首包 + 正确 CRC' },
+  {
+    name: 'ogg-opus-channel-mapping',
+    mime: 'audio/ogg',
+    bytes: oggPage(opusHead(1)),
+    note: 'channel mapping family 1：包长 = 21 + 声道数，走另一条分支',
+  },
+  { name: 'ogg-vorbis', mime: 'audio/ogg', bytes: oggPage(vorbisIdent()), note: 'Vorbis identification header + 正确 CRC' },
+  { name: 'ogg-crc-broken', mime: null, bytes: withByte(opusPage, 30, opusPage[30] ^ 1), note: '改了一个字节：CRC 对不上' },
+  { name: 'ogg-payload-missing', mime: null, bytes: opusPage.subarray(0, 27), note: '段表说要 19 字节，后面什么都没有' },
+  { name: 'ogg-truncated', mime: null, bytes: opusPage.subarray(0, 46), note: '整页没读完' },
   { name: 'ogg-header-only', mime: null, bytes: Buffer.from('OggS', 'latin1'), note: '只有 4 字节魔数（旧版 JS 判据会收下它）' },
-  { name: 'mp3-frame', mime: 'audio/mpeg', bytes: mp3Frame(), note: '一个完整帧（417 字节，正好卡在边界）' },
+  { name: 'mp3-frame', mime: 'audio/mpeg', bytes: mp3Frame(), note: 'MPEG1 Layer III 帧（417 字节，正好卡在边界）' },
+  { name: 'mp3-mpeg2-layer3', mime: 'audio/mpeg', bytes: mp3Mpeg2Layer3(), note: 'MPEG2 Layer III：另一张码率表 + 22.05 kHz' },
+  { name: 'mp3-mpeg1-layer2', mime: 'audio/mpeg', bytes: mp3Mpeg1Layer2(), note: 'MPEG1 Layer II：换 layer、换码率表' },
   { name: 'mp3-id3v2', mime: 'audio/mpeg', bytes: id3(mp3Frame()), note: 'ID3v2.4 标签 + 帧' },
   { name: 'mp3-id3-no-frame', mime: null, bytes: id3(Buffer.alloc(0)), note: '只有 ID3 标签，后面没有帧' },
   { name: 'mp3-bad-bitrate-index', mime: null, bytes: withByte(mp3Frame(), 2, 0xf0), note: 'bitrate index = 15（非法）' },
