@@ -189,7 +189,10 @@ step('3/3 验证', () => {
     console.log('  （--skip-suite：跳过）')
     return
   }
-  const shell = join(DIST, 'DSH桌宠.exe')
+  // 产物名是 ASCII 的 `DSH-Pet.exe`（见上面 2/3 那段注释）—— 这里别再写成 `DSH桌宠.exe`：
+  // 写错的话 `Start-Process` 静默失败，接着 probe-catalog 找不到壳端口直接 exit 2，
+  // 于是一次**已经成功的构建**会在验证这一步报成失败。
+  const shell = join(DIST, isWin ? 'DSH-Pet.exe' : 'DSH桌宠')
   console.log('  起壳用于验证：' + shell)
   execFileSync('powershell.exe', [
     '-NoProfile', '-Command',
