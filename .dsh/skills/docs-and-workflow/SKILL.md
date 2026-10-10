@@ -92,6 +92,31 @@ whenToUse: >
    本机有 `tools/make-release.mjs`（**故意不进仓库**，和别的带 token 的脚本一样）：
    `node tools/make-release.mjs <版本> [--dry-run]`，token 从 `~/.dsh/github-token.txt` 读。
 
+### 3.3.0 / 3.3.1 这两版趟出来的（每一条都是当场踩的）
+
+- **顺序**：`commit` → `tag`（本地）→ **push main** → **再建 Release** → push tag（或让 API 建）。
+  Release 一旦用 API 建出来，GitHub 会顺手用**当时的 main 头**建 tag —— 3.3.0 那次先建 Release
+  再 push main，tag 被钉在 3.2.0 那个提交上，CI 于是编了 3.2.0 的源码、把 3.2.0 的 mac 产物挂到
+  v3.3.0 底下（还得事后删附件 + `PATCH /git/refs/tags/...` 把 tag 挪回来）。
+  先 push 就没事：3.3.1 一次到位（建完当场比对 tag 与本地 `rev-parse`）。
+- **先子包、后主包，而且子包要等"真的上线"**：`bump-version.mjs` 会把主包的
+  `optionalDependencies` 抬到新版本，页面/装机侧只要那个版本的子包 404，npm 就**静默跳过** ——
+  症状是"mac 用户升级后桌面端凭空消失"。判据是版本级接口 `GET /<pkg>/<ver>` 200，
+  不是 `npm publish` 那句 `+ pkg@ver`（见上面的暂存窗口）。
+- **mac 的 darwin 子包只能这么来**：推 tag → CI（`desktop-mac.yml`）编 → **挂到已存在的 Release**
+  → 本机 `tar -xzf` 取回裸二进制 → `npm-prepare-subpackage --sub darwin-arm64` → `npm pack` →
+  `npm publish`。铺之前先验 **Mach-O 魔数**（`cffaedfe` / `feedfacf`），别信附件名。
+- **附件名要对版本**：Release 底下读完列一遍，出现别的版本号就是 tag 指错过（见第一条）。
+- 可复用的脚本都留在 `~/.dsh/`（不进仓库，凭据规矩与 make-release 一致）：
+  `pet-push.ps1`（工作区外的临时 remote + token）、`pet-release.mjs`、`pet-assets.mjs`、
+  `pet-darwin.mjs`、`pet-publish-dir.mjs`、`pet-wait-npm.mjs`、`pet-wait-ci.mjs`。
+- **`npm-publish-3.0.ps1 -Scope main` 只发主包**，darwin 子包用它发不了（路径写死 win32-x64），
+  所以有了 `pet-publish-dir.mjs <目录>`（任意目录 + 临时 .npmrc + `NPM_TOKEN` 环境变量）。
+- **`git status -sb` 说 `ahead N` 不一定是真没推**：走临时 remote 推的时候，本地的
+  `refs/remotes/origin/main` 不会跟着更新（它还停在上一次走 `origin` 的位置）。判据是问远端：
+  `GET /repos/<owner>/<repo>/branches/main` 的 `commit.sha` 与本地 `rev-parse HEAD` 比 ——
+  3.3.1 之后本地显示 `ahead 3`，实际只差那一个还没推的提交。
+
 ### ⚠️ npm 的**暂存窗口**：`npm publish` 说成功 ≠ 已上线（2026-09-30 连踩三次）
 
 新 token 若是 **"Read and write (stage only)"** 权限（或 npm 判定需要批准），发布会进**暂存区**，

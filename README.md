@@ -57,14 +57,25 @@ DSH 的 Web GUI 负责对话，而 **dsh-pet-live2d 是挂在这块界面上的�
 
 ## 快速上手
 
+**在 DSH 里点几下就装好了**（不用命令行）：
+
+1. 侧栏点「**插件**」→「**添加插件**」；
+2. 包名框里输入 `dsh-pet-live2d`，回车或点「安装」；
+3. 装完点「**立即启用**」—— 只关掉对话框的话，它会是"已安装但关闭"，插件不会被加载；
+4. **重启一次 `dsh web`**，她就站在那儿了（启用了 HMR 的 profile 会自己重组，重启最稳妥）。
+
+> 官方插件页目前**不支持自动更新**：升级要在这里先卸载、再按上面装一次。
+
+习惯命令行的话，等价的几条：
+
 ```bash
-# 1. 从 npm 装（推荐：插件和自带宠物一起下好）
+# 从 npm 装（推荐：插件和自带宠物一起下好）
 dsh plugin --profile web add dsh-pet-live2d
 
-# 2. 或从仓库装（# 后面是 pnpm 的 path: 协议，注意那个斜杠）
+# 或从仓库装（# 后面是 pnpm 的 path: 协议，注意那个斜杠）
 dsh plugin --profile web add "github:A8Chann/dsh-pet-live2d#path:/dsh-live2d-pet"
 
-# 3. 或先克隆再装本地目录
+# 或先克隆再装本地目录
 git clone https://github.com/A8Chann/dsh-pet-live2d
 dsh plugin --profile web add "link:./dsh-pet-live2d/dsh-live2d-pet"
 ```
