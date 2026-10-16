@@ -222,7 +222,27 @@ export function createDisplayLayer(options) {
           childPid = 0
         }
       })
-      note('已拉起桌面端：' + binary.path + ' --attach ' + dshUrl + '（pid ' + childPid + '）')
+      // **拉起失败是异步事件，下面那个 `try/catch` 接不到它**：`spawn` 起不来的原因
+      // （`EACCES` 没有执行位、`ENOENT` 文件不在、`ENOEXEC` 格式不对）走的是 `'error'`
+      // 事件；而 `'error'` 上**没有监听者时，Node 会把它当未捕获异常抛出去** ——
+      // 在 DSH 里就是整个 Harness 进程当场退出，不是"这次没起来"。
+      // （2026-10 实测：设置里把显示层改成「桌面」，宿主 201ms 后消失，日志是
+      // `dsh: fatal uncaught exception: Error: spawn … EACCES`。缺监听也会让
+      // 上面那行"已拉起"照打不误 —— `（pid 0）` 就是它。）
+      child.on('error', (error) => {
+        if (childPid === (child?.pid ?? 0)) {
+          note('拉起桌面端失败（spawn error）：' + String(error && error.message))
+          child = null
+          childPid = 0
+        }
+        // 冷却**不**清（见 `RETRY_MS`）：真起不来时（二进制损坏之类）每 30 秒试一次就够，
+        // 清了会变成每秒一条日志。
+      })
+      // `pid` 是 `undefined` = `spawn` 已经失败了（具体原因在下面那个 `'error'` 里）。
+      // 别再打"已拉起"——那行在排查时最误导人。
+      if (childPid !== 0) {
+        note('已拉起桌面端：' + binary.path + ' --attach ' + dshUrl + '（pid ' + childPid + '）')
+      }
       return { ok: true, reason: 'spawned', pid: childPid }
     } catch (error) {
       child = null
