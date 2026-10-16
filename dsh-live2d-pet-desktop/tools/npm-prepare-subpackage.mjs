@@ -52,9 +52,31 @@ if (!existsSync(MANIFEST)) {
 
 mkdirSync(join(SUB_DIR, 'bin'), { recursive: true })
 copyFileSync(BIN_SRC, BIN_DST)
-// macOS/Linux 上可执行位是要留在 tarball 里的（npm 会照搬 mode）——
-// 插件那边取出来之后还会 chmod 一次，但发布物本身就不该是个 644 的文件。
-if (process.platform !== 'win32') chmodSync(BIN_DST, 0o755)
+
+// macOS/Linux 上可执行位是要留在 tarball 里的（npm 会照搬 mode）——但**判断的必须是目标
+// 平台，不是打包这台机器**。
+//
+// darwin 子包是**人工在 Windows 本机** `npm pack` / `npm publish` 的（mac 二进制只能在 CI
+// 编出来、再拷回本机，见 `.dsh/skills/docs-and-workflow`）。原来写的是
+// `if (process.platform !== 'win32')` —— 在那台机器上恒不成立，而 Windows 上的 tar/npm
+// 都不记 Unix 权限位。于是 3.3.1 的 darwin 子包发出去是 `-rw-r--r--`，装到 mac 上
+// `spawn` 直接 `EACCES`（2026-10 实测：tarball 里三个文件全是 644）。
+const targetPlatform = subName.split('-')[0]
+if (targetPlatform !== 'win32') {
+  if (process.platform === 'win32') {
+    // Windows 上 `chmodSync` 改的是另一套东西（只读位），管不了 Unix 权限位。拦不住
+    // 这趟发布，但至少别让人以为"从来没这回事"。
+    console.error(
+      '\n⚠️  目标平台是 ' + targetPlatform + '，而打包这台机器是 Windows —— 没法给 bin/' + sub.bin
+      + ' 记上可执行位。\n'
+      + '   这份 tarball 装到 mac/linux 上会是 644，被拉起时 `spawn` 报 EACCES。\n'
+      + '   ① 最好在 mac/linux 上跑这一步；② 实在没有，插件侧 `resolveDesktopBinary()`\n'
+      + '   会自己补一次 chmod，但发布物本身不该是个 644 的文件。\n',
+    )
+  } else {
+    chmodSync(BIN_DST, 0o755)
+  }
+}
 
 // **发布前的最后一道**：这份二进制要发上 npm、装到**别人机器**上。若它带着会把进程压低的
 // 完整性标签（在 DSH 会话里构建出来的会带 Low），装完双击必挂 —— 用户 2026-09 就是这么

@@ -1,5 +1,46 @@
 # 更新日志
 
+## 未发布
+
+> 版本号由你定；这三条都是**用户可见**的修复，所以先记在这里。
+
+### 修：把显示层改成「桌面」不再让宿主跟着退出
+
+`spawn` 起不来的原因（没有执行位 `EACCES`、文件不在 `ENOENT`、格式不对 `ENOEXEC`）走的是
+**异步的 `'error'` 事件**，不是 `spawn` 抛出来的 —— 旁边那个 `try/catch` 接不到它，而
+`'error'` 上没有监听者时 Node 会把它当**未捕获异常**抛出去。于是"这次没起来"被升级成
+"整个 Harness 进程退出"：实测在设置里切到「桌面」之后 201ms 宿主就没了，日志末尾是
+`dsh: fatal uncaught exception: Error: spawn … EACCES`。
+
+现在挂上监听，失败只记一条 `spawn error`、让下一拍再试；也不再在失败时打
+「已拉起桌面端（pid 0）」那行 —— 排查时它最误导人。
+
+### 修：换了端口之后，桌面上还是空的
+
+壳的上游地址（`--attach`）在拉起来那一刻就定死了，它自己不会跟着变。而插件刚应用的头一秒
+页面还没报过地址，只能先按兜底值（`dsh web` 的默认端口 3080）把壳拉起来；等真实地址报上
+来，那一只仍旧挂在旧地址上 —— 表现是"桌面上什么都没有"，它的 `/layer` 会答
+`attach-upstream-unreachable`。3.1.3 修的是"地址怎么取"（`dsh-app://` 那种 origin 进不了
+`setDshUrl`，改成同时看 `Host` 头），没覆盖这个**时序**，所以端口换过的机器仍然中招。
+
+现在记着"这一只壳当初是用哪个地址拉的"，地址变了就收掉重拉（只认自己拉的那只；用户手动
+双击开的那只不碰）。
+
+### 修：macOS/Linux 的发布物不再是个没有执行位的文件
+
+平台子包由 `tools/npm-prepare-subpackage.mjs` 铺，里面那句 `chmod 0755` 判断的是**打包这台
+机器**（`process.platform !== 'win32'`）。而 darwin 子包是人工在 Windows 本机 `npm pack` /
+`npm publish` 的，那句判断恒不成立；Windows 上的 tar 与 npm 也不记 Unix 权限位 ——
+发出去的 `bin/dsh-pet-live2d-desktop` 是 `-rw-r--r--`，装到 mac 上 `spawn` 直接 `EACCES`
+（正是上面那条崩溃的近因）。
+
+现在按**目标平台**判断，并在 Windows 上打非 Windows 子包时明确告警；另外
+`lib/desktop.js` 的 `resolveDesktopBinary()` 返回前会自己补一次可执行位，**已经发出去的
+3.3.1 也能救回来**（补不上时也不再致命）。
+
+顺带把 `tools/desktop-download.test.mjs` 的夹具改成跟着当前平台走 —— 它原来写死了 `.exe`，
+在 mac/linux 上跑会一律 `binary-not-in-tarball`。
+
 ## 3.3.1（2026-10-09）
 
 ### 修：插件卡片上的图标换成她本人
