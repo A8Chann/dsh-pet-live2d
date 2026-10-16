@@ -72,6 +72,21 @@ export function computeOwner(mode, heartbeatOk) {
 }
 
 /**
+ * 该不该把现在这只壳收掉、按新地址重拉一只？
+ *
+ * 壳只在**被拉起的那一刻**知道上游地址（`--attach` 写死在命令行里），它自己不会跟着变。
+ * 而插件刚加载的头一秒页面还没报过地址，壳只能拿兜底值起来（见 `dshUrl`），等真实地址
+ * 报上来，这一只就永远挂错了上游 —— 表现是"桌面上什么都没有"，它的 `/layer` 会答
+ * `attach-upstream-unreachable`。
+ *
+ * **只认自己拉的那一只**：`spawnedUrl === null` 表示这只不是我们拉起来的（用户手动
+ * 双击开的），地址变了也不该动它 —— 那是用户自己的窗口。
+ */
+export function needsReattach(alive, spawnedUrl, dshUrl) {
+  return alive === true && spawnedUrl !== null && spawnedUrl !== dshUrl
+}
+
+/**
  * 进程还活着吗（**只用于诊断**）。
  *
  * ⚠️ **不要拿它当"在不在跑"的判据。** Windows 与类 Unix 都会**重用 pid**：桌面端被
@@ -109,7 +124,8 @@ export function createDisplayLayer(options) {
    *
    * **从页面自己报过来**（`/layer` 请求的 Origin/Host），不是我们猜的：DSH 的端口是配置的，
    * 猜错的话挂载模式会连到一个不存在的上游（那就成了"挂上去了但什么也没有"）。
-   * 页面还没报过之前，用 3080 兜底 —— 那是 `dsh web` 的默认值。
+   * 页面还没报过之前，用 3080 兜底 —— 那是 `dsh web` 的默认值。**注意它会变**：
+   * 页面一报上来就改了，而已经用旧地址拉起来的那只壳得收掉重拉（见 `needsReattach`）。
    */
   let dshUrl = 'http://127.0.0.1:3080'
   const setDshUrl = (value) => {
@@ -121,6 +137,13 @@ export function createDisplayLayer(options) {
   /** 我们自己拉起来的那个进程（0 = 没拉）。 */
   let child = null
   let childPid = 0
+  /**
+   * 这一只壳是**用哪个上游地址**拉起来的（`null` = 不是我们拉的）。
+   *
+   * 要单独记一份：`dshUrl` 会变（页面把真实端口报上来），而壳那边的 `--attach` 定死在
+   * 被拉起的那一刻。两者不一致就是"挂错了上游"，见 `needsReattach`。
+   */
+  let spawnedUrl = null
   /** 上次尝试拉起的时间：失败之后不要每秒重试，会刷屏。 */
   let lastAttempt = 0
   const RETRY_MS = 30000
@@ -174,6 +197,8 @@ export function createDisplayLayer(options) {
     }
     child = null
     childPid = 0
+    // 壳都没了，"它当初是用哪个地址拉的"也就没意义了。
+    spawnedUrl = null
     // 心跳留给它自己清；这里顺手清一次，页面里那只不用等超时。
     writePreference(home, { desktopPid: 0, at: 0 })
     return true
@@ -193,6 +218,7 @@ export function createDisplayLayer(options) {
       note('记着的桌面端进程（pid ' + childPid + '）已经不在了 —— 忘掉它')
       child = null
       childPid = 0
+      spawnedUrl = null
     }
     if (childPid !== 0 || running()) return { ok: true, reason: 'already-running' }
     if (Date.now() - lastAttempt < RETRY_MS && lastAttempt !== 0) {
@@ -220,6 +246,7 @@ export function createDisplayLayer(options) {
           note('桌面端进程退出了（pid ' + childPid + '）')
           child = null
           childPid = 0
+          spawnedUrl = null
         }
       })
       // **拉起失败是异步事件，下面那个 `try/catch` 接不到它**：`spawn` 起不来的原因
@@ -234,6 +261,7 @@ export function createDisplayLayer(options) {
           note('拉起桌面端失败（spawn error）：' + String(error && error.message))
           child = null
           childPid = 0
+          spawnedUrl = null
         }
         // 冷却**不**清（见 `RETRY_MS`）：真起不来时（二进制损坏之类）每 30 秒试一次就够，
         // 清了会变成每秒一条日志。
@@ -241,12 +269,15 @@ export function createDisplayLayer(options) {
       // `pid` 是 `undefined` = `spawn` 已经失败了（具体原因在下面那个 `'error'` 里）。
       // 别再打"已拉起"——那行在排查时最误导人。
       if (childPid !== 0) {
+        // 记下"这一只是用哪个地址拉的" —— 地址之后可能变，见 `needsReattach`。
+        spawnedUrl = dshUrl
         note('已拉起桌面端：' + binary.path + ' --attach ' + dshUrl + '（pid ' + childPid + '）')
       }
       return { ok: true, reason: 'spawned', pid: childPid }
     } catch (error) {
       child = null
       childPid = 0
+      spawnedUrl = null
       note('拉起桌面端失败：' + String(error && error.message))
       return { ok: false, reason: 'spawn-failed' }
     }
@@ -256,13 +287,22 @@ export function createDisplayLayer(options) {
    * 每秒一次：按偏好把两边摆正。
    *
    *   auto     桌面端在跑 → 让她待着；没跑 → 也不主动拉（用户没要求过桌面）
-   *   desktop  必须有一个：没跑就拉起（失败就只是提示，不崩）
+   *   desktop  必须有一个：没跑就拉起（失败就只是提示，不崩）；挂错了上游就收掉重拉
    *   inline   收掉我们拉的那个，桌面端自己会让位（它读同一个文件）
    */
   function reconcile() {
     const mode = normaliseMode(preference().mode)
     if (mode === 'desktop') {
       const alive = running()
+      // **挂错上游的壳不会自愈**：`--attach` 定死在被拉起的那一刻，`setDshUrl()` 改不了
+      // 已经在跑的那一只。收掉它，下一拍按新地址重拉 —— `stop()` 会把心跳清零，所以
+      // 下一拍一定走下面的 `!alive`，正好把冷却绕开（冷却是给"起不来"用的，不是给这个）。
+      if (needsReattach(alive, spawnedUrl, dshUrl)) {
+        note('DSH 地址已变为 ' + dshUrl + '（当初用 ' + spawnedUrl + ' 拉的），重拉桌面端')
+        stop()
+        lastAttempt = 0
+        return status()
+      }
       if (!alive) {
         const result = start()
         if (result.reason === 'binary-missing') {
