@@ -252,6 +252,33 @@ ReferenceError: layerRef is not defined
 行 797 的 3500ms 是等动作定格。批量替换会静默改掉这些语义。
 正解是**一处一处判**：终值类 → `checkEventually`；过程/阈值类 → `mustElapse` 并加注释。
 
+## 夹具串扰：driver 之间的**共享存档**也会制造假红（2026-10，修了）
+
+`cdp-head` 在整套里**必红**一条（`no single hand option dominates`，rhand 160/160 全是
+"掏出手机"），单独跑必绿。原来一直归到"负载敏感"，其实根因完全不同：
+
+**`server.mjs` 的 `displayHome` 所有 driver 共用一个目录**（`.profiles/_layer-home`），
+而它既是显示层偏好的落点、也是**共享设置**（`pet-settings.json`）的落点。于是：
+
+```
+cdp-gaze  →  把右手池压成"只剩掏出手机"，写进共享 pet-settings.json
+cdp-head  →  断言"没有哪个手部选项占绝对多数"，读到那份存档 ⇒ 160/160 ⇒ 必红
+```
+
+判据（都不是推理）：
+
+* `run-suite.mjs gaze head --jobs 1` **稳定复现**；`head` 单独跑必绿；
+* 在**改动之前**的提交（17e45b9）上同样复现 ⇒ 是夹具串扰，不是产品回归；
+* 按端口分目录之后，同一条 `gaze head` 从 **1/2 → 2/2**，整套从 24/25 → **25/25**。
+
+修法：`displayHome = join(PROFILES, '_layer-home-' + PORT)`。每个 driver 本来就有自己的
+服务器端口（`PET_PORT_BASE + slot`），按端口分目录即可 —— 端口就是 driver 的身份。
+
+**教训**：并发红 ≠ 一定是负载。**"只有跟别的 driver 一起跑才红"**要往两个方向查：
+① 抢 CPU 导致读到半途值（已有车道解决）；② **通过文件系统串扰**（共享存档、共享目录）。
+区分方法很简单：**把两个 driver 配对单跑**（`run-suite.mjs A B --jobs 1`）——
+如果是 ②，配对就复现，而与并发度无关。
+
 ## 旧的失败记录（保留，根因已由上面的车道解决）
 
 - `cdp-motion.mjs` 单独跑通过（~26s），6 并发时**状态全零**失败。
