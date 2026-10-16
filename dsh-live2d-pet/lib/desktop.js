@@ -79,6 +79,32 @@ export function managedBinPath(home) {
 }
 
 /**
+ * 补上可执行位（`chmod 0755`）。
+ *
+ * **为什么只能在这里补**：darwin 平台子包是人工在 Windows 本机 `npm pack`/`npm publish`
+ * 的，而 Windows 上的 tar 与 npm 都不记 Unix 权限位 —— 3.3.1 发出去的
+ * `bin/dsh-pet-live2d-desktop` 就是 `-rw-r--r--`，装到 mac 上 `spawn` 直接 `EACCES`
+ * （2026-10 实测：tarball 里三个文件全是 644）。发布流程那边也在改（`npm-prepare-subpackage`
+ * 现在按目标平台判断，并在 Windows 打包非 Windows 子包时告警），但那救不了已经发出去的版本。
+ *
+ * 失败**不抛**：只读的 `node_modules`（全局装、pnpm store 之类）会 `EPERM`/`EROFS`，
+ * 那时照样去 spawn —— 拿到的 `EACCES` 现在只是"这次没起来"（见 `display.js` 的 `'error'`
+ * 监听），不会再掀翻宿主。
+ *
+ * @returns {boolean} 能不能确认它是可执行的
+ */
+function ensureExecutable(path) {
+  if (process.platform === 'win32') return true
+  try {
+    if ((statSync(path).mode & 0o111) !== 0) return true
+    chmodSync(path, 0o755)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
  * 定位桌面端二进制。
  *
  * 顺序与理由：
@@ -118,6 +144,10 @@ export function resolveDesktopBinary(options = {}) {
       // （原来写 1MB，结果夹具里的 1MB 整文件被挡在门外 —— 阈值该贴着"要排除什么"定，
       // 不该拍一个看起来很大的数。）
       if (stat.isFile() && stat.size > 32 * 1024) {
+        // 从 npm 装下来的那份可能是 644（见 `ensureExecutable`）。在这里补一次，是因为
+        // 这里是**所有来源的必经之路**（env / 平台子包 / 自己下的 / 开发期），比在每个
+        // 下载、安装路径上各补一遍可靠，也能顺手救回已经发出去的老版本。
+        ensureExecutable(path)
         return { path, source, size: stat.size }
       }
     } catch {

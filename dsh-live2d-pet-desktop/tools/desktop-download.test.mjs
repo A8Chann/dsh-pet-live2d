@@ -11,12 +11,13 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { gzipSync, gunzipSync } from 'node:zlib'
 import { DESKTOP } from './paths.mjs'
 import {
   downloadDesktopBinary,
+  managedBinPath,
   readFileFromTar,
   resolveDesktopBinary,
 } from '../../dsh-live2d-pet/lib/desktop.js'
@@ -58,16 +59,22 @@ function makeTarGz(entries) {
   return gzipSync(Buffer.concat(blocks))
 }
 
+// 二进制名跟着**当前平台**走：解析器是按 `BINARY_NAME[process.platform]` 去 tarball 里取的
+// （`lib/desktop.js`）。夹具里写死 `.exe` 的话，在 mac/linux 上跑这个文件会一律
+// `binary-not-in-tarball` —— 而这几条钉的恰恰是"只在用户没带那份二进制时才跑、坏了也没人
+// 知道"的代码，正是最不该被平台绊倒的地方。
+const EXE_NAME = process.platform === 'win32' ? 'dsh-pet-live2d-desktop.exe' : 'dsh-pet-live2d-desktop'
+const EXE_INNER_PATH = 'package/bin/' + EXE_NAME
+
 /** 拿真 exe 的前 1MB 当内容：不用 9MB 全塞进内存，PE 头与长度校验都还在。 */
 function fakeExeBody() {
-  const real = join(SUB, 'bin', 'dsh-pet-live2d-desktop.exe')
+  const real = join(SUB, 'bin', EXE_NAME)
   if (existsSync(real)) return readFileSync(real).subarray(0, 1024 * 1024)
   const stub = Buffer.alloc(256 * 1024, 7)
   stub.write('MZ', 0, 'latin1')
   return stub
 }
 
-const EXE_INNER_PATH = 'package/bin/dsh-pet-live2d-desktop.exe'
 const VERSION = '0.0.0-test'
 
 
@@ -186,4 +193,22 @@ test('下载失败要如实报错，不能假装成功', async () => {  const se
   } finally {
     server.close()
   }
+})
+
+test('装下来的那份是 644 时，解析器就地补上执行位', {
+  skip: process.platform === 'win32' ? 'Windows 没有 Unix 执行位' : false,
+}, () => {
+  // 3.3.1 的 darwin 子包里 `bin/dsh-pet-live2d-desktop` 就是这个权限（人工在 Windows 上
+  // `npm pack`，Unix 权限位根本没被记下来）。已经发出去的版本只能由这里救。
+  const home = join(WORK, 'chmod-home')
+  rmSync(home, { recursive: true, force: true })
+  const target = managedBinPath(home)
+  mkdirSync(dirname(target), { recursive: true })
+  // 40KB 占位：解析器有 32KB 下限，用来排除"404 的 HTML 被当成二进制"。
+  writeFileSync(target, Buffer.concat([Buffer.from('#!/bin/sh\n'), Buffer.alloc(40 * 1024)]))
+  chmodSync(target, 0o644)
+
+  const found = resolveDesktopBinary({ home })
+  assert.equal(found?.path, target, '该找到我们自己下的那份')
+  assert.notEqual(statSync(target).mode & 0o111, 0, '解析器应当顺手把执行位补回来')
 })
