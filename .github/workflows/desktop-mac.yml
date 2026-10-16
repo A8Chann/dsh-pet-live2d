@@ -4,19 +4,22 @@
 # Objective-C 编译的 crate，需要 macOS SDK）。开发机是 Windows，所以这里是 mac 那份
 # 二进制唯一的产地。
 #
-# 它做四件事：
+# 它做五件事：
 #   1. `npm ci`（`tools/browser-test`）—— `build.rs` 要在编译期把 React UMD 嵌进产物，
 #      没有它页面会缺 React（构建只是 warning，跑起来才白屏，所以这一步不能省）；
 #   2. `cargo test --lib` —— **本机验不了的那部分**：macOS 目标只有在这里才会真正编译，
 #      顺带跑那些跨平台的单元测试（坐标换算、catalog、显示层规则）；
 #   3. `node tools/build-portable.mjs --skip-suite` —— 出裸二进制 + `DSH桌宠.app`
 #      （ad-hoc 签名；`--skip-suite` 是因为那套驱动全是 Windows 的，mac 上跑不了）；
-#   4. 产物：workflow artifact 永远有；打 tag 时再挂到**已存在**的 Release 上
+#   4. **`npm pack` 出平台子包的 tarball** —— 这一步只能在 macOS 上做：Windows 的 tar/npm
+#      不记 Unix 权限位，本机打出来的是 644，装到 mac 上 `spawn` 报 EACCES（3.3.1/3.3.2 实测）。
+#      打完立刻用 `tools/check-tarball-mode.mjs` 断言执行位，错了就红；
+#   5. 产物：workflow artifact 永远有；打 tag 时再挂到**已存在**的 Release 上
 #      （Release 由发布流程先建好，正文取 CHANGELOG —— CI 只挂附件，不抢建 Release 这件事）。
 #
 # ⚠️ 没有做的事（别以为是漏了）：
-#   * **不发 npm**。平台子包要人工发，而且顺序是"先子包、后主包"，见
-#     `dsh-live2d-pet-desktop/npm/desktop-darwin-arm64/README.md`；
+#   * **不发 npm**。平台子包要人工发，而且顺序是"先子包、后主包"；但**打 tarball 这一步
+#     已经挪进来了**（见第 4 条）—— 本机只负责取回来原样 `npm publish`，不再重打；
 #   * **不做签名/公证**。那要 Apple Developer ID 证书 + 密钥，属于仓库 secret 的范畴；
 #     没有它用户第一次打开会被 Gatekeeper 拦（右键→打开 或去 quarantine 属性）；
 #   * **不在 mac 上验行为**。macOS runner 没有可交互的窗口会话，"她能不能点、跟不跟手"
@@ -84,6 +87,12 @@ jobs:
         run: cargo test --lib
         working-directory: dsh-live2d-pet-desktop/src-tauri
 
+      - name: 回归（纯 node 的那几份 —— 含**发布物权限位**的判据自测）
+        # 这几份原来 CI 从不跑，于是 `check-tarball-mode.mjs` 自己的测试也不会跑 ——
+        # 而它正是下面"tarball 执行位对不对"的唯一防线。判据不自测 = 判据可能是坏的。
+        run: node --test tools/*.test.mjs
+        working-directory: dsh-live2d-pet-desktop
+
       - name: 构建（裸二进制 + DSH桌宠.app）
         run: node tools/build-portable.mjs --skip-suite
         working-directory: dsh-live2d-pet-desktop
@@ -91,6 +100,24 @@ jobs:
       - name: 铺平台子包（校验版本与主包一致）
         run: node tools/npm-prepare-subpackage.mjs --sub darwin-arm64
         working-directory: dsh-live2d-pet-desktop
+
+      - name: 打包平台子包 tarball（**必须在 macOS 上打**）
+        # ⚠️ 这一步不能省、也不能挪回 Windows 本机。
+        #
+        # npm 子包的 tarball 一直是在 Windows 本机 `npm pack` 的，而 **Windows 上的 tar 与
+        # npm 不记 Unix 权限位** —— 发出去的 `bin/dsh-pet-live2d-desktop` 是 644，装到 mac 上
+        # `spawn` 直接 `EACCES`（3.3.1 实测；3.3.2 在 Windows 上重打，仍然是 644）。
+        # 这件事**看不出来、也不报错**：结构正常、大小正常、文件也在，只有那三位权限位是错的。
+        #
+        # 修法是"在目标平台上打"：这一步就是。tarball 跟着 artifact 与 Release 走，
+        # 发布时直接拿它 `npm publish`，不再回本机重打。
+        working-directory: dsh-live2d-pet-desktop
+        run: |
+          set -euo pipefail
+          npm pack --pack-destination dist ./npm/desktop-darwin-arm64
+          # 判据：读 tar 头，断言那份二进制**有**执行位。错就当场红，别发出去。
+          node tools/check-tarball-mode.mjs dist/dsh-pet-live2d-desktop-darwin-arm64-*.tgz \
+            --expect-exec package/bin/dsh-pet-live2d-desktop
 
       - name: 打包（zip 保留 .app 的可执行位与签名）
         # ⚠️ 附件名用 **ASCII**：GitHub 会把上传文件名里的非 ASCII 字符直接吃掉 ——
@@ -102,7 +129,7 @@ jobs:
           cd dsh-live2d-pet-desktop/dist
           ditto -c -k --keepParent "DSH桌宠.app" "dsh-pet-live2d-desktop-${version}-mac-arm64.zip"
           tar -czf "dsh-pet-live2d-desktop-${version}-darwin-arm64.tar.gz" dsh-pet-live2d-desktop
-          shasum -a 256 *.zip *.tar.gz
+          shasum -a 256 *.zip *.tar.gz *.tgz
           ls -l
 
       - uses: actions/upload-artifact@v4
@@ -111,6 +138,7 @@ jobs:
           path: |
             dsh-live2d-pet-desktop/dist/*.zip
             dsh-live2d-pet-desktop/dist/*.tar.gz
+            dsh-live2d-pet-desktop/dist/*.tgz
           if-no-files-found: error
 
       - name: 挂到 Release 附件（仅 tag；Release 必须先存在）
@@ -124,4 +152,4 @@ jobs:
             echo "::warning::远端还没有 $tag 的 Release —— 先按发布流程建好它，再重跑本 workflow（产物已在 artifact 里）"
             exit 0
           fi
-          gh release upload "$tag" dsh-live2d-pet-desktop/dist/*.zip dsh-live2d-pet-desktop/dist/*.tar.gz --clobber
+          gh release upload "$tag" dsh-live2d-pet-desktop/dist/*.zip dsh-live2d-pet-desktop/dist/*.tar.gz dsh-live2d-pet-desktop/dist/*.tgz --clobber

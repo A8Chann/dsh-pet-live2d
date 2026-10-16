@@ -70,8 +70,10 @@ if (targetPlatform !== 'win32') {
       '\n⚠️  目标平台是 ' + targetPlatform + '，而打包这台机器是 Windows —— 没法给 bin/' + sub.bin
       + ' 记上可执行位。\n'
       + '   这份 tarball 装到 mac/linux 上会是 644，被拉起时 `spawn` 报 EACCES。\n'
-      + '   ① 最好在 mac/linux 上跑这一步；② 实在没有，插件侧 `resolveDesktopBinary()`\n'
-      + '   会自己补一次 chmod，但发布物本身不该是个 644 的文件。\n',
+      + '   ① 正路：**在 macOS 上跑这一步并 `npm pack`** —— CI（.github/workflows/desktop-mac.yml）\n'
+      + '      已经把两件事都做了，tarball 跟着 Release 附件走，本机取回来原样 `npm publish`；\n'
+      + '   ② 兜底：插件侧 `resolveDesktopBinary()` 会自己补一次 chmod，\n'
+      + '      但发布物本身不该是个 644 的文件。\n',
     )
   } else {
     chmodSync(BIN_DST, 0o755)

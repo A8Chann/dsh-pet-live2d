@@ -103,15 +103,32 @@ whenToUse: >
   `optionalDependencies` 抬到新版本，页面/装机侧只要那个版本的子包 404，npm 就**静默跳过** ——
   症状是"mac 用户升级后桌面端凭空消失"。判据是版本级接口 `GET /<pkg>/<ver>` 200，
   不是 `npm publish` 那句 `+ pkg@ver`（见上面的暂存窗口）。
-- **mac 的 darwin 子包只能这么来**：推 tag → CI（`desktop-mac.yml`）编 → **挂到已存在的 Release**
-  → 本机 `tar -xzf` 取回裸二进制 → `npm-prepare-subpackage --sub darwin-arm64` → `npm pack` →
-  `npm publish`。铺之前先验 **Mach-O 魔数**（`cffaedfe` / `feedfacf`），别信附件名。
+- **mac 的 darwin 子包只能这么来**（2026-10 改：**tarball 也在 CI 里打**）：推 tag →
+  CI（`desktop-mac.yml`）编 + `npm pack` 出 **tarball** → 挂到已存在的 Release →
+  本机 `node ~/.dsh/pet-darwin.mjs <版本>` 取回来（它会跑 `check-tarball-mode.mjs` 验执行位）→
+  `node ~/.dsh/pet-publish-dir.mjs <那个 .tgz>` 原样发。
+  **不要在 Windows 本机重打 tarball** —— 见下面那条。
+- **⚠️ 权限位：tarball 必须在目标平台上打（2026-10 实测，同一个二进制两条渠道不一样）**：
+
+  | 渠道 | 谁打的包 | tar 里的权限位 |
+  |---|---|---|
+  | Release 的 `.tar.gz` | CI（macOS） | `0755` ✓ |
+  | npm 子包的 `.tgz` | Windows 本机 `npm pack` | `0644` ✗ |
+
+  Windows 上的 `tar` 与 `npm` **根本不记 Unix 权限位**，所以这不是"忘了 chmod"——
+  在本机怎么补都没用（`chmodSync` 在 Windows 上改的是只读位）。
+  症状极隐蔽：结构正常、大小正常、文件也在，只有装到 mac 上 `spawn` 才报 `EACCES`。
+  判据是 `dsh-live2d-pet-desktop/tools/check-tarball-mode.mjs`（读 tar 头 offset 100 的
+  mode，`--expect-exec` 断言有执行位；CI 与本机发布脚本都会跑它，退出码非 0 就拦）。
+  3.3.1 **与 3.3.2** 都是 644 发出去的；用户还能用是因为插件侧
+  `resolveDesktopBinary()` 会补一次 `chmod` —— 那是兜底，不是"发布物没问题"。
 - **附件名要对版本**：Release 底下读完列一遍，出现别的版本号就是 tag 指错过（见第一条）。
 - 可复用的脚本都留在 `~/.dsh/`（不进仓库，凭据规矩与 make-release 一致）：
   `pet-push.ps1`（工作区外的临时 remote + token）、`pet-release.mjs`、`pet-assets.mjs`、
-  `pet-darwin.mjs`、`pet-publish-dir.mjs`、`pet-wait-npm.mjs`、`pet-wait-ci.mjs`。
+  `pet-darwin.mjs`（取 CI 的 tarball + 裸二进制，并验权限位）、
+  `pet-publish-dir.mjs`（**接受目录或 `.tgz`**）、`pet-wait-npm.mjs`、`pet-wait-ci.mjs`。
 - **`npm-publish-3.0.ps1 -Scope main` 只发主包**，darwin 子包用它发不了（路径写死 win32-x64），
-  所以有了 `pet-publish-dir.mjs <目录>`（任意目录 + 临时 .npmrc + `NPM_TOKEN` 环境变量）。
+  所以有了 `pet-publish-dir.mjs <目录|.tgz>`（临时 .npmrc + `NPM_TOKEN` 环境变量）。
 - **`git status -sb` 说 `ahead N` 不一定是真没推**：走临时 remote 推的时候，本地的
   `refs/remotes/origin/main` 不会跟着更新（它还停在上一次走 `origin` 的位置）。判据是问远端：
   `GET /repos/<owner>/<repo>/branches/main` 的 `commit.sha` 与本地 `rev-parse HEAD` 比 ——

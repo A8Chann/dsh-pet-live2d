@@ -23,23 +23,43 @@ npm/desktop-darwin-arm64/
 cd dsh-live2d-pet-desktop
 npm run build:portable        # 编 release → dist/DSH桌宠.app + dist/dsh-pet-live2d-desktop
 node tools/npm-prepare-subpackage.mjs --sub darwin-arm64
+npm pack --pack-destination dist ./npm/desktop-darwin-arm64   # ← 必须在 macOS 上打
 ```
 
 Windows 上跑不了这个平台（`cargo build` 需要 macOS SDK）。CI 那边是
-`.github/workflows/desktop-mac.yml`（`macos-14` runner），产物同时作为
+`.github/workflows/desktop-mac.yml`（`macos-14` runner），上面每一步都在里面，产物同时作为
 workflow artifact 与 Release 附件。
+
+### ⚠️ tarball **必须在 macOS 上打**
+
+**Windows 上的 `tar` 与 `npm` 不记 Unix 权限位。** 在 Windows 上对本目录 `npm pack`，打出来的
+`bin/dsh-pet-live2d-desktop` 是 `644`；装到 mac 上被插件拉起时 `spawn` 直接 `EACCES`。
+
+这件事**看不出来、也不报错** —— tarball 结构正常、大小正常、解出来文件也在，只有那三位权限位
+是错的。实测（同一个 9,791,472 字节的二进制）：
+
+| 渠道 | 谁打的包 | tar 里的权限位 |
+|---|---|---|
+| Release 的 `.tar.gz` | CI（macOS） | `0755` ✓ |
+| npm 子包的 `.tgz` | Windows 本机 | `0644` ✗ |
+
+所以：**CI 打 tarball → 挂 Release → 本机取回来原样 `npm publish`**，不要在本机重打。
+判据是 `node tools/check-tarball-mode.mjs <tarball> --expect-exec package/bin/dsh-pet-live2d-desktop`
+（CI 与 `~/.dsh/pet-darwin.mjs` 都会跑它，退出码非 0 就拦下发布）。
+
+> 3.3.1 与 3.3.2 的 darwin 子包都是 `644` 发出去的。用户之所以还能用，是因为插件侧
+> `resolveDesktopBinary()` 在返回前补了一次 `chmod 0755`（那是兜底，不是"发布物没问题"）。
 
 ## 发布纪律（两步，顺序不能反）
 
-主包 `optionalDependencies` **现在还没有**这一行 —— 加了就等于让所有用户去装一个
-npm 上不存在的包。要发的时候：
+主包 `optionalDependencies` 里**已经有**这一行（3.1.1 起）。发布时：
 
-1. 先把子包发上 npm：`npm publish` 于 `npm/desktop-darwin-arm64/`（版本必须与主包逐字相同，
-   `npm-prepare-subpackage.mjs` 会校验）；
-2. 再给 `dsh-live2d-pet/package.json` 的 `optionalDependencies` 加
-   `"dsh-pet-live2d-desktop-darwin-arm64": "<主包版本>"`，然后发主包。
+1. 先把子包发上 npm：`node ~/.dsh/pet-publish-dir.mjs <CI 给的 .tgz>`（版本必须与主包逐字相同，
+   `npm-prepare-subpackage.mjs` 与 `pet-darwin.mjs` 都会校验）；
+2. 再发主包。
 
-反过来做的话，主包上线时那个版本的子包还不存在 —— 用户装完"桌面"那一项直接不可用。
+反过来做的话，主包上线时那个版本的子包还不存在 —— npm 遇 `optionalDependencies` 里
+**不存在**的版本会**静默跳过**，用户装完桌面端凭空消失、且一句错都不报。
 
 ## 已知代价（macOS 特有）
 
