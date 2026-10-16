@@ -14,6 +14,7 @@ import {
   computeOwner,
   desktopProcessState,
   heartbeatFresh,
+  needsReattach,
   normaliseMode,
   readPreference,
   writePreference,
@@ -35,6 +36,19 @@ test('判定规则是真值表 —— 两端必须一致', () => {
   assert.equal(computeOwner('auto', false), 'inline')
   assert.equal(computeOwner('desktop', false), 'inline')
   assert.equal(computeOwner('inline', false), 'inline')
+})
+
+test('挂错上游才重拉 —— 而且只认自己拉的那一只', () => {
+  const fallback = 'http://127.0.0.1:3080'
+  const real = 'http://127.0.0.1:43129'
+  // 没在跑：没什么好重拉的（要拉走 `start()`）。
+  assert.equal(needsReattach(false, fallback, real), false)
+  // 在跑、地址也没变：让她待着。
+  assert.equal(needsReattach(true, real, real), false)
+  // 在跑，但当初是拿**旧**地址拉起来的：这一只永远挂错上游，收掉重拉。
+  assert.equal(needsReattach(true, fallback, real), true)
+  // 不是我们拉起来的（用户手动双击开的）：地址再怎么变也不碰。
+  assert.equal(needsReattach(true, null, real), false)
 })
 
 test('mode 会规范化，认不出来就当 auto', () => {
