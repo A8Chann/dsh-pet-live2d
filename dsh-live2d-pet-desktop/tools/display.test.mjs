@@ -17,6 +17,7 @@ import {
   needsReattach,
   normaliseMode,
   readPreference,
+  upstreamKey,
   writePreference,
 } from '../../dsh-live2d-pet/lib/display.js'
 
@@ -49,6 +50,45 @@ test('挂错上游才重拉 —— 而且只认自己拉的那一只', () => {
   assert.equal(needsReattach(true, fallback, real), true)
   // 不是我们拉起来的（用户手动双击开的）：地址再怎么变也不碰。
   assert.equal(needsReattach(true, null, real), false)
+})
+
+test('同一个 DSH 的不同拼法不算「地址变了」—— 否则两个标签页就能把自愈变成反复重启', () => {
+  // `dshUrl` 是**页面报上来的**（`/layer` 的 Origin / Host）。一个标签页用 127.0.0.1、
+  // 另一个用 localhost 是完全正常的，而 `reconcile()` 的重拉分支会把冷却清零 ⇒ 不归一化
+  // 就是每拍收掉重拉一次（2026-10 实测 8 秒重启 2 次，每次都 taskkill 一整棵进程树）。
+  const a = 'http://127.0.0.1:43129'
+  const b = 'http://localhost:43129'
+  assert.equal(needsReattach(true, a, b), false, 'localhost 与 127.0.0.1 是同一个上游')
+  assert.equal(needsReattach(true, b, a), false, '反过来也一样')
+  assert.equal(needsReattach(true, 'http://LOCALHOST:43129', a), false, '主机名大小写不敏感')
+  assert.equal(needsReattach(true, 'http://127.0.0.1:43129/', a), false, '尾部斜杠不算另一种地址')
+  assert.equal(needsReattach(true, 'http://[::1]:43129', a), false, 'IPv6 回环也是同一个上游')
+
+  // 但**端口真的变了**必须重拉 —— 那才是这条自愈存在的理由。
+  assert.equal(needsReattach(true, a, 'http://127.0.0.1:43130'), true, '端口不同 = 不同上游')
+  assert.equal(needsReattach(true, a, 'http://localhost:43130'), true, '端口不同（即便主机名同义）')
+  // 主机名不同（不是回环别名）也要重拉：那可能就是另一台机器。
+  assert.equal(needsReattach(true, a, 'http://192.168.1.9:43129'), true)
+  // http 与 https 不是同一个上游。
+  assert.equal(needsReattach(true, a, 'https://127.0.0.1:43129'), true)
+})
+
+test('upstreamKey 归一化：合并回环别名、补默认端口、解析不了就退回原串', () => {
+  const key = (url) => upstreamKey(url)
+  // 四种回环写法归到同一个键。
+  const same = ['http://127.0.0.1:3080', 'http://localhost:3080', 'http://[::1]:3080']
+  assert.equal(new Set(same.map(key)).size, 1, '回环别名应当归成一个键：' + JSON.stringify(same.map(key)))
+  // 默认端口要补上（`http://a` 与 `http://a:80` 是同一个）。
+  assert.equal(key('http://127.0.0.1'), key('http://127.0.0.1:80'))
+  assert.equal(key('https://example.test'), key('https://example.test:443'))
+  // 尾部斜杠（一个或多个）都吃掉。
+  assert.equal(key('http://127.0.0.1:3080/'), key('http://127.0.0.1:3080'))
+  // 路径不同就是不同上游（将来挂到子路径下也成立）。
+  assert.notEqual(key('http://127.0.0.1:3080/a'), key('http://127.0.0.1:3080/b'))
+  // 非字符串 / 解析不了：原样退回，绝不抛。
+  assert.equal(key(undefined), undefined)
+  assert.equal(key('不是地址'), '不是地址')
+  assert.equal(key(''), '')
 })
 
 test('mode 会规范化，认不出来就当 auto', () => {

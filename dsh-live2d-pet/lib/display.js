@@ -71,6 +71,41 @@ export function computeOwner(mode, heartbeatOk) {
   return mode !== 'inline' && heartbeatOk === true ? 'desktop' : 'inline'
 }
 
+/** 本机回环的几种写法 —— 它们指的是**同一台服务**。 */
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]'])
+
+/**
+ * 上游地址的**比较键**：只用来判"是不是同一个上游"，不用来连接。
+ *
+ * 为什么不能直接比字符串：`dshUrl` 是**页面报上来的**（`/layer` 的 Origin / Host），而页面
+ * 那边完全可能出现两种拼法 —— 一个标签页是 `http://127.0.0.1:43129`，另一个是
+ * `http://localhost:43129`。它们是同一个 DSH，字符串却不相等。
+ *
+ * 不归一化的后果不是"少重拉一次"，而是**反复收掉重拉**：`reconcile()` 里那条重拉分支把
+ * 冷却（`lastAttempt`）显式清零了，于是两个标签页错相轮询时，每一拍都会判成"挂错上游"
+ * ⇒ 收掉、重拉、再收掉…… 实测（2026-10，两个页面各 1 秒一拉、相位错开 500ms）8 秒里
+ * 她就被重启了 2 次，每次还 `taskkill /T` 掉一整棵 WebView2 进程树。用户看到的是
+ * "桌宠刚出现就没了"。
+ *
+ * 归一化的三件事：主机名小写、回环别名合并成 `127.0.0.1`、补上默认端口并去掉尾部斜杠。
+ * 解析不了就退回原字符串（宁可多比一次，也不要因为解析失败而漏判）。
+ */
+export function upstreamKey(url) {
+  if (typeof url !== 'string') return url
+  const text = url.trim()
+  try {
+    const parsed = new URL(text)
+    const host = LOOPBACK_HOSTS.has(parsed.hostname.toLowerCase())
+      ? '127.0.0.1'
+      : parsed.hostname.toLowerCase()
+    const port = parsed.port !== '' ? parsed.port : (parsed.protocol === 'https:' ? '443' : '80')
+    const path = parsed.pathname.replace(/\/+$/, '')
+    return parsed.protocol + '//' + host + ':' + port + path
+  } catch {
+    return text.replace(/\/+$/, '')
+  }
+}
+
 /**
  * 该不该把现在这只壳收掉、按新地址重拉一只？
  *
@@ -81,9 +116,13 @@ export function computeOwner(mode, heartbeatOk) {
  *
  * **只认自己拉的那一只**：`spawnedUrl === null` 表示这只不是我们拉起来的（用户手动
  * 双击开的），地址变了也不该动它 —— 那是用户自己的窗口。
+ *
+ * **比的是归一化之后的键**（见 `upstreamKey`）：同一个 DSH 的两种回环拼法不算"地址变了"
+ * —— 否则两个标签页就能把自愈变成反复重启。
  */
 export function needsReattach(alive, spawnedUrl, dshUrl) {
-  return alive === true && spawnedUrl !== null && spawnedUrl !== dshUrl
+  if (alive !== true || spawnedUrl === null) return false
+  return upstreamKey(spawnedUrl) !== upstreamKey(dshUrl)
 }
 
 /**

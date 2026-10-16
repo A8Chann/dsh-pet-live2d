@@ -28,6 +28,7 @@ export const SUITE = {
   'cdp-react-defaults.mjs': '互动反应候选的内置默认值：宠物没声明那三组也演得出来',
   'cdp-settings-render.mjs': '设置正文真的渲染得出来（挂在宠物组件之外的组件不许读到组件内的 ref）',
   'cdp-plugin-page.mjs': '官方「插件」页的配置区：按包名注册、渲染得出来、开关真的写进插件状态',
+  'cdp-rendercount.mjs': '显示层状态没变就不许每秒重渲染（issue #3：打开右键面板后宠物与面板持续闪）',
 }
 
 /**

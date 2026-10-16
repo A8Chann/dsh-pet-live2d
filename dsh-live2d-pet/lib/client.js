@@ -174,14 +174,43 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
    * 现在两个渲染者都从这里读：`Pet` 负责轮询（它本来就常驻），设置页只读 + 订阅。
    */
   const LAYER_INITIAL = { mode: "auto", owner: "inline", desktopRunning: false, binary: null, download: null, at: 0 };
+
+  /**
+   * 两个值是不是**内容相同**（对象/数组按内容比，其余按 `===`）。
+   *
+   * 为什么需要它：`binary` 与 `download` 是**每次轮询新解出来的 JSON 对象**，
+   * 引用永远不相等 —— 拿 `===` 去重等于没有去重。
+   *
+   * 这个坑的形态是"面板和宠物一起持续闪"（issue #3，2026-10）：去重失效 ⇒
+   * `layerStore` **每秒**通知一次 ⇒ 订阅它的三个界面（宠物本体、右键面板里的
+   * `LayerControls`、设置页与官方「插件」页那一节）**每秒全部重渲染一次**，
+   * 用户看到的就是面板与画面一起抖。实测（注入计数器数真实重渲染）：面板关着与开着
+   * 都是 1.00 次/秒的 store 通知、宠物 1.8 次/秒重渲染 —— 与面板无关，一直如此，
+   * 只是**打开面板之后画面里多了一块 backdrop-filter 的面板**，抖动才被看见。
+   *
+   * 键顺序不参与比较（JSON 的键序不该影响"内容是否相同"）。
+   */
+  const sameJson = (a, b) => {
+    if (a === b) return true;
+    if (a === null || b === null || typeof a !== "object" || typeof b !== "object") return false;
+    if (Array.isArray(a) !== Array.isArray(b)) return false;
+    const keys = Object.keys(a);
+    if (keys.length !== Object.keys(b).length) return false;
+    for (const key of keys) {
+      if (!Object.prototype.hasOwnProperty.call(b, key)) return false;
+      if (!sameJson(a[key], b[key])) return false;
+    }
+    return true;
+  };
+
   const layerStore = { value: LAYER_INITIAL, listeners: new Set() };
   const setLayerState = (next) => {
     const merged = Object.assign({}, layerStore.value, next);
     if (merged.mode === layerStore.value.mode
       && merged.owner === layerStore.value.owner
       && merged.desktopRunning === layerStore.value.desktopRunning
-      && merged.binary === layerStore.value.binary
-      && merged.download === layerStore.value.download) return;
+      && sameJson(merged.binary, layerStore.value.binary)
+      && sameJson(merged.download, layerStore.value.download)) return;
     layerStore.value = merged;
     for (const listener of layerStore.listeners) {
       try { listener(merged); } catch { /* 一个订阅者坏了不该拖垮别的 */ }
