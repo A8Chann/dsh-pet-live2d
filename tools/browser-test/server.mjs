@@ -50,8 +50,17 @@ attachActivityEvents(bus, hub)
 // 产品代码，顺手把 `/layer` 这条链在宿主侧也验了。
 //
 // home 指向一个可丢弃目录：绝不能让它读写用户真正的 `%DSH_HOME%\pet-desktop.json`。
+//
+// ⚠️ **必须按端口隔离**（`-<PORT>` 后缀）。原来所有 driver 共用 `.profiles/_layer-home`
+// 一个目录，于是**前一个 driver 改过的设置会留给下一个**：`cdp-gaze` 会把右手池压成
+// "只剩掏出手机"并写进这里的 `pet-settings.json`，紧接着跑的 `cdp-head` 断言的却是
+// "没有哪个手部选项占绝对多数" —— 它读到那份存档，160/160 全是掏出手机，**必红**。
+// 实测（2026-10）：`run-suite.mjs gaze head` 稳定复现，`head` 单独跑必绿；
+// 在**改动之前**的提交（17e45b9）上同样复现 ⇒ 是测试夹具的串扰，不是产品回归。
+// 每个 driver 有自己的服务器端口（`run-suite.mjs` 的 `PET_PORT_BASE + slot`），
+// 所以按端口分目录 = 每个 driver 一份干净存档。
 const { createDisplayLayer } = await import(pathToFileURL(join(PLUGIN, 'lib', 'display.js')).href)
-const displayHome = join(PROFILES, '_layer-home')
+const displayHome = join(PROFILES, '_layer-home-' + PORT)
 mkdirSync(displayHome, { recursive: true })
 const displayLayer = createDisplayLayer({
   home: displayHome,
@@ -62,7 +71,7 @@ const displayLayer = createDisplayLayer({
 displayLayer.binaryInfo = () => ({ found: false, path: null, source: null, supported: true, hint: 'harness' })
 
 // 共享设置也挂上：driver 要能验证"宿主是权威、另一个窗口改了会同步过来"。
-// home 用同一个可丢弃目录 —— 绝不能碰用户真正的 `%DSH_HOME%\pet-settings.json`。
+// home 用同一个可丢弃目录（按端口隔离，见上）—— 绝不能碰用户真正的 `%DSH_HOME%\pet-settings.json`。
 const routes = buildRoutes(hub, displayLayer, displayHome)
 const byPath = new Map(routes.filter((r) => r.kind === 'exact').map((r) => [r.path, r]))
 const prefixes = routes.filter((r) => r.kind === 'prefix').sort((a, b) => b.path.length - a.path.length)
