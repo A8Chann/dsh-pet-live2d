@@ -6395,11 +6395,70 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       return pins;
     };
 
+    /**
+     * 「互斥」(conflicts) 的展开表：表达式名 -> 它不能同时出现的表达式名。
+     *
+     * 选项之间的互斥本来只在 `chooseSlotOption` 里执行（面板点选 / 摸鱼抽中）。
+     * 但 pin 还有别的来源 —— 会话相位、转圈/摸头的反应、配对补齐 —— 它们直接调用
+     * `applyExpressions`，绕过那一层。实测「相位 = 完成（情绪 = 开心兴奋）」时转一圈：
+     * 「晕晕」叠上去，`ParamCheek77` 与 `ParamCheek76` 同时为 1，两套眼睛一起画在脸上。
+     *
+     * 所以和「同时」(pairs) 一样，互斥也要放在**所有路径都经过的那个漏斗**里执行。
+     * 声明本身是双向的，这里再补成对称表 —— 只写一边也不该失效。
+     */
+    const conflictPairs = () => {
+      const map = new Map();
+      const options = [];
+      for (const slot of MANIFEST.current?.expressionSlots ?? []) {
+        for (const option of slot.options ?? []) options.push(option);
+      }
+      const link = (a, b) => {
+        if (a === b) return;
+        if (!map.has(a)) map.set(a, new Set());
+        map.get(a).add(b);
+      };
+      for (const option of options) {
+        for (const label of option.conflicts ?? []) {
+          for (const rival of options) {
+            if (rival.label !== label) continue;
+            for (const a of option.expressions ?? []) {
+              for (const b of rival.expressions ?? []) {
+                link(a, b);
+                link(b, a);
+              }
+            }
+          }
+        }
+      }
+      return map;
+    };
+
+    /**
+     * 在 pin 集合里执行互斥：**后写进集合的那个赢**（对象的键顺序就是写入顺序）。
+     *
+     * 优先级和合并时一致：用户的选择先写、相位覆盖后写、装扮最后写 —— 于是相位仍然
+     * 压得过用户的选择；同一层里「最后点的」压过先点的。被压掉的那条不会写进模型，
+     * 也就不会出现两套眼睛美术同时不透明。
+     */
+    const resolveConflicts = (pins) => {
+      const pairs = conflictPairs();
+      if (pairs.size === 0) return pins;
+      const out = {};
+      for (const name of Object.keys(pins)) {
+        if (pins[name] !== true) continue;
+        const rivals = pairs.get(name);
+        if (rivals !== undefined) for (const rival of rivals) delete out[rival];
+        out[name] = true;
+      }
+      return out;
+    };
+
     // The pinned expression is re-layered after every motion start: a motion
     // resets expression parameters as it takes over, so a pinned face would
     // otherwise be wiped the moment the pet plays a reaction.
     const applyExpressions = useCallback((next) => {
-      const withPairs = Object.assign({}, next, pairPinsNow());
+      // 先补「同时」的目标、再执行「互斥」：两条不变量都只写在这一个漏斗里。
+      const withPairs = resolveConflicts(Object.assign({}, next, pairPinsNow()));
       setPinned(withPairs);
       pinnedRef.current = withPairs;
       const model = modelRef.current;

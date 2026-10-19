@@ -119,6 +119,15 @@ selfie / open-case / bubble-gum / ketchup / hammer | j*: 0 | love: 0
 - 有些效果**参数不冲突但画面冲突**：吐魂(`ParamCheek18`) 与 吹泡泡糖动作
   (`chuipaopao*`) 完全不相干，却是一张脸同时在吐魂和吹泡泡。
   需要显式的互斥声明，不能指望参数层面自动发现。
+- **"整体换眼"的开关之间不是叠加关系**（2026-10 实测）：`ParamCheek76`（兴奋 wink2）与
+  `ParamCheek77`（晕晕眼）各自会把自己那套眼睛美术推到不透明，**同时把默认眼睛那组
+  22 块 drawable 的透明度减 1**。两个同时为 1 ⇒ 两套眼睛一起画（用户报的"晕晕和开心兴奋
+  叠成一块"）。`ParamCheek20/22`（呆眼、闭眼口水）、`ParamCheek27`（哭）同理。判据很好量：
+  把表达式参数写进模型、`core.update()` 后比 `drawables.opacities` 的差值，看哪些
+  `+` 亮了、哪些 `-` 灭了。
+  这类选项必须在 `pet.json` 里声明 `conflicts`。**光在 `chooseSlotOption` 里执行不够**：
+  会话相位和转圈/摸头反应直接调 `applyExpressions` 写 pin，会绕过面板那条路；
+  互斥要放在 pin 的漏斗里（后写进集合的赢），实测「相位=完成 + 转一圈」才不再叠。
 
 ## 帧外写的参数，下一帧就被 loadParameters 抹掉
 

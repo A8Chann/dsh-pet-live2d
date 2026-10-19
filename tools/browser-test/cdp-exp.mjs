@@ -50,7 +50,7 @@ await waitReady(ev)
 const results = []
 const check = (label, ok, detail) => { results.push({ label, ok }); console.log((ok ? '  PASS ' : '  FAIL ') + label + (detail ? '   ' + detail : '')) }
 
-const WATCH = ['ParamCheek71', 'ParamCheek16', 'jingyu', 'ParamCheek70', 'ParamCheek83', 'pointX', 'pointY', 'pointZ']
+const WATCH = ['ParamCheek71', 'ParamCheek16', 'jingyu', 'ParamCheek70', 'ParamCheek83', 'pointX', 'pointY', 'pointZ', 'ParamCheek76', 'ParamCheek77']
 const PROBE = [
   '(() => {',
   '  const c = window.__PET_DBG.core',
@@ -194,6 +194,46 @@ check('going back to normal eyes releases the ambience',
   JSON.stringify(released))
 await ev('window.__dshLive2dPet.setExpressions([])')
 await sleep(500)
+// --- 「整体换眼」的两个槽位选项不能同时生效 --------------------------------
+// 晕晕(ParamCheek77) 和 开心兴奋(ParamCheek76) 各自把自己那套眼睛美术推到不透明，
+// 同时把「默认眼睛」那组 drawable 关掉。参数层面互不冲突，所以两套眼睛会一起画在
+// 脸上（用户报的"晕晕和开心兴奋叠在一起"就是这张图）。pet.json 里声明为互斥，
+// 面板点选必须互相顶掉，而不是叠加。
+// 关掉摸鱼：它每 12-26 秒会重掷一次槽位，正好在断言中间把选择改掉。
+await ev('window.__dshLive2dPet.setFidgetEnabled(false)')
+await slotPick('eyes', '晕晕')
+const dizzyAlone = await frame()
+check('picking 晕晕 turns its own eye art on', at(dizzyAlone, 'ParamCheek77') === 1, JSON.stringify(dizzyAlone))
+const afterHappy = await slotPick('mood', '开心兴奋')
+const happyFrame = await frame()
+check('picking 开心兴奋 drops 晕晕 instead of stacking both eye sets',
+  afterHappy.mood === '开心兴奋' && afterHappy.eyes === undefined
+  && at(happyFrame, 'ParamCheek76') === 1 && at(happyFrame, 'ParamCheek77') === 0,
+  JSON.stringify(afterHappy) + ' ' + JSON.stringify(happyFrame))
+const afterDizzy = await slotPick('eyes', '晕晕')
+const dizzyFrame = await frame()
+check('and picking 晕晕 drops 开心兴奋 in turn',
+  afterDizzy.eyes === '晕晕' && afterDizzy.mood === undefined
+  && at(dizzyFrame, 'ParamCheek77') === 1 && at(dizzyFrame, 'ParamCheek76') === 0,
+  JSON.stringify(afterDizzy) + ' ' + JSON.stringify(dizzyFrame))
+await slotPick('eyes', '默认')
+await slotPick('mood', '平静')
+// 相位 + 反应这条路径**不经过面板**：相位把情绪钉成开心兴奋，转圈的反应再直接
+// pin 晕晕。互斥必须放在 pin 的漏斗里才兜得住，否则还是会两套眼睛一起画。
+await ev('window.__dshLive2dPet.phaseNow("done")')
+await sleep(1500)
+const phaseFrame = await frame()
+check('the done phase pins 开心兴奋 on its own', at(phaseFrame, 'ParamCheek76') === 1, JSON.stringify(phaseFrame))
+await ev('window.__dshLive2dPet.setExpressions(' + JSON.stringify(['开心兴奋', '晕晕']) + ')')
+await sleep(700)
+const bypassFrame = await frame()
+check('a pin set that bypasses the panel still cannot stack both eye sets',
+  at(bypassFrame, 'ParamCheek77') === 1 && at(bypassFrame, 'ParamCheek76') === 0,
+  JSON.stringify(bypassFrame))
+await ev('window.__dshLive2dPet.phaseNow("idle")')
+await sleep(600)
+await ev('window.__dshLive2dPet.setExpressions([])')
+await sleep(400)
 // --- motion-only options must not render as permanently pressed -------------
 // The highlight used `option.expressions.every((n) => pinned[n] === true)`, and
 // a motion-only option has an EMPTY expression list — [].every(...) is
