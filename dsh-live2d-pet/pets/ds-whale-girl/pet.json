@@ -3,7 +3,7 @@
   "id": "ds-whale-girl",
   "displayName": "DS鲸鱼娘",
   "description": "氵六青的 DS 鲸鱼娘 Live2D 桌宠：8 组动作 + 44 个表情/道具，点她会有反应。",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "author": "模型：上善无形 / ZipZipPipe / 氵六青 · 插件：A8Chann",
   "license": "CC BY-NC-SA 4.0 (attribution, NON-COMMERCIAL, share-alike). Character: original OC by 上善无形 (https://www.pixiv.net/users/62155430); DeepSeek maid redesign by ZipZipPipe (https://www.pixiv.net/users/18604994); this Live2D model by 氵六青 (https://space.bilibili.com/11272072), who authorised redistribution here — which does NOT lift the base NC/SA terms. Commercial use requires permission from each rights holder. See NOTICE.md.",
   "homepage": "https://space.bilibili.com/11272072",
@@ -346,12 +346,21 @@
             "expressions": [
               "呆呆眼"
             ],
+            "conflicts": [
+              "开心兴奋",
+              "闭眼口水"
+            ],
             "fidget": false
           },
           {
             "label": "晕晕",
             "expressions": [
               "晕晕"
+            ],
+            "conflicts": [
+              "开心兴奋",
+              "闭眼口水",
+              "大哭"
             ],
             "fidget": false
           },
@@ -375,6 +384,10 @@
             "expressions": [
               "开心兴奋"
             ],
+            "conflicts": [
+              "呆呆眼",
+              "晕晕"
+            ],
             "fidgetWeight": 5
           },
           {
@@ -388,6 +401,9 @@
             "label": "大哭",
             "expressions": [
               "大哭"
+            ],
+            "conflicts": [
+              "晕晕"
             ],
             "fidget": false
           },
@@ -409,6 +425,10 @@
             "label": "闭眼口水",
             "expressions": [
               "闭眼口水"
+            ],
+            "conflicts": [
+              "呆呆眼",
+              "晕晕"
             ],
             "fidgetWeight": 1
           },

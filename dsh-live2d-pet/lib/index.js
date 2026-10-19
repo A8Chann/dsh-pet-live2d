@@ -609,6 +609,8 @@ const BUNDLED_PET_HASHES = {
     '7c6cdb9c9f3d92636c388bffb3229c439cf01a65fe6a8a88499a8e4071f7884a',
     // 1.1.0（会话提示音进入随包宠物之前）
     '31eb2a210d3d99d2f2d53462b8a074ae22209579f7b8fcaa41dd5516e0a861b3',
+    // 1.1.1（给晕晕/开心兴奋等"整体换眼"的选项补互斥声明之前）
+    'ee6e54afd8f5d2983fdc07306da4ddf12638e1b37985aa03beceb70135aa9aa4',
   ],
 }
 
