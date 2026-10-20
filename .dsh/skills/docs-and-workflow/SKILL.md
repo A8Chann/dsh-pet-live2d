@@ -74,6 +74,13 @@ whenToUse: >
 - 改完宠物**跑一次 `node tools/print-pet-hashes.mjs dsh-live2d-pet/pets/<id>/pet.json --code`**，
   把**改动之前那一版**的哈希补进 `BUNDLED_PET_HASHES`（表里的是"老装机可能存在的那一份"，
   当前的随包内容不需要进表）。漏了不会报错，只是"从那个旧版直接跳过来的人"拿不到更新。
+- ⚠️ **这张表有两份，必须一起改**：`lib/index.js`（网页端宿主）与
+  `dsh-live2d-pet-desktop/src-tauri/src/host/catalog.rs`（桌面端宿主）。桌面端的宠物同步
+  走的是 Rust 那份，只补一边的后果是"网页端会更新宠物、桌面端跳过"，**两边都静默**
+  （PR #5 就是这么漏的：1.1.1 的指纹只进了 JS 表）。
+  判据是 `dsh-live2d-pet-desktop/tools/bundled-hashes.test.mjs`（纯 node，`node --test`
+  就跑，已进 CI 的 `node --test tools/*.test.mjs`）。`probe-catalog.mjs` 抓不到这个 ——
+  它只对拍 catalog 与资产字节，碰不到这张表。
 - 回归在 `tools/browser-test/test-host-sync.mjs`（纯 node，不用浏览器，0.7 秒）。
   它盯的就是三条边界：装新的、更新我们的、**别碰用户改过的**。
 - 想让本机重新吃一遍随包版本：删掉 `%DSH_HOME%\pets\<id>\` 再重启 `dsh web`。
@@ -94,6 +101,20 @@ whenToUse: >
 
 ### 3.3.0 / 3.3.1 这两版趟出来的（每一条都是当场踩的）
 
+- **`build-portable` 的验证步骤会被"已经有一只桌宠在跑"挡住（3.3.3 实测）**：
+  壳是**单实例**的（一只只能跑一份），而本机常年有一只由插件拉起的
+  `%DSH_HOME%\bin\dsh-pet-live2d-desktop.exe --from-plugin`。那时 `Start-Process` 起来的
+  新壳会立刻退出、CDP 端口永远不就绪，报出来是
+  `CDP 端口 8823 一直没就绪 … shell 起了吗？`，**看起来像构建坏了**（catalog 对拍却已经 7/7）。
+  先读 `%DSH_HOME%\pet-desktop.log`，看到
+  `已经有一只桌宠在跑（pid N）—— 本次不再开第二只` 就是这条。
+  **别去杀那只**：它是 DSH 正在用的桌宠，而且被插件拉起、杀了会被重新拉起来（我杀过两次，
+  都是几秒后就有一条新的占回来）。正确做法是 `node tools/build-portable.mjs --skip-suite`
+  出产物（catalog 对拍那一步在失败前已经跑过，产物本身是好的），GUI 行为交给真机确认。
+- **`--skip-suite` 之后进程退出码可能仍是 1**：cargo 的 warning 走 stderr，PowerShell 把它
+  当 `NativeCommandError`。判据看最后那行 `PORTABLE_OK`，以及 `dist/` 里产物的时间戳。
+- **产物名是 `DSH-pet.exe`**（大小写和日志里那些旧说法 `DSH桌宠.exe` 不一样）；脚本里的
+  `DSH-Pet.exe` 在 Windows 上大小写不敏感、能对上，但上传/校验时按磁盘上的实际名字写。
 - **顺序**：`commit` → `tag`（本地）→ **push main** → **再建 Release** → push tag（或让 API 建）。
   Release 一旦用 API 建出来，GitHub 会顺手用**当时的 main 头**建 tag —— 3.3.0 那次先建 Release
   再 push main，tag 被钉在 3.2.0 那个提交上，CI 于是编了 3.2.0 的源码、把 3.2.0 的 mac 产物挂到
