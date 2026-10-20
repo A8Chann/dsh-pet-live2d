@@ -5403,6 +5403,19 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     // without reaching through React internals.
     if (typeof window !== "undefined") window.__dshLive2dPet = motion.current;
     const pinnedRef = useRef({});
+    /**
+     * 「声明层」：这一轮**要求**点亮哪些表达式（用户 + 相位 + 配对补齐），互斥之前的那份。
+     *
+     * ⚠️ 必须在 `pinnedRef` 旁边声明（早期诊断读口在组件头部就挂上了，引用到下面
+     * `const` 会撞加载期 TDZ）。
+     *
+     * 与 `pinnedRef` 的分工是这条修复的全部要点：
+     *   * `declaredPinsRef` —— **输入**。面板点选/相位切换都在这份上增删，对手留在里面；
+     *   * `pinnedRef` —— **输出**。互斥裁剪之后真正写进模型的那份。
+     * 只留输出的话，被顶掉的那条就永久消失了（相位脸在用户手点、又收回默认之后再也
+     * 不回来）。声明层在，冲突解除时它自己就恢复。
+     */
+    const declaredPinsRef = useRef({});
 
     // Two diagnostics have to be attached from HERE, not from inside the
     // controller: they read refs that live in this component's scope, and a
@@ -5566,7 +5579,12 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     // expose it on the same diagnostic seam; otherwise a test can only see it
     // through the panel's chips, which do not exist while the panel is closed.
     if (typeof window !== "undefined") {
+      // **生效层**：互斥裁剪之后、真正写进模型的那一份。断言"画面上是什么"读它。
       window.__dshLive2dPet.expressions = () => Object.keys(pinnedRef.current);
+      // **声明层**：互斥之前的那一份（对手还在）。断言"被顶掉的那条有没有被记住"
+      // 读它 —— 两条读口分开，正是为了不再把"输出"当成"输入"用（那一混淆让相位脸
+      // 在手点 + 收回默认之后永久消失）。
+      window.__dshLive2dPet.declaredExpressions = () => Object.keys(declaredPinsRef.current);
       // Programmatic pin set, for diagnostics and the regression suite. It goes
       // through the same funnel as the panel, so slot rules apply identically.
       window.__dshLive2dPet.setExpressions = (names) => {
@@ -6436,9 +6454,15 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     /**
      * 在 pin 集合里执行互斥：**后写进集合的那个赢**（对象的键顺序就是写入顺序）。
      *
-     * 优先级和合并时一致：用户的选择先写、相位覆盖后写、装扮最后写 —— 于是相位仍然
-     * 压得过用户的选择；同一层里「最后点的」压过先点的。被压掉的那条不会写进模型，
-     * 也就不会出现两套眼睛美术同时不透明。
+     * ⚠️ 这个函数的输出**只拿去画**，不许回写声明层（`declaredPinsRef`）。踩过的坑：
+     * 一开始把互斥的结果当成下一轮的底（`pinnedRef` 既当输出又当输入），于是被顶掉的
+     * 那条**从集合里消失了**，之后谁也不会把它加回来 —— 实测「相位 = 完成（开心兴奋）」
+     * 时点一下「晕晕」、反应 12 秒后收回默认，相位那张脸就再也不出现，直到下一条相位
+     * 消息。现在声明层留着对手，冲突解除（手点的那条被收走）时它自己就回来了。
+     *
+     * 同一组里谁赢：谁后写进来谁赢。合并顺序是「用户 <- 相位覆盖 <- 装扮」，而面板手点
+     * 的那条是**追加在末尾**的，所以手点会临时压过相位 —— 这正是 `markPhaseOverride`
+     * 要的语义（会话中手点也得看得见），且相位那一层没被销毁。
      */
     const resolveConflicts = (pins) => {
       const pairs = conflictPairs();
@@ -6457,8 +6481,12 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     // resets expression parameters as it takes over, so a pinned face would
     // otherwise be wiped the moment the pet plays a reaction.
     const applyExpressions = useCallback((next) => {
-      // 先补「同时」的目标、再执行「互斥」：两条不变量都只写在这一个漏斗里。
-      const withPairs = resolveConflicts(Object.assign({}, next, pairPinsNow()));
+      // 声明层：谁要求亮了什么。**它是这一轮的输入，下一轮还要用** —— 互斥只裁剪
+      // 拿去做参数写入的那份（`pinnedRef`），不能反过来把对手从这一层删掉。
+      // 先补「同时」的目标、再交给互斥：两条不变量都只写在这一个漏斗里。
+      const declared = Object.assign({}, next, pairPinsNow());
+      declaredPinsRef.current = declared;
+      const withPairs = resolveConflicts(declared);
       setPinned(withPairs);
       pinnedRef.current = withPairs;
       const model = modelRef.current;
@@ -6777,7 +6805,9 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           if (target !== undefined && picked !== undefined) chooseSlotOptionRef.current(target, picked, true);
         }
       }
-      const next = Object.assign({}, pinnedRef.current);
+      // 从**声明层**起算，不是从互斥之后的输出起算：后者已经少了被顶掉的对手，
+      // 于是"再点一次原来那条"永远回不来（相位脸就是这么丢的）。
+      const next = Object.assign({}, declaredPinsRef.current);
       for (const candidate of slot.options) {
         for (const name of candidate.expressions) delete next[name];
       }

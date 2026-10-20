@@ -234,6 +234,32 @@ await ev('window.__dshLive2dPet.phaseNow("idle")')
 await sleep(600)
 await ev('window.__dshLive2dPet.setExpressions([])')
 await sleep(400)
+// --- 互斥只裁剪输出，**不许**把对手从声明层删掉 -----------------------------
+// 这条是 PR #5 带进来、我事后补的：互斥一开始把结果当成了下一轮的输入，于是被顶掉的
+// 那条**从集合里消失**，谁也不会再加回来。用户看到的版本是「相位 = 完成」时点一下
+// 「晕晕」、反应 12 秒后收回默认 —— 相位那张脸再也不出现，直到下一条相位消息。
+//
+// 判据分两步，缺一不可：
+//   ① 手点那一下，声明层里**两条都还在**（相位没被销毁）；
+//   ② 手点的那条被收走之后，相位那条**自己回到生效层**（不需要再来一条相位消息）。
+await ev('window.__dshLive2dPet.phaseNow("done")')
+await sleep(1500)
+await slotPick('eyes', '晕晕')
+const declaredWhilePicked = JSON.parse(await ev('JSON.stringify(window.__dshLive2dPet.declaredExpressions())'))
+const effectiveWhilePicked = JSON.parse(await ev('JSON.stringify(window.__dshLive2dPet.expressions())'))
+check('a manual pick beats the phase on screen, but does not DESTROY it',
+  effectiveWhilePicked.includes('晕晕') && !effectiveWhilePicked.includes('开心兴奋')
+  && declaredWhilePicked.includes('晕晕') && declaredWhilePicked.includes('开心兴奋'),
+  'declared=' + JSON.stringify(declaredWhilePicked) + ' effective=' + JSON.stringify(effectiveWhilePicked))
+await slotPick('eyes', '默认')
+const restored = await frame()
+check('and when the pick is cleared, the phase face comes back on its own',
+  at(restored, 'ParamCheek76') === 1 && at(restored, 'ParamCheek77') === 0,
+  JSON.stringify(restored))
+await ev('window.__dshLive2dPet.phaseNow("idle")')
+await sleep(600)
+await ev('window.__dshLive2dPet.setExpressions([])')
+await sleep(400)
 // --- motion-only options must not render as permanently pressed -------------
 // The highlight used `option.expressions.every((n) => pinned[n] === true)`, and
 // a motion-only option has an EMPTY expression list — [].every(...) is
