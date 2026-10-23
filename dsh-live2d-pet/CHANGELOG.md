@@ -1,5 +1,21 @@
 # 更新日志
 
+## 未发布
+
+### 新：macOS Intel（darwin-x64）的桌面端
+
+以前桌面端只有 Windows 与 Apple Silicon 两个平台，Intel Mac 的用户在设置里看到的是
+「本平台还没有桌面版构建」。现在 macOS 的构建改成矩阵：`macos-14` 出 `darwin-arm64`、
+`macos-15-intel` 出 `darwin-x64`，两边跑同一套步骤、同一份 `npm pack` 与执行位断言。
+
+- 插件侧 `desktopPackageName()` 的表里补了 `'darwin-x64'`，Intel Mac 上「显示层」不再灰掉；
+- 新增平台子包 `dsh-pet-live2d-desktop-darwin-x64`（`os: darwin` + `cpu: x64`），
+  主包 `optionalDependencies` 与 `npm/main-package.json` 同步声明；
+- `tools/bump-version.mjs` 与 `tools/npm-prepare-subpackage.mjs` 的平台表跟着加一项 ——
+  漏一处就会在 CI 的版本一致性校验上红。
+
+装法不变：装完主包 → 设置 →「显示层」选「桌面」。发布顺序仍是**先子包、后主包**。
+
 ## 3.3.3（2026-10-20）
 
 ### 修：「晕晕」和「开心兴奋」同时生效时，两套眼睛叠在一起

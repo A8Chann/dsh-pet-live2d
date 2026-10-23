@@ -54,6 +54,7 @@
   },
   "optionalDependencies": {
     "dsh-pet-live2d-desktop-darwin-arm64": "3.3.3",
+    "dsh-pet-live2d-desktop-darwin-x64": "3.3.3",
     "dsh-pet-live2d-desktop-win32-x64": "3.3.3"
   },
   "devDependencies": {

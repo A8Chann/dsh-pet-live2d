@@ -20,7 +20,12 @@ const SUB_NAME = 'dsh-pet-live2d-desktop-win32-x64'
 // 主包 `optionalDependencies` 里**每一行平台子包**都要跟着抬（3.1.1 起 darwin 也进来了）。
 // 漏掉它的后果：mac 用户装主包时去找一个版本不存在的子包 —— npm 会**静默跳过**，
 // 桌面端就这么消失了（正是"发布纪律：先子包后主包"要防的那类事故）。
-const SUB_NAMES = [SUB_NAME, 'dsh-pet-live2d-desktop-darwin-arm64']
+const SUB_NAMES = [
+  SUB_NAME,
+  'dsh-pet-live2d-desktop-darwin-arm64',
+  // Intel Mac。CI 出产物，发布顺序同样是"先子包、后主包"。
+  'dsh-pet-live2d-desktop-darwin-x64',
+]
 
 /** 要改的文件与"改什么"。`files` 里的路径相对仓库根。 */
 const TARGETS = [
@@ -30,6 +35,7 @@ const TARGETS = [
   // `npm-prepare-subpackage.mjs` 的版本一致性校验直接红（CI 第 10 步），
   // 整个 mac 构建白跑。2026-09-29 发 3.1.0 时就是这么红的：只抬了 win 子包。
   { file: 'dsh-live2d-pet-desktop/npm/desktop-darwin-arm64/package.json', edits: ['version'] },
+  { file: 'dsh-live2d-pet-desktop/npm/desktop-darwin-x64/package.json', edits: ['version'] },
   // 这份是参考副本（`npm-prepare-subpackage.mjs` 会拿它对拍），版本也要跟上。
   { file: 'dsh-live2d-pet-desktop/npm/main-package.json', edits: ['version', 'optionalDependencies'] },
 ]

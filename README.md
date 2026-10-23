@@ -52,7 +52,7 @@ DSH 的 Web GUI 负责对话，而 **dsh-pet-live2d 是挂在这块界面上的�
 
 > 另有**桌面端**（[`dsh-live2d-pet-desktop/`](dsh-live2d-pet-desktop/README.md)，Tauri 壳）：
 > 把同一份宠物代码放进**透明置顶窗口**、逐像素穿透到壁纸。Windows x64 的单文件 exe
-> 随插件包分发（装完在设置里选「桌面」）；macOS（Apple Silicon）的构建由 CI 产出，
+> 随插件包分发（装完在设置里选「桌面」）；macOS（Apple Silicon / Intel）的构建由 CI 产出，
 > **尚未在真机验证** —— 平台支持与已知限制见它的 README。
 
 ## 快速上手

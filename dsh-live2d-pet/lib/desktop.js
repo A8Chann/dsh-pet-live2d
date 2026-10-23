@@ -4,7 +4,9 @@
 // 窗口进程，DSH 关掉她也能站着）。后者需要一个二进制，它由**平台子包**随主包一起装：
 //
 //   Windows x64  dsh-pet-live2d-desktop-win32-x64   （声明了 os/cpu，别的平台装不上）
-//   将来的       …-darwin-arm64 / …-linux-x64       （同一个解析器，加一行清单即可）
+//   macOS arm64  dsh-pet-live2d-desktop-darwin-arm64（同上）
+//   macOS x64    dsh-pet-live2d-desktop-darwin-x64  （同上，CI 用 `macos-15-intel` 出）
+//   将来的       …-linux-x64                        （同一个解析器，加一行清单即可）
 //
 // 为什么用"平台子包 + optionalDependencies"而不是把 exe 塞进主包：非 Windows 用户不该
 // 为一个跑不了的 9MB 买单，而 npm 的 `os`/`cpu` 字段正好能让不匹配的平台**静默跳过**。
@@ -31,6 +33,9 @@ export function desktopPackageName(platform = process.platform, arch = process.a
     //   1. `node tools/npm-prepare-subpackage.mjs --sub darwin-arm64` 后把子包发上 npm；
     //   2. 主包 `optionalDependencies` 加一行 `"dsh-pet-live2d-desktop-darwin-arm64": "<主包版本>"`。
     'darwin-arm64': 'dsh-pet-live2d-desktop-darwin-arm64',
+    // macOS x64（Intel）。与 arm64 同一份源码、同一套子包清单，差别只在 CI 的 runner
+    // （`macos-15-intel`）与 `npm/desktop-darwin-x64/` 这一份。
+    'darwin-x64': 'dsh-pet-live2d-desktop-darwin-x64',
   }
   return table[platform + '-' + arch]
 }

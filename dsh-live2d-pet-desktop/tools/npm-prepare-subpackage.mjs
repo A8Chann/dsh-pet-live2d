@@ -1,6 +1,6 @@
 // 造出**平台子包**的内容：把编好的二进制放进 `npm/desktop-<平台>/bin/`。
 //
-//   node tools/npm-prepare-subpackage.mjs [--sub darwin-arm64]
+//   node tools/npm-prepare-subpackage.mjs [--sub darwin-arm64|darwin-x64]
 //
 // 不带参数就是 `win32-x64`（Windows 那条老路一个字没变）。
 //
@@ -25,6 +25,8 @@ const SUBS = {
   // 2026-09-30（3.1.1）：darwin 那份已于 3.1.0 发上 npm，主包这一版起也声明它 ——
   // mac 用户装插件时会自动带上桌面端（在这之前只能从 Release 下 zip）。
   'darwin-arm64': { bin: 'dsh-pet-live2d-desktop', built: 'dsh-pet-live2d-desktop', declared: true },
+  // macOS Intel。同一份 `dist/dsh-pet-live2d-desktop`，CI 在 `macos-15-intel` 上跑同一套步骤。
+  'darwin-x64': { bin: 'dsh-pet-live2d-desktop', built: 'dsh-pet-live2d-desktop', declared: true },
 }
 
 const argv = process.argv.slice(2)

@@ -595,7 +595,7 @@ macOS 才有，用 `#[cfg(target_os = "macos")]` 包起来），`.app` 里再叠
 * `tools/build-portable.mjs` 现在**平台感知**：Windows 出 `dist/DSH桌宠.exe` 并跑验证；
   macOS 出裸二进制 + `DSH桌宠.app`（`sips`+`iconutil` 转图标、`codesign --sign -`
   ad-hoc 签名），**不跑验证**（那套驱动全是 Windows 的）。
-* `tools/npm-prepare-subpackage.mjs --sub darwin-arm64`：平台子包表现在有两项，
+* `tools/npm-prepare-subpackage.mjs --sub darwin-arm64|darwin-x64`：平台子包表现在有三项，
   `declared` 标记这个子包**有没有发布** —— 没发布时主包 `optionalDependencies` 里不该有它
   （否则用户装主包会去找一个不存在的包）。发布顺序永远是**先子包、后主包**。
 * CI 里两件容易被忽略的输入：`tools/browser-test` 的 `npm ci`（`build.rs` 要在编译期嵌

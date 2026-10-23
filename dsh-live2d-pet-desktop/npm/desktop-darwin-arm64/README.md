@@ -66,7 +66,8 @@ workflow artifact 与 Release 附件。
 - **没有签名与公证**：从 Release 下载的产物会被 Gatekeeper 拦下（"无法验证开发者"）。
   用户要右键→打开，或者 `xattr -dr com.apple.quarantine <路径>`。想让双击就能开，
   需要 Apple Developer ID（$99/年）+ 公证，这一步在 CI 里也能做，但要先有证书。
-- **只在 Apple Silicon 上构建与验证**：Intel Mac（`darwin-x64`）要另加一个
-  `macos-15-intel` runner 的矩阵项 —— 清单与代码都已经按平台表写好了，加一行即可。
+- **两个架构都由 CI 构建**：Apple Silicon 用 `macos-14`、Intel 用 `macos-15-intel`
+  （`.github/workflows/desktop-mac.yml` 里矩阵的两个分支，跑同一套步骤）。Intel 那一份的
+  子包是 `npm/desktop-darwin-x64/`。真机验证仍然只在 Windows 上有。
 - **真机行为尚未验证**：本项目的开发与全部驱动都跑在 Windows 上。
   mac 上"能不能点、能不能穿透、跟不跟手"属于**未验证区**，别在 README 里当既成事实写。
