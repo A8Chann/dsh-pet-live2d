@@ -97,6 +97,10 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   const MIN_SIZE = 160;
   const MAX_SIZE = 760;
   const DEFAULT_SIZE = 300;
+  // 对白随角色尺寸调整，但小号仍可读，大号不占满屏幕。
+  function speechScale(size) {
+    return Math.max(12 / 14, Math.min(1.4, size / DEFAULT_SIZE));
+  }
   /** 显示层轮询间隔：桌面端接管/让位要在一秒内被看见。 */
   const LAYER_POLL_MS = 1000;
 
@@ -3278,7 +3282,13 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       + "--pp-accent:rgba(90,140,230,.15);--pp-accent-2:rgba(90,140,230,.18);"
       + "--pp-accent-3:rgba(90,140,230,.26);--pp-shadow:0 14px 34px rgba(20,30,50,.18);"
       + "--pp-shadow-sm:0 8px 20px rgba(20,30,50,.14)}",
-    ROOT_SEL + " [data-bubble]{position:absolute;left:50%;bottom:100%;transform:translateX(-50%) translate(var(--bubble-x,0px),var(--bubble-y,0px));margin-bottom:6px;max-width:min(240px,60vw);width:max-content;padding:7px 11px;border-radius:12px;background:linear-gradient(160deg,var(--pp-bubble-a),var(--pp-bubble-b));border:1px solid var(--pp-line);box-shadow:var(--pp-shadow-sm);color:var(--pp-ink);font:400 12px/1.5 inherit;white-space:pre-wrap;pointer-events:none}",
+    // 漫画对白：实色纸面、墨线和短尾巴，让文字属于角色；深色主题保留柔和对比。
+    ROOT_SEL + " [data-bubble]{--speech-paper:#fffaf0;--speech-ink:#34465a;--speech-line:#8b9eae;position:fixed;left:50%;top:12%;z-index:2;box-sizing:border-box;max-width:min(15.7143em,calc(100vw - 24px));width:max-content;padding:.8571em 1.1429em;border-radius:1.7143em 2em 1.8571em 1.4286em / 1.5714em 1.7143em 1.4286em 1.8571em;background:var(--speech-paper);border:clamp(1px,.1071em,2px) solid var(--speech-line);box-shadow:0 4px 12px rgba(48,67,86,.12);color:var(--speech-ink);font-family:inherit;font-size:calc(14px * var(--speech-scale,1));font-weight:500;line-height:1.65;letter-spacing:.02em;white-space:pre-wrap;overflow-wrap:anywhere;pointer-events:none;visibility:hidden;transition:left 140ms ease-out,top 140ms ease-out}",
+    ROOT_SEL + "[data-theme='dark'] [data-bubble]{--speech-paper:#344457;--speech-ink:#f0eee7;--speech-line:#72869c;box-shadow:0 4px 14px rgba(0,0,0,.2)}",
+    ROOT_SEL + " [data-bubble][data-placed]{visibility:visible}",
+    ROOT_SEL + " [data-bubble]::after{content:'';position:absolute;right:.7143em;bottom:-.5em;width:.7143em;height:.7143em;background:var(--speech-paper);border-right:clamp(1px,.1071em,2px) solid var(--speech-line);border-bottom:clamp(1px,.1071em,2px) solid var(--speech-line);transform:skewX(28deg);border-radius:0 0 .2143em 0}",
+    ROOT_SEL + " [data-bubble][data-side='right']::after{right:auto;left:.7143em;transform:skewX(-28deg);border-right:0;border-left:clamp(1px,.1071em,2px) solid var(--speech-line)}",
+    "@media (prefers-reduced-motion:reduce){" + ROOT_SEL + " [data-bubble]{transition:none}}",
     // Sits outside the pet's box entirely, so it must re-arm itself.
     ROOT_SEL + " [data-panel]{position:absolute;right:calc(100% + 10px);bottom:0;width:270px;max-height:min(440px,72vh);display:flex;flex-direction:column;border-radius:14px;overflow:hidden;background:var(--pp-surface);backdrop-filter:blur(14px);border:1px solid var(--pp-line);box-shadow:var(--pp-shadow);color:var(--pp-ink);font:400 12px/1.5 inherit;pointer-events:auto}",
     ROOT_SEL + " [data-panel] header{display:flex;align-items:center;gap:6px;padding:9px 11px;border-bottom:1px solid var(--pp-line-soft);font-weight:600}",
@@ -5600,6 +5610,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     const [coreMissing, setCoreMissing] = useState(false);
     const [ready, setReady] = useState(false);
     const [bubble, setBubble] = useState(null);
+    const speechLayoutRef = useRef(null);
     const [panelOpen, setPanelOpen] = useState(false);
     /**
      * Viewport coordinates the panel was pinned at, captured once when it opens.
@@ -5694,6 +5705,62 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     }, []);
 
     useEffect(() => () => window.clearTimeout(bubbleTimer.current), []);
+
+    // 一句话只采一次头部锚点，存成舞台比例；呼吸与摇头不会让对白追着几何抖。
+    // 位置直接写 DOM，不把布局测量变成整只宠物的持续重渲染。
+    useEffect(() => {
+      if (bubble === null) { speechLayoutRef.current = null; return undefined; }
+      const place = () => {
+        const root = rootRef.current;
+        const el = root?.querySelector("[data-bubble]");
+        if (!el) return;
+        const rect = root.getBoundingClientRect();
+        if (!(rect.width > 0 && rect.height > 0)) return;
+        const box = el.getBoundingClientRect();
+        let anchor = speechLayoutRef.current;
+        if (!anchor || anchor.text !== bubble) {
+          const api = motion.current;
+          const head = api.headBox?.();
+          // 交互盒扩过边，不能拿顶边当头顶；取两侧上半部，气泡主体留在头发外。
+          const point = fraction => head ? api.modelToStage?.(
+            head.minX + (head.maxX - head.minX) * fraction,
+            head.minY + (head.maxY - head.minY) * 0.60) : null;
+          const left = point(0.12), right = point(0.88);
+          anchor = { text: bubble,
+            left: (left?.x ?? rect.width * 0.28) / rect.width,
+            right: (right?.x ?? rect.width * 0.72) / rect.width,
+            y: (left?.y ?? rect.height * 0.38) / rect.height,
+            side: rect.left + rect.width / 2 >= window.innerWidth / 2 ? "left" : "right" };
+          speechLayoutRef.current = anchor;
+        }
+        const scale = speechScale(size);
+        const margin = 12, gap = 16 * scale;
+        const leftSpace = rect.left + anchor.left * rect.width - margin;
+        const rightSpace = window.innerWidth - margin - rect.left - anchor.right * rect.width;
+        // 只有原侧装不下、另一侧确实能装下时才换边，避免拖动经过屏幕中心就跳来跳去。
+        if (anchor.side === "left" && leftSpace < box.width + gap && rightSpace >= box.width + gap) anchor.side = "right";
+        else if (anchor.side === "right" && rightSpace < box.width + gap && leftSpace >= box.width + gap) anchor.side = "left";
+        const x = rect.left + (anchor.side === "left" ? anchor.left : anchor.right) * rect.width;
+        const y = rect.top + anchor.y * rect.height;
+        const desiredLeft = (anchor.side === "left" ? x - box.width - gap : x + gap) + TUNING.bubbleOffsetX;
+        const left = Math.max(margin, Math.min(desiredLeft, window.innerWidth - box.width - margin));
+        const top = Math.max(margin, Math.min(y - box.height - 12 * scale + TUNING.bubbleOffsetY,
+          window.innerHeight - box.height - margin - 8 * scale));
+        // fixed 坐标配合 CSS 缓动：拖动/缩放才跟随，不继承根节点每一下的位移。
+        el.style.transition = el.hasAttribute("data-placed") ? "" : "none";
+        el.style.left = Math.round(left) + "px";
+        el.style.top = Math.round(top) + "px";
+        el.dataset.side = anchor.side;
+        el.dataset.placed = "";
+      };
+      place();
+      const observer = new ResizeObserver(place);
+      const el = rootRef.current?.querySelector("[data-bubble]");
+      if (el) observer.observe(el);
+      window.addEventListener("resize", place);
+      return () => { observer.disconnect(); window.removeEventListener("resize", place); };
+    }, [bubble, size, pos, ready, settingsRev]);
+
 
     // The controller owns the motion lifecycle; the panel highlights whatever
     // group it is currently playing and clears the highlight on idle.
@@ -7958,13 +8025,17 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           ...(hitPath === "" ? {} : { onPointerDown, onContextMenu }),
         }),
       ),
-      // 气泡的偏移量走 CSS 变量（值，不是布局）：位置规则仍然只写在样式表里。
+      // 位置由头部几何与视口共同决定，台词仍走所有互动共用的 say。
       bubble === null ? null : h("div", {
         "data-bubble": "",
         style: {
+          "--speech-scale": speechScale(size),
           "--bubble-x": TUNING.bubbleOffsetX + "px",
           "--bubble-y": TUNING.bubbleOffsetY + "px",
         },
+        role: "status",
+        "aria-live": "polite",
+        "aria-atomic": "true",
       }, bubble),
       panel,
     );

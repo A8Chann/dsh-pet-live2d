@@ -171,3 +171,20 @@ ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register(
 测试 harness（`tools/browser-test/harness.js`）的假 `ctx.slots.register` 原来只按 `meta.id`
 收注册 —— keyed 槽没有 `id`，于是它会静默记成 `sections[undefined]`，driver 找 `["dsh-pet-live2d"]`
 永远是 undefined。现在按 `meta.key ?? meta.id` 收。
+
+
+## 漫画对白定位
+
+气泡复用所有台词的 `say`，在自身 effect 中读取控制器现有 `headBox` / `modelToStage`，
+不写模型参数。`headBox` 是为摸头扩过的交互盒，顶边高于可见头发，不能直接把它当头顶；
+对白锚点取盒内上半部两侧，每句话只采一次并归一化到舞台比例，存入 ref；
+呼吸、摇头期间不重采。气泡用 fixed 视口坐标，位置变化走 CSS 缓动，优先保持原侧，
+空间不足且另一侧能容纳时才换边。布局随台词、位置、尺寸、设置和视口变化重算，直接写气泡 DOM，
+不为布局另开整只宠物的状态更新或轮询。偏移设置最后仍受视口边界约束。
+气泡比例统一用 `speechScale(size)`（以 300px 桌宠为基准，12px 最小字号、1.4 倍上限），
+字体由 CSS 变量设置，内边距／宽度／圆角／尾巴用 em，位置间隙也用同一比例；
+不用 transform 缩放气泡，确保 ResizeObserver 量到的尺寸就是实际边界。
+
+纯 node 布局回归：`tools/browser-test/test-speech-layout.mjs` 直接执行真实布局 effect，验证锚点、换边与缩放边界。
+浏览器验证：`tools/browser-test/cdp-speech.mjs` 读真实布局、台词与命中结果，并以失败退出码收尾；
+截图只用于人工看样式。桌面端要重建后才能使用更新的内嵌客户端。
