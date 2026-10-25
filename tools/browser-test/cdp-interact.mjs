@@ -334,15 +334,28 @@ const thinkingLine = await ev('window.__dshLive2dPet.effectiveLines().phase.thin
 const phaseSaid = await until(async () => (await bubble()) === thinkingLine, 9000)
 check('会话相位会弹台词气泡（thinking）', phaseSaid,
   'bubble=' + (await bubble()) + ' 台词=' + thinkingLine)
-// 位置偏移：改滑杆 -> 气泡上的 CSS 变量跟着变（值，不是布局规则）
+// 位置偏移：改滑杆之后**气泡本身**要跟着挪（不是只改一个不再参与布局的 CSS 变量）。
 check('改得了气泡左右偏移', (await setInput('#dsh-settings-probe [data-input="bubbleOffsetX"]', '40')) === true)
 await sleep(400)
 await ev('window.__dshLive2dPet.phaseNow("done")')
-await until(async () => (await bubble()) !== null, 6000)
-const offset = await ev('(() => {'
+const doneLine = await ev('window.__dshLive2dPet.effectiveLines().phase.done')
+await until(async () => (await bubble()) === doneLine, 6000)
+// 换台词会触发 left/top 的 140ms 缓动：先等它落定，再量基准位置。
+await sleep(500)
+const bubbleBox = () => ev('(() => {'
   + ' const node = document.querySelector("[data-dsh-live2d-pet] [data-bubble]");'
-  + ' return node === null ? null : node.style.getPropertyValue("--bubble-x") })()')
-check('气泡位置偏移可配（改了立刻反映到气泡上）', offset === '40px', '--bubble-x=' + offset)
+  + ' if (node === null) return null; const r = node.getBoundingClientRect();'
+  + ' return JSON.stringify({ text: node.textContent, x: Math.round(r.left), y: Math.round(r.top) }) })()')
+const boxBefore = JSON.parse(await bubbleBox()) ?? { text: null, x: 0, y: 0 }
+check('气泡出现且量得到位置', boxBefore.text !== null, JSON.stringify(boxBefore))
+check('偏移从 40 改到 80', (await setInput('#dsh-settings-probe [data-input="bubbleOffsetX"]', '80')) === true)
+await sleep(600)
+const boxAfter = JSON.parse(await bubbleBox()) ?? null
+check('偏移量的是同一句话', boxAfter !== null && boxAfter.text === boxBefore.text,
+  JSON.stringify(boxBefore) + ' -> ' + JSON.stringify(boxAfter))
+check('气泡位置偏移可配（真实几何 +40px）',
+  boxAfter !== null && Math.abs(boxAfter.x - boxBefore.x - 40) <= 2 && Math.abs(boxAfter.y - boxBefore.y) <= 2,
+  JSON.stringify(boxBefore) + ' -> ' + JSON.stringify(boxAfter))
 // 总开关：关掉之后任何台词都不弹
 check('关得掉气泡总开关', (await setFlag('bubbleEnabled', false)) === true)
 await sleep(400)

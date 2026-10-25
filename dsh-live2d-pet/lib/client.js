@@ -8048,8 +8048,6 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         "data-bubble": "",
         style: {
           "--speech-scale": speechScale(size),
-          "--bubble-x": TUNING.bubbleOffsetX + "px",
-          "--bubble-y": TUNING.bubbleOffsetY + "px",
         },
         role: "status",
         "aria-live": "polite",

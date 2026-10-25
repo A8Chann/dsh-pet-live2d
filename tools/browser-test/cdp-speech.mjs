@@ -76,6 +76,21 @@ try {
   }
   const first = await phase('thinking')
   inside(first)
+  // 确定性几何：气泡矩形内不出现角色的不透明像素（压住头发也算失败）。
+  const overlap = JSON.parse(await ev(`(() => {
+    const root = document.querySelector('[data-dsh-live2d-pet]').getBoundingClientRect();
+    const bubble = document.querySelector('[data-dsh-live2d-pet] [data-bubble]').getBoundingClientRect();
+    let hit = 0, total = 0;
+    for (let iy = 0; iy < 5; iy++) for (let ix = 0; ix < 7; ix++) {
+      const x = bubble.left + 4 + (bubble.width - 8) * ix / 6;
+      const y = bubble.top + 4 + (bubble.height - 8) * iy / 4;
+      total++;
+      if (window.__dshLive2dPet.hitsMask(x - root.left, y - root.top, root.width, root.height)) hit++;
+    }
+    return JSON.stringify({ hit, total });
+  })()`))
+  assert.equal(overlap.hit, 0, '气泡矩形压到角色像素：' + JSON.stringify(overlap))
+  console.log('PASS 气泡不压角色（' + overlap.total + ' 个采样点）')
   assert.equal(first.font, '14px')
   assert.ok(parseFloat(first.border) >= 1 && parseFloat(first.border) <= 1.5)
   assert.equal(first.role, 'status')
