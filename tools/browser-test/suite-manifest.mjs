@@ -4,6 +4,7 @@
 // 代码），所以任何想读这份清单的工具（比如 `tools/suite-budget.mjs` 的计时统计）
 // 都不能去 import 那个跑者 —— 一 import 就真的把整套跑起来了。
 export const SUITE = {
+  'test-speech-layout.mjs': '对白布局：锚点稳定、拖动与边缘避让、尺寸适配（纯 node）',
   'test-host-sync.mjs': '随包宠物升级：老装机拿得到新的默认值，改过的一个字都不碰',
   'test-plugin-page.mjs': '官方「插件」页那一节与设置正文都渲染得出来（纯 node，不需要浏览器）',
   'test-sound.mjs': '会话提示音：宠物默认、旧宠物兜底、单相位静音与音量',
@@ -24,6 +25,7 @@ export const SUITE = {
   'cdp-passthrough.mjs': '只有角色可拖动，透明处事件穿透',
   'cdp-merge.mjs': '装扮菜单：多槽位叠加、跨槽保留、白魔爪双层',
   'cdp-bubble.mjs': '动作定格能关掉：吹泡泡糖/掏手机 → 无，连测三轮',
+  'cdp-speech.mjs': '漫画对白：头侧定位、自动换边、边界避让与鼠标穿透',
   'cdp-interact.mjs': '互动与气泡：摸尾巴/转圈转晕/相位台词/文本·位置·开关可配',
   'cdp-react-defaults.mjs': '互动反应候选的内置默认值：宠物没声明那三组也演得出来',
   'cdp-settings-render.mjs': '设置正文真的渲染得出来（挂在宠物组件之外的组件不许读到组件内的 ref）',
