@@ -161,6 +161,19 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   const isDesktopShell = typeof window.__petDesktop === "object" && window.__petDesktop !== null;
 
   /**
+   * 这一份客户端该不该**出声**。
+   *
+   * 页面与桌面窗口各跑一份客户端、各收一份 SSE：让位只做在渲染上时，两份都会响，
+   * 听感就是"每次相位响两遍"（issue #7）。判据必须与渲染让位同源 —— 谁在显示，
+   * 谁才响；另一份静音。
+   *
+   * `desktopShell` 只给单元测试传（同一份代码要在两种身份下各断言一遍），
+   * 生产调用不传，默认读模块级常量。
+   */
+  const isPhaseSoundOwner = (owner, desktopShell = isDesktopShell) =>
+    owner === (desktopShell ? "desktop" : "inline");
+
+  /**
    * 跟随范围的诊断快照（最近一次 pointermove 的中间量）。
    *
    * 挂在模块级而不是组件 ref 上：它要能被**页面外的驱动**读到（经 `__dshLive2dPet.gazeTrace()`），
@@ -7296,7 +7309,12 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         if (phase === phaseRef.current) return;
         phaseRef.current = phase;
         // 只提示真正的新相位；首次 SSE 快照和相同相位重发都不响。
-        if (!initial) playPhaseSound(phase);
+        //
+        // 还要看"是不是我在显示"：页面与桌面窗口各收一份 SSE，两边都响就是每次响两遍
+        // （issue #7）。这里读模块级 `layerStore`，**不能**读本 effect 闭包里的 `layer`
+        // —— 依赖只有 [ready, applyExpressions]，闭包里那个 `layer` 是挂载时的旧值，
+        // 会让让位永远慢一拍。
+        if (!initial && isPhaseSoundOwner(layerStore.value.owner)) playPhaseSound(phase);
         // A phase animation may replace another phase animation, but must never
         // cut off something the user just triggered (tap / fidget / panel).
         const owner = motion.current.kind();

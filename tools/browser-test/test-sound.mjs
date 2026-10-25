@@ -55,10 +55,16 @@ const window = {
 const source = readFileSync(join(PLUGIN, 'lib/client.js'), 'utf8')
 const seam = '  exports.apply = apply;'
 assert.equal(source.split(seam).length, 2, '客户端测试入口只能有一处')
-runInNewContext(source.replace(seam, `  exports.testSound = { applyFlag, applyTuning, playPhaseSound, previewPhaseSound, previewVolumeSound, canPreviewPhaseSound, restoreTuning, restoreOverrides, setPhaseSoundMuted, soundNotesFor, linesNow, manifest: MANIFEST, uploads: UPLOADED_SOUNDS, getVolume: () => TUNING.soundVolume };\n${seam}`), {
+runInNewContext(source.replace(seam, `  exports.testSound = { applyFlag, applyTuning, playPhaseSound, previewPhaseSound, previewVolumeSound, canPreviewPhaseSound, restoreTuning, restoreOverrides, setPhaseSoundMuted, soundNotesFor, linesNow, isPhaseSoundOwner, manifest: MANIFEST, uploads: UPLOADED_SOUNDS, getVolume: () => TUNING.soundVolume };\n${seam}`), {
   window, document: {}, console, Map, Set, fetch: () => Promise.resolve({ status: 404 }),
 })
 const { testSound: sound } = window.plugin
+// issue #7：两份客户端各收一份 SSE，只有"当前正在显示"的那一份能出声。
+// 第二个参数模拟桌面壳（生产里由 window.__petDesktop 决定，测试环境没有）。
+assert.equal(sound.isPhaseSoundOwner('inline'), true, '页面在显示时由页面响')
+assert.equal(sound.isPhaseSoundOwner('desktop'), false, '桌面接管后页面静音')
+assert.equal(sound.isPhaseSoundOwner('desktop', true), true, '桌面窗口在显示时由桌面响')
+assert.equal(sound.isPhaseSoundOwner('inline', true), false, '页面接管后桌面静音')
 sound.playPhaseSound('done')
 assert.equal(frequencies.length, 0, '首次默认静音')
 sound.applyFlag('soundEnabled', true)
