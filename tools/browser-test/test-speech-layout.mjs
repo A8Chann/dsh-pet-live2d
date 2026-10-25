@@ -10,7 +10,7 @@ let effect, cleanup, samples = 0;
 let rect = {left:900,top:450,width:300,height:300};
 const listeners = new Map();
 const el = {style:{},dataset:{},hasAttribute(name){return name === 'data-placed' && 'placed' in this.dataset},getBoundingClientRect(){return {width:140,height:56}}};
-const context = {DEFAULT_SIZE:300,bubble:'让我想想',size:300,pos:{},ready:true,settingsRev:0,
+const context = {DEFAULT_SIZE:300,bubble:'让我想想',size:300,pos:{},ready:true,settingsRev:0,yieldToOther:false,
  speechLayoutRef:{current:null},rootRef:{current:{querySelector(){return el},getBoundingClientRect(){return rect}}},
  motion:{current:{headBox(){samples++;return {minX:0,maxX:300,minY:0,maxY:300}},modelToStage(x,y){return {x,y}}}},
  TUNING:{bubbleOffsetX:0,bubbleOffsetY:0},
@@ -39,6 +39,11 @@ assert.ok(parseFloat(el.style.left)>=12);
 context.bubble='完成啦';render();assert.equal(samples,2,'新一句话重新确定锚点');
 context.bubble=null;render();assert.equal(context.speechLayoutRef.current,null,'气泡消失后清理锚点');
 assert.equal(listeners.size,0,'卸载时清理监听器');
+const beforeYield = samples;
+context.bubble='让位也不画';context.yieldToOther=true;render();
+assert.equal(samples,beforeYield,'让位的那一份不采锚点');
+assert.equal(context.speechLayoutRef.current,null,'让位时清掉锚点');
+assert.equal(listeners.size,0,'让位时不挂监听器');
 assert.ok(source.includes('prefers-reduced-motion:reduce'));
 console.log('PASS 外侧定位、首次出现、锚点稳定、拖动跟随、方向稳定、边缘换边、新句重置与监听器清理');
 

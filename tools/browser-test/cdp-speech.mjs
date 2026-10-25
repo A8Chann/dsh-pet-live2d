@@ -111,6 +111,28 @@ try {
   await send('Emulation.setDeviceMetricsOverride', { width: 360, height: 640, deviceScaleFactor: 1, mobile: false })
   await ev(`(() => { const root = document.querySelector('[data-dsh-live2d-pet]'); root.style.right = '0px'; root.style.bottom = '0px'; dispatchEvent(new Event('resize')); })()`)
   await phase('done'); inside(await settled())
+  // 让位的那一份不许画气泡：只藏根节点时，fixed 气泡会自己 visible（实测 root hidden、
+  // bubble visible）。这里把 owner 改成 desktop（写心跳），页面这份应立刻让位且不挂气泡。
+  const layerHome = join(PROFILES, '_layer-home-' + (process.env.PET_PORT ?? '8793'))
+  mkdirSync(layerHome, { recursive: true })
+  writeFileSync(join(layerHome, 'pet-desktop.json'), JSON.stringify({
+    mode: 'desktop', desktopPid: 999999, at: Date.now() + 3600000,
+  }))
+  let yielded = null
+  for (let i = 0; i < 60; i += 1) {
+    const raw = await ev(`(() => { const r = document.querySelector('[data-dsh-live2d-pet]');
+      if (r === null) return null; return JSON.stringify({ layer: r.dataset.layer, vis: getComputedStyle(r).visibility }) })()`)
+    yielded = raw === null ? null : JSON.parse(raw)
+    if (yielded !== null && yielded.layer === 'desktop' && yielded.vis === 'hidden') break
+    await sleep(100)
+  }
+  assert.ok(yielded !== null && yielded.vis === 'hidden', '页面这份应让位：' + JSON.stringify(yielded))
+  await ev('window.__dshLive2dPet.phaseNow("thinking")')
+  await sleep(1200)
+  const ghost = await ev(`(() => { const el = document.querySelector('[data-dsh-live2d-pet] [data-bubble]');
+    if (el === null) return 'absent'; return getComputedStyle(el).visibility })()`)
+  assert.ok(ghost === 'absent' || ghost === 'hidden', '让位后不该出现可见气泡：' + ghost)
+  console.log('PASS 让位的那一份不画气泡（' + ghost + '）')
   assert.deepEqual(await pageErrors(ev), [], '页面无异常')
   console.log('PASS 窄视口重新布局、切换台词、页面无异常')
 } catch (error) {

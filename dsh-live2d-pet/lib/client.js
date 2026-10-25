@@ -3298,7 +3298,9 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     // 漫画对白：实色纸面、墨线和短尾巴，让文字属于角色；深色主题保留柔和对比。
     ROOT_SEL + " [data-bubble]{--speech-paper:#fffaf0;--speech-ink:#34465a;--speech-line:#8b9eae;position:fixed;left:50%;top:12%;z-index:2;box-sizing:border-box;max-width:min(15.7143em,calc(100vw - 24px));width:max-content;padding:.8571em 1.1429em;border-radius:1.7143em 2em 1.8571em 1.4286em / 1.5714em 1.7143em 1.4286em 1.8571em;background:var(--speech-paper);border:clamp(1px,.1071em,2px) solid var(--speech-line);box-shadow:0 4px 12px rgba(48,67,86,.12);color:var(--speech-ink);font-family:inherit;font-size:calc(14px * var(--speech-scale,1));font-weight:500;line-height:1.65;letter-spacing:.02em;white-space:pre-wrap;overflow-wrap:anywhere;pointer-events:none;visibility:hidden;transition:left 140ms ease-out,top 140ms ease-out}",
     ROOT_SEL + "[data-theme='dark'] [data-bubble]{--speech-paper:#344457;--speech-ink:#f0eee7;--speech-line:#72869c;box-shadow:0 4px 14px rgba(0,0,0,.2)}",
-    ROOT_SEL + " [data-bubble][data-placed]{visibility:visible}",
+    // 继承根节点的可见性：让位时根节点是 hidden，气泡不能自己顶成 visible
+    // （fixed 不被 hidden 祖先裁掉，visibility 却会被子元素覆盖）。
+    ROOT_SEL + " [data-bubble][data-placed]{visibility:inherit}",
     ROOT_SEL + " [data-bubble]::after{content:'';position:absolute;right:.7143em;bottom:-.5em;width:.7143em;height:.7143em;background:var(--speech-paper);border-right:clamp(1px,.1071em,2px) solid var(--speech-line);border-bottom:clamp(1px,.1071em,2px) solid var(--speech-line);transform:skewX(28deg);border-radius:0 0 .2143em 0}",
     ROOT_SEL + " [data-bubble][data-side='right']::after{right:auto;left:.7143em;transform:skewX(-28deg);border-right:0;border-left:clamp(1px,.1071em,2px) solid var(--speech-line)}",
     "@media (prefers-reduced-motion:reduce){" + ROOT_SEL + " [data-bubble]{transition:none}}",
@@ -5662,6 +5664,14 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
      * 由它驱动的轮询也就停了，设置页那一行便永远停在旧文本上（实测：要重开设置页才更新）。
      */
     const layer = useLayerState();
+    /**
+     * 这一份该不该让位给另一份实现。
+     *
+     * 根节点与气泡**必须共用同一个结论**：气泡是 `position:fixed` 的，根节点的
+     * `visibility:hidden` 盖不住它自己的 `visible`（CSS 里改成 `inherit` 也是为此）。
+     * 只藏根节点不藏气泡，让位的那一份会在页面上留下一个"鬼气泡"。
+     */
+    const yieldToOther = isDesktopShell ? layer.owner !== "desktop" : layer.owner !== "inline";
     useEffect(() => { ensureLayerPolling(); }, []);
     // 设置值在模块作用域的 store 里（DSH 设置页和这里的面板共用一份）。
     // 订阅它既为重渲染，也为下面那个「相位映射随设置重算」的 effect 提供依赖。
@@ -5722,7 +5732,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     // 一句话只采一次头部锚点，存成舞台比例；呼吸与摇头不会让对白追着几何抖。
     // 位置直接写 DOM，不把布局测量变成整只宠物的持续重渲染。
     useEffect(() => {
-      if (bubble === null) { speechLayoutRef.current = null; return undefined; }
+      if (bubble === null || yieldToOther) { speechLayoutRef.current = null; return undefined; }
       const place = () => {
         const root = rootRef.current;
         const el = root?.querySelector("[data-bubble]");
@@ -5772,7 +5782,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       if (el) observer.observe(el);
       window.addEventListener("resize", place);
       return () => { observer.disconnect(); window.removeEventListener("resize", place); };
-    }, [bubble, size, pos, ready, settingsRev]);
+    }, [bubble, size, pos, ready, settingsRev, yieldToOther]);
 
 
     // The controller owns the motion lifecycle; the panel highlights whatever
@@ -7997,14 +8007,14 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     return h("div", {
       [PET_ATTR]: "",
       ref: rootRef,
-      // **让位判据**：owner 不是我，就把自己藏起来。
+      // **让位判据**：owner 不是我，就把自己藏起来（判据见组件顶部的 `yieldToOther`）。
       //
       // 客户端半区在**两边**都跑（DSH 页面里一份、桌面端窗口里一份），所以"我是谁"要自己
       // 判断：桌面壳会建 `window.__petDesktop`（页面侧没有这个）。
       //   * 页面里：所有权在桌面端 → 让位（否则会看见两只）
       //   * 桌面端：所有权在页面内（用户选了"页面内"）→ 让位
       // 这两个方向必须都判，否则会出现"两只"或"一只都没有"。
-      style: rootStyle(size, pos, isDesktopShell ? layer.owner !== "desktop" : layer.owner !== "inline"),
+      style: rootStyle(size, pos, yieldToOther),
       // Observability: the committed action of the motion state machine
       // ('idle' while resting) and the current gaze target, so the pet's
       // behaviour is inspectable without reaching into engine internals.
@@ -8044,7 +8054,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         }),
       ),
       // 位置由头部几何与视口共同决定，台词仍走所有互动共用的 say。
-      bubble === null ? null : h("div", {
+      // 让位的那一份连气泡都不挂：fixed 气泡不跟着根节点一起藏（见 `yieldToOther`）。
+      (yieldToOther || bubble === null) ? null : h("div", {
         "data-bubble": "",
         style: {
           "--speech-scale": speechScale(size),
