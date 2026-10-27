@@ -8,7 +8,7 @@
  * this plugin. The proprietary Cubism Core runtime is NEVER bundled here: it
  * stays a user-supplied script (see README).
  */
-import { Application, Point, extensions } from 'pixi.js'
+import { Application, Assets, Point, extensions } from 'pixi.js'
 import {
   MotionPriority,
   configureCubismSDK,
@@ -19,6 +19,10 @@ import {
 const globalScope = globalThis as unknown as Record<string, unknown>
 globalScope.__dshLive2dPetVendor = {
   Application,
+  // 'Assets' 是 Pixi 的资源加载门面。客户端要靠它把贴图从「blob Worker 里取」切成
+  // 「主线程取」—— 有的外壳（如 DSH NEXT 的 dsh-app: 协议）只给主线程的请求补能力
+  // 令牌，Worker 发出的请求一律 403（issue #10）。
+  Assets,
   Point,
   extensions,
   MotionPriority,

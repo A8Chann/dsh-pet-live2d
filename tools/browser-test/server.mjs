@@ -76,9 +76,79 @@ const routes = buildRoutes(hub, displayLayer, displayHome)
 const byPath = new Map(routes.filter((r) => r.kind === 'exact').map((r) => [r.path, r]))
 const prefixes = routes.filter((r) => r.kind === 'prefix').sort((a, b) => b.path.length - a.path.length)
 
+// ---- 模拟 DSH NEXT 的 `dsh-app:` 协议门禁（issue #10）----
+//
+// 设了 `PET_GATE_TOKEN` 之后，**资产路径**（`/api/live2d-pet/asset/*`）的请求不带
+// `x-pet-gate` 一律 403、空 body —— 与真实门禁的行为对应（那一版只给"主窗口帧发出的
+// 请求"补令牌，而 Electron 不把自定义协议上的 Worker 请求交给 webRequest，于是 Worker
+// 里的 fetch 永远没有令牌）。
+//
+// 这里用"页面给主线程 fetch 补头"来复刻同一条差别：页面自己的请求带令牌、blob Worker
+// 里的请求带不上。**只拦资产路径**是刻意的：真实门禁补令牌是在网络层（`<script>`/`<img>`
+// 也能带上），而这里的垫片只能包 `fetch`；把范围收到贴图/模型这条路上，夹具才既像真机构、
+// 又不至于把加载 vendor 与 core 的 `<script>` 也拦掉。
+//
+// 门禁默认是**关**的，由 driver 经 `/__gate?on=1` 打开，于是同一个 server 既能跑
+// "能用 Worker"的对照，也能跑"Worker 被拦"的场景。
+const GATE = process.env.PET_GATE_TOKEN ?? ''
+const GATED_PREFIX = '/api/live2d-pet/asset/'
+let gateOn = false
+/** 资产请求的到达记录：带没带令牌，用来断言"这次到底走了哪条路"。 */
+const gateSeen = []
+
+const gateScript = () => '<script>(function () {'
+  + '  const TOKEN = ' + JSON.stringify(GATE) + ';'
+  + '  const gated = (target) => target.origin === location.origin && target.pathname.startsWith("/api/");'
+  + '  const realFetch = window.fetch;'
+  + '  window.fetch = function (input, init) {'
+  + '    try {'
+  + '      const href = typeof input === "string" ? input : ((input && input.url) || String(input));'
+  + '      if (gated(new URL(href, location.href))) {'
+  + '        const headers = new Headers((init && init.headers) || undefined);'
+  + '        headers.set("x-pet-gate", TOKEN);'
+  + '        init = Object.assign({}, init, { headers });'
+  + '      }'
+  + '    } catch (error) { /* 拼不出绝对地址就原样发 */ }'
+  + '    return realFetch.call(this, input, init);'
+  + '  };'
+  // 引擎自己还有一条 XHR 加载器（moc3 / 动作 / physics / model3.json 都走它）。
+  // 真机的令牌是网络层补的，fetch 与 XHR 一样有；这里只能自己给两条都补上。
+  + '  const realOpen = XMLHttpRequest.prototype.open;'
+  + '  XMLHttpRequest.prototype.open = function (method, url) {'
+  + '    this.__petGateUrl = url;'
+  + '    return realOpen.apply(this, arguments);'
+  + '  };'
+  + '  const realSend = XMLHttpRequest.prototype.send;'
+  + '  XMLHttpRequest.prototype.send = function () {'
+  + '    try {'
+  + '      if (gated(new URL(String(this.__petGateUrl), location.href))) this.setRequestHeader("x-pet-gate", TOKEN);'
+  + '    } catch (error) { /* 同上 */ }'
+  + '    return realSend.apply(this, arguments);'
+  + '  };'
+  + '})();</script>'
+
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x')
   const pathname = url.pathname
+
+  if (pathname === '/__gate') {
+    if (url.searchParams.has('on')) gateOn = url.searchParams.get('on') === '1'
+    if (url.searchParams.has('reset')) gateSeen.length = 0
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ configured: GATE !== '', on: gateOn, requests: gateSeen }))
+    return
+  }
+
+  if (GATE !== '' && gateOn && pathname.startsWith(GATED_PREFIX)) {
+    const carried = req.headers['x-pet-gate'] === GATE
+    gateSeen.push({ path: pathname, carried })
+    if (!carried) {
+      // 空 body —— 真实门禁就是 `new Response(null, { status: 403 })`。
+      res.writeHead(403)
+      res.end()
+      return
+    }
+  }
 
   // A/B/C renderer comparison: ?variant=X swaps which client bundle the page
   // loads, so one checkout can exercise several builds.
@@ -86,6 +156,7 @@ const server = createServer(async (req, res) => {
     const variant = url.searchParams.get('variant')
     let page = readFileSync(join(HERE, 'index.html'), 'utf8')
     if (variant) page = page.replace('/plugins/dsh-pet-live2d/client.js', '/variants/client-' + variant + '.js')
+    if (GATE !== '') page = page.replace('<script src="/react.js"></script>', gateScript() + '<script src="/react.js"></script>')
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
     res.end(page)
     return

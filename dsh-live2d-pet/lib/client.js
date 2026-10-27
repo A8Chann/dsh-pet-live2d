@@ -3198,6 +3198,94 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     vendor.configureCubismSDK({ memorySizeMB: 64 });
   }
 
+  // ---- 贴图从哪儿取：blob Worker，还是主线程（issue #10）----
+  //
+  // 症状（DSH NEXT 2.0.20-next 实测）：模型 JSON / moc3 / 动作都取得到，**只有贴图**
+  // 403，宠物显示「加载失败」：
+  //   [WorkerManager.loadImageBitmap] Failed to fetch
+  //   dsh-app://app/api/live2d-pet/asset/<pet>/textures/texture_01.png: 403 Forbidden
+  //
+  // 根因在读图的那条路上：那一版给 `dsh-app:` 协议加了「渲染器能力令牌」，令牌只由
+  // 主进程的 webRequest 给**主窗口帧发出的请求**补上；而 Electron 不把自定义协议上的
+  // Worker 请求交给 webRequest（DSH 自己的注释也这么写）。Pixi 8 的 `loadTextures`
+  // 默认就在 blob Worker 里 fetch（`WorkerManager.loadImageBitmap`），于是 Worker 里
+  // 的每个贴图请求都撞门禁。官方桌面端同样是 `dsh-app:` 却正常 —— 那边没有这道门。
+  //
+  // 所以判据不能只看协议名（同名协议两种行为），只能真发一个请求问一句：同一个地址
+  // Worker 取得到就继续用 Worker（保住 `createImageBitmap` 在 Worker 里解码的好处），
+  // 取不到就让 Pixi 走主线程 fetch（主线程的请求会被补上令牌）。
+  const TEXTURE_PROBE_TIMEOUT_MS = 1500;
+  /** 探测只做一次：`null` = 还没问；决定之后这个 promise 一直复用。 */
+  let textureTransport = null;
+  /** 诊断读口：'worker' / 'main-thread' / 'default'（vendor 太老、没有 Assets 时）。 */
+  let textureTransportName = "pending";
+
+  /** 在 blob Worker 里取一次 `url`：取得到返回 true，任何失败（含超时）都算取不到。 */
+  function workerCanFetch(url) {
+    return new Promise((resolve) => {
+      let worker = null;
+      let objectUrl = "";
+      let timer = 0;
+      let settled = false;
+      const finish = (ok) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (worker !== null) worker.terminate();
+        if (objectUrl !== "") URL.revokeObjectURL(objectUrl);
+        resolve(ok);
+      };
+      timer = setTimeout(() => finish(false), TEXTURE_PROBE_TIMEOUT_MS);
+      try {
+        const code = "self.onmessage = (event) => { fetch(event.data).then("
+          + "(response) => self.postMessage(response.ok ? \"ok\" : \"status:\" + response.status),"
+          + "(error) => self.postMessage(\"error:\" + ((error && error.message) || error))); };";
+        objectUrl = URL.createObjectURL(new Blob([code], { type: "text/javascript" }));
+        worker = new Worker(objectUrl);
+        worker.onmessage = (event) => finish(event.data === "ok");
+        worker.onerror = () => finish(false);
+        worker.postMessage(url);
+      } catch {
+        finish(false);
+      }
+    });
+  }
+
+  /**
+   * 尽早把探测发出去：它只依赖 `Worker` 与地址，不依赖 core / vendor / renderer。
+   * 与那些初始化并行跑，正常网络下几乎不占首屏时间；结果只在取贴图前才需要。
+   */
+  let textureProbe = null;
+  function startTextureProbe(probeUrl) {
+    if (textureProbe === null) textureProbe = workerCanFetch(probeUrl);
+    return textureProbe;
+  }
+
+  /**
+   * 决定贴图取法。**必须在 `Live2DModel.from` 之前跑完** —— Pixi 在模型加载里就会去取贴图。
+   *
+   * 探测的是模型自己的地址：门禁按路径前缀拦（`/api/*`），贴图与模型 JSON 同一条路，
+   * 而且这个请求紧接着就会被引擎再取一次（浏览器缓存命中），等于不额外花钱。
+   */
+  function prepareTextureTransport(vendor, probe) {
+    if (textureTransport !== null) return textureTransport;
+    textureTransport = (async () => {
+      const assets = vendor.Assets;
+      if (assets === undefined || typeof assets.setPreferences !== "function") {
+        // 老 vendor（没有 Assets 导出）：按默认走，绝不能因为这个把宠物卡住。
+        textureTransportName = "default";
+        return;
+      }
+      if (await probe) {
+        textureTransportName = "worker";
+        return;
+      }
+      assets.setPreferences({ preferWorkers: false });
+      textureTransportName = "main-thread";
+    })();
+    return textureTransport;
+  }
+
   // --------------------------------------------------------------- style
 
   const STYLE_ID = "dsh-live2d-pet-style";
@@ -5617,6 +5705,10 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         for (const name of names || []) next[name] = true;
         applyExpressionsRef.current(next);
       };
+      // 诊断读口：贴图最终走的是哪条路（'worker' / 'main-thread' / 'default'）。
+      // 驱动据此断言"Worker 取不到时会退到主线程"，而不是只看"宠物画出来了" ——
+      // 后者在 Worker 恰好能用时也成立，区分不出这次修复有没有接上线。
+      window.__dshLive2dPet.textureTransport = () => textureTransportName;
     }
     const [motionGroup, setMotionGroup] = useState("");
 
@@ -5922,6 +6014,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       layoutRef.current = layout;
 
       const boot = async () => {
+        // 贴图取法的探测与下面的 core/vendor/renderer 初始化并行跑（issue #10）。
+        const probe = startTextureProbe(absolutize(pet.modelUrl));
         if (!await ensureCore(absolutize(catalog.coreUrl))) {
           if (!disposed) setCoreMissing(true);
           return;
@@ -5932,6 +6026,9 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         if (disposed) return;
         if (vendor === undefined) throw new Error("vendor bundle unavailable");
         configureVendor(vendor);
+        // 贴图取法要先定下来：Pixi 在 `Live2DModel.from` 里就会去取贴图（issue #10）。
+        await prepareTextureTransport(vendor, probe);
+        if (disposed) return;
 
         const nextApp = new vendor.Application();
         const rect = stage.getBoundingClientRect();

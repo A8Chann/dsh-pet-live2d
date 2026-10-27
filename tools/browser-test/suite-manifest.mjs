@@ -31,6 +31,7 @@ export const SUITE = {
   'cdp-settings-render.mjs': '设置正文真的渲染得出来（挂在宠物组件之外的组件不许读到组件内的 ref）',
   'cdp-plugin-page.mjs': '官方「插件」页的配置区：按包名注册、渲染得出来、开关真的写进插件状态',
   'cdp-rendercount.mjs': '显示层状态没变就不许每秒重渲染（issue #3：打开右键面板后宠物与面板持续闪）',
+  'cdp-texroute.mjs': '贴图取法：Worker 被协议门禁拦住时退回主线程，宠物照样加载（issue #10）',
 }
 
 /**

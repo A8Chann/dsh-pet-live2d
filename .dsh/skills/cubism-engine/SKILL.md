@@ -395,3 +395,36 @@ JS 侧的 `hitsMask` 用**同一套**（当前尾巴盒子 or 静态快照，取
 `parameterIndex(core, id)` 最直观的写法是 `Array.from(raw.ids).indexOf(id)`，
 但那**每次都新建一个数组**。帧内按 id 查上百次（氛围录像一帧 84 次 + 姿势录制 + 表情层）
 就是白烧 CPU —— 加一层 `Map<id, index>` 缓存，换模型时清空。
+
+## 贴图从哪儿取：Worker 还是主线程（issue #10，2026-10）
+
+Pixi 8 的 `loadTextures` 默认 `preferWorkers: true`，即在一个 **blob Worker** 里
+`fetch` 贴图（`WorkerManager.loadImageBitmap`）。这条路径在 DSH NEXT 2.0.20-next 上会整片
+403：那一版给 `dsh-app:` 协议加了「渲染器能力令牌」，令牌只由主进程的
+`webRequest.onBeforeSendHeaders` 给**主窗口帧发出的请求**补上，而 **Electron 不把自定义
+协议上的 Worker 请求交给 `webRequest`**（DSH 自己的注释写明了这条）。于是模型 JSON / moc3 /
+动作都正常，唯独贴图全 403 —— 报错长得像"资产路由坏了"，其实是"谁发起的请求"不同。
+
+判断与修法：
+
+- **别按协议名判**：官方桌面端同样跑在 `dsh-app:`，那边没有这道门，Worker 取图是通的。
+  名字相同的协议有两种行为 ⇒ 只能**真发一个请求问一句**（blob Worker 里 `fetch` 模型地址：
+  `response.ok` 就继续用 Worker，否则 `Assets.setPreferences({ preferWorkers: false })`）。
+- `preferWorkers: false` 之后 Pixi 走主线程 `uM()`（`fetch` + `createImageBitmap`），
+  仍然保住 `createImageBitmap` 解码；别改成 `<img>` 兜底（`preferCreateImageBitmap: false`
+  会连 `preferWorkers` 一起关掉，见 `DI()`）。
+- `Assets` 得从 vendor 分包导出（`src/vendor-entry.ts`）—— 客户端拿不到 Pixi 的内部对象。
+  改了 vendor 入口就要**重新 `npm run build:vendor`**，产物一起提交（发行版直接跑它）。
+- 探测**尽早发、晚点等**：它只依赖 `Worker` 与地址，可以跟 core / vendor / renderer 初始化
+  并行；结果只在 `Live2DModel.from` 之前需要。
+
+**夹具（`tools/browser-test/cdp-texroute.mjs`）踩到的三条**：
+
+1. 只包 `window.fetch` 不够 —— 引擎自己还有一条 **XHR 加载器**（`[XHRLoader]`），
+   moc3 / 动作 / physics / model3.json 都走它。真机的令牌是网络层补的，fetch 与 XHR 一样有；
+   夹具里两条都要补。
+2. `<script>` 加载的 vendor / core 补不上头，所以门禁在夹具里**只拦资产路径**
+   （`/api/live2d-pet/asset/*`），否则连引擎都加载不下来，测的就不是贴图这条链路了。
+3. 换门禁开关重载页面时**必须 `Network.setCacheDisabled(true)`**：上一幕成功取过的贴图会命中
+   浏览器缓存，第二幕根本不发请求，断言读到的是"缓存里的旧字节"而不是"被拦住的请求"。
+
