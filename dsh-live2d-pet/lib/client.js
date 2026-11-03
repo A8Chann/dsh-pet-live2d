@@ -4057,10 +4057,19 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   /**
    * 宠物文案的显示语言：**模块加载时判定一次**。
    *
-   * 跟 DSH 的界面语言走：`document.documentElement.lang` 优先，取不到时看
-   * `navigator.language`。`zh*` 保持清单原文（随包 pet.json 就是中文），其它语言优先用
-   * 宠物自带的覆盖层（`<pet>/locale/<lang>.json`，宿主随 catalog 下发）；没有覆盖层就
-   * 退回清单原文。
+   * 来源是 `navigator.language` —— 浏览器 / WebView2 给的就是系统或浏览器语言，正是
+   * 我们要的。**不要用 `document.documentElement.lang`**：DSH 网页入口写死
+   * `<html lang="en">`，桌面端宠物页写死 `<html lang="zh">`；拿它当依据会让中文网页用户
+   * 看到英文、英文桌面用户永远看不到英文（PR #14 review 里实测过）。
+   *
+   * 判定：`zh*` 保持清单原文（随包 pet.json 就是中文）；其它语言优先用宠物自带的覆盖层
+   * （`<pet>/locale/<lang>.json`，宿主随 catalog 下发），没有覆盖层就退回清单原文；
+   * 读不到语言（空串）时**回落 zh** —— 清单原文就是宠物自己的语言。
+   *
+   * 测试钩子：页面可以在本模块求值前设置 `window.__petLocale`（"zh" / "en" / "en-US"…）
+   * 强制语言。回归驱动除了用这个钩子，还会用 Chromium 的 `--accept-lang` 真实改
+   * `navigator.language`（`Emulation.setLocaleOverride` 只改 `Intl` 的 locale，不改它），
+   * 确定性地走一遍"非中文 → 英文"。
    *
    * 这里只决定**拿哪一份显示文案**，不碰任何身份字段 —— 槽位 id、选项标签
    * （`option.label`）、`looksByPhase` / `pairs` / `requires` 的值、`data-*` 属性
@@ -4076,7 +4085,9 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         return "";
       }
     };
-    const raw = read(() => document.documentElement?.lang) || read(() => navigator.language);
+    const forced = read(() => window.__petLocale);
+    const raw = forced !== "" ? forced : read(() => navigator.language);
+    if (raw === "") return "zh";
     return /^zh/i.test(raw) ? "zh" : "en";
   })();
 
@@ -5670,6 +5681,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       // 台词的**有效值**（宠物默认 + 用户覆盖）—— "改文本"这类断言要能直接读到结果，
       // 而不是去 DOM 里抠 input.value（那是"界面显示了什么"，不是"她真的会说什么"）。
       api.effectiveLines = () => linesNow();
+      /** 诊断：宠物文案当前解析到的语言（"zh" / "en"）。 */
+      api.locale = () => PET_LOCALE;
       /** 某个互动的**有效**反应候选（同样是与宠物默认合并后的结果）。 */
       api.effectiveReactions = (key) => interactionReactions(key);
       /**
