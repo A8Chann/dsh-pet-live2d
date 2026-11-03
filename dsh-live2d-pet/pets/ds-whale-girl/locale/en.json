@@ -1,0 +1,279 @@
+{
+  "displayName": "DS Whale Girl",
+  "description": "氵六青's DS Whale Girl Live2D desktop pet: 8 motion groups plus 44 expressions and props; she reacts when you click her.",
+  "lines": {
+    "greet": [
+      "Hi there! I'm the whale girl~",
+      "Let's do our best again today!",
+      "Finally, I get to meet you.",
+      "Slacking-off time already?"
+    ],
+    "click": [
+      "Ah!",
+      "That tickles~",
+      "Hey, what are you doing?",
+      "Head pats?",
+      "Hehe."
+    ],
+    "pat": [
+      "Hehe, that feels nice~",
+      "One more pat?",
+      "Mm... you're messing up my hair."
+    ],
+    "tail": [
+      "Ah! You can't just touch my tail!",
+      "My tail... it tickles.",
+      "Stop pulling my tail!"
+    ],
+    "spin": [
+      "Uu... I'm dizzy...",
+      "No more spinning, no more!"
+    ],
+    "reset": [
+      "Back to normal~",
+      "All neat and tidy."
+    ],
+    "loadFailed": [
+      "Waa... the model failed to load."
+    ],
+    "phase": {
+      "thinking": "Let me think...",
+      "tool": "Busy working...",
+      "waiting": "I need your approval.",
+      "asking": "I'm waiting for your answer.",
+      "helper": "I called in some help.",
+      "queued": "Got it, noted.",
+      "done": "Done!",
+      "failed": "Uwa... something went wrong."
+    }
+  },
+  "slots": {
+    "glasses": {
+      "label": "Glasses",
+      "none": "None",
+      "options": {
+        "圆眼镜": "Round glasses",
+        "方眼镜": "Square glasses",
+        "椭圆眼镜": "Oval glasses",
+        "墨镜": "Sunglasses"
+      }
+    },
+    "sticker": {
+      "label": "Stickers",
+      "none": "None",
+      "options": {
+        "猫猫": "Cat",
+        "兔兔": "Bunny",
+        "蝴蝶结": "Bow"
+      }
+    },
+    "hair": {
+      "label": "Hair accessory",
+      "none": "Worn",
+      "options": {
+        "摘掉发箍": "Remove headband",
+        "单边马尾": "Side ponytail"
+      }
+    },
+    "cloth": {
+      "label": "Tablecloth",
+      "none": "White",
+      "options": {
+        "黑色": "Black"
+      }
+    },
+    "claw": {
+      "label": "Claws",
+      "none": "None",
+      "options": {
+        "粉魔爪": "Pink claws",
+        "白魔爪": "White claws"
+      }
+    },
+    "whale": {
+      "label": "Whale",
+      "none": "None",
+      "options": {
+        "头顶鲸": "Whale on head",
+        "放桌上": "Whale on desk"
+      }
+    },
+    "desk": {
+      "label": "Desk prop",
+      "none": "None",
+      "options": {
+        "巴菲": "Parfait"
+      }
+    },
+    "rhand": {
+      "label": "Right hand",
+      "none": "None",
+      "options": {
+        "掏出手机": "Take out phone",
+        "喵喵手": "Cat paws",
+        "双手比耶": "Double peace sign",
+        "挤番茄酱": "Squeeze ketchup",
+        "写本本": "Write in notebook"
+      }
+    },
+    "selfie": {
+      "label": "Selfie",
+      "none": "None",
+      "options": {
+        "自拍": "Selfie",
+        "快速自拍": "Quick selfie"
+      }
+    },
+    "lhand": {
+      "label": "Left hand",
+      "none": "None",
+      "options": {
+        "撤回": "Undo",
+        "画笔": "Brush",
+        "橡皮": "Eraser",
+        "蛋包饭": "Omurice"
+      }
+    },
+    "eyes": {
+      "label": "Eyes",
+      "none": "Default",
+      "options": {
+        "星星眼": "Star eyes",
+        "爱心眼": "Heart eyes",
+        "呆呆眼": "Blank eyes",
+        "晕晕": "Dizzy",
+        "阴暗": "Gloomy"
+      }
+    },
+    "mood": {
+      "label": "Mood",
+      "none": "Calm",
+      "options": {
+        "开心兴奋": "Excited",
+        "悲伤": "Sad",
+        "大哭": "Crying",
+        "生气": "Angry",
+        "调皮": "Playful",
+        "闭眼口水": "Sleepy drool",
+        "吐魂": "Soul out"
+      }
+    },
+    "mouth": {
+      "label": "Mouth",
+      "none": "Closed",
+      "options": {
+        "吐舌": "Tongue out",
+        "吹泡泡糖": "Bubble gum"
+      }
+    },
+    "symbol": {
+      "label": "Symbol",
+      "none": "None",
+      "options": {
+        "问号": "Question mark",
+        "感叹号": "Exclamation mark",
+        "流汗": "Sweat drop"
+      }
+    },
+    "flower": {
+      "label": "Ambience: flowers",
+      "none": "None",
+      "options": {
+        "情绪花花": "Mood flowers"
+      }
+    },
+    "heartbeat": {
+      "label": "Ambience: heartbeat",
+      "none": "None",
+      "options": {
+        "心跳": "Heartbeat"
+      }
+    },
+    "heart": {
+      "label": "Ambience: hearts",
+      "none": "None",
+      "options": {
+        "冒爱心": "Floating hearts"
+      }
+    },
+    "cheek": {
+      "label": "Blush",
+      "none": "Off",
+      "options": {
+        "脸红": "Blush"
+      }
+    },
+    "other": {
+      "label": "Other",
+      "none": "None",
+      "options": {
+        "手机换色": "Phone colour"
+      }
+    },
+    "menu": {
+      "label": "Menu",
+      "none": "None",
+      "options": {
+        "点菜按下": "Menu press"
+      }
+    }
+  },
+  "catalog": {
+    "motions": {
+      "Idle": "Idle",
+      "Hammer": "Hammer swing",
+      "BubbleGum": "Bubble gum",
+      "SprayWater": "Whale spout",
+      "OpenCase": "Take out phone",
+      "Selfie": "Selfie",
+      "SelfieQuick": "Quick selfie",
+      "Ketchup": "Squeeze ketchup"
+    },
+    "expressions": {
+      "脸红": "Blush",
+      "爱心眼": "Heart eyes",
+      "星星眼": "Star eyes",
+      "情绪花花": "Mood flowers",
+      "心跳": "Heartbeat",
+      "开心兴奋": "Excited",
+      "悲伤": "Sad",
+      "大哭": "Crying",
+      "生气": "Angry",
+      "晕晕": "Dizzy",
+      "流汗": "Sweat drop",
+      "问号": "Question mark",
+      "感叹号": "Exclamation mark",
+      "阴暗": "Gloomy",
+      "调皮": "Playful",
+      "闭眼口水": "Sleepy drool",
+      "吐魂": "Soul out",
+      "吐舌": "Tongue out",
+      "呆呆眼": "Blank eyes",
+      "冒爱心": "Floating hearts",
+      "圆眼镜": "Round glasses",
+      "方眼镜": "Square glasses",
+      "椭圆眼镜": "Oval glasses",
+      "墨镜": "Sunglasses",
+      "头箍": "Headband",
+      "单边马尾": "Side ponytail",
+      "蝴蝶结贴纸": "Bow sticker",
+      "猫猫贴纸": "Cat sticker",
+      "兔兔贴纸": "Bunny sticker",
+      "头顶鲸": "Whale on head",
+      "鲸鱼放桌上": "Whale on desk",
+      "桌面巴菲": "Desk parfait",
+      "蛋包饭": "Omurice",
+      "桌面粉魔爪": "Pink claws on desk",
+      "魔爪换色": "Claw recolour",
+      "双手比耶": "Double peace sign",
+      "喵喵手": "Cat paws",
+      "手机换色": "Phone colour",
+      "深色桌布": "Dark tablecloth",
+      "画笔": "Brush",
+      "橡皮": "Eraser",
+      "撤回": "Undo",
+      "点菜按下": "Menu press",
+      "挤番茄酱": "Squeeze ketchup"
+    }
+  }
+}

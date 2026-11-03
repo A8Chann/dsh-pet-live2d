@@ -3,6 +3,7 @@
 给 [dsh-pet-live2d](https://github.com/A8Chann/dsh-pet-live2d) 插件用的 Live2D 宠物包。
 
 - 渲染器：`live2d`（Cubism 5 模型）
+- 文案：中文（随包）；`locale/en.json` 提供英文显示名、描述、台词与标签，界面语言非中文时自动使用
 - 动作组：Idle / Hammer / BubbleGum / SprayWater / OpenCase / Selfie / SelfieQuick / Ketchup
 - 表情：44 个（情绪 20 / 配件 9 / 道具 15）
 - 许可：**CC BY-NC-SA 4.0**（署名 · **非商业** · 相同方式共享）—— 见本目录 `LICENSE`

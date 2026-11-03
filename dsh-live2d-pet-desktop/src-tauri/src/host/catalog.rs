@@ -16,7 +16,7 @@
 //     （不是"非 false"）。
 //   * 动作/表情的 `params` 是**清理用**的：一次性动作结束后要把它写过的参数还回去，
 //     漏了就出现"泡泡吹完嘴没还原"。
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Map, Value};
@@ -52,12 +52,18 @@ pub const BUNDLED_PET_HASHES: &[(&str, &[&str])] = &[(
         "88b86f32833882893e8ec10a9320bb4d9899a0211811d5a96544e4b97b804234",
         // 25c4d285（2.3.0 前）：台词 / 反应候选 / 摸鱼槽位
         "18840cd90fe70aa68632c45f77b4af1254595b5f963d261d2cbf34f6fbcaf579",
-        // 1.0.1（2.3.0 ~ 2.3.2 随包的那份）：内容与上面那条相同，只是换了插件版本号
-        "7c6cdb9c9f3d92636c388bffb3229c439cf01a65fe6a8a88499a8e4071f7884a",
-        // 1.1.0（会话提示音进入随包宠物之前）
+        // 35e5a395（3.0.0 前）：自拍举手三条坑 + 反应收回默认 + 重锤先清冲突
+        "310d56ee01913fadb2288d44b48c2c032d5e2da032d2206a0928b64ec6bd9268",
+        // 811f8212（v2.3.3 / v2.3.4 随包）：撤回自拍举手那轮改动
+        "767fb2f583365487058304cef09c36061dddaa252ea33342750c2764763f7fbe",
+        // 0622d8fd（v3.0.0 发版）：桌面端随包分发 + 八条用户报的修复
+        "184aa8cfa16ff32743f905550cb3eeda10fd82f2ae886e2a83250830224514c7",
+        // 0b66c311（1.1.0 后半）：会话提示音（可上传）
         "31eb2a210d3d99d2f2d53462b8a074ae22209579f7b8fcaa41dd5516e0a861b3",
         // 1.1.1（给晕晕/开心兴奋等"整体换眼"的选项补互斥声明之前）
         "ee6e54afd8f5d2983fdc07306da4ddf12638e1b37985aa03beceb70135aa9aa4",
+        // 1.1.2（英文语言覆盖层进入随包宠物之前）
+        "3d05a44e0650527dd06e67ca922c9fd0034cfed4b5cc470b6d42561332b42d11",
     ],
 )];
 
@@ -81,6 +87,42 @@ impl PetEntry {
 pub fn read_json(file: &Path) -> Option<Value> {
     let text = std::fs::read_to_string(file).ok()?;
     serde_json::from_str(&text).ok()
+}
+
+/// 宠物的语言覆盖层：`<pet>/locale/<lang>.json`（键 = 文件名）。
+///
+/// 只有**显示文案**：显示名、描述、台词，以及槽位 / 选项 / 动作 / 表情的标签。
+/// 身份字段（槽位 id、选项标签、`looksByPhase` 与关系的值、存档里的一切）不进覆盖层；
+/// 浏览器半区只换渲染出来的文字，所以设置与存档不受影响。
+///
+/// 与 JS 版逐条对齐：只收 `.json`、文件名只收 `[A-Za-z0-9_-]`、值必须是对象；
+/// 读不出来就当这只宠物没有该语言。按语言名排序（BTreeMap），让 catalog JSON 确定。
+fn read_locales(dir: &Path) -> Value {
+    let mut locales: BTreeMap<String, Value> = BTreeMap::new();
+    let Ok(entries) = std::fs::read_dir(dir.join("locale")) else {
+        return Value::Object(serde_json::Map::new());
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let Some(stem) = name.strip_suffix(".json") else {
+            continue;
+        };
+        if stem.is_empty()
+            || !stem
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            continue;
+        }
+        let Some(parsed) = read_json(&entry.path()) else {
+            continue;
+        };
+        if !parsed.is_object() {
+            continue;
+        }
+        locales.insert(stem.to_string(), parsed);
+    }
+    Value::Object(locales.into_iter().collect())
 }
 
 // ---------------------------------------------------------------------------
@@ -795,6 +837,8 @@ pub fn scan_pet(dir: &Path, id: &str) -> Option<PetEntry> {
     if let Some(map) = value.as_object_mut() {
         map.insert("motions".to_string(), Value::Array(motions));
         map.insert("expressions".to_string(), Value::Array(expressions));
+        // 语言覆盖层同样手工插键（理由同上：放进 json! 里会静默消失）。
+        map.insert("locales".to_string(), read_locales(dir));
     }
 
     Some(PetEntry {
@@ -1481,6 +1525,31 @@ mod tests {
             "尾巴/翅翼部件数"
         );
         assert!(entry.closure.len() >= 50, "引用闭包太小：{}", entry.closure.len());
+        // 语言覆盖层随 catalog 下发，且**只覆盖显示文案**：清单里的中文身份字段保持不变。
+        assert_eq!(
+            entry
+                .json
+                .pointer("/locales/en/displayName")
+                .and_then(Value::as_str),
+            Some("DS Whale Girl"),
+            "随包宠物要带英文覆盖层"
+        );
+        assert_eq!(
+            entry
+                .json
+                .pointer("/expressionSlots/0/options/0/label")
+                .and_then(Value::as_str),
+            Some("圆眼镜"),
+            "选项标签是身份字段，不能被覆盖层改写"
+        );
+        assert_eq!(
+            entry
+                .json
+                .pointer("/looksByPhase/done/whale")
+                .and_then(Value::as_str),
+            Some("头顶鲸"),
+            "looksByPhase 的值按字符串相等解析，不能被覆盖层改写"
+        );
         // 闭包里每个文件都真的在磁盘上（模型自己点名的都能取到）。
         for relative in &entry.closure {
             let file = entry.dir.join(relative.replace('/', std::path::MAIN_SEPARATOR_STR));
