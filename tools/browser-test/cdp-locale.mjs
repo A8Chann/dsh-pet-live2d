@@ -91,7 +91,19 @@ async function runCase(name, acceptLanguage, url) {
       + '   option: option ? option.textContent : null, identity: option ? option.getAttribute("data-slot-option") : null }); })()')
     const errors = await pageErrors(ev)
     const parsed = read === null || read === undefined ? null : JSON.parse(read)
-    return { booted, ready, localeNow, htmlLang, greet: JSON.parse(greet ?? 'null'), errors, ...(parsed ?? {}) }
+    // 面板里的**插件 UI 文案**（PR2）：页签 / 底部按钮 / 提示行。它也必须是英文，
+    // 而且与宠物文案走同一个语言来源 —— 否则会看到"英文宠物 + 中文面板"的拼盘。
+    const ui = await ev('JSON.stringify({'
+      + ' tabs: [...document.querySelectorAll("[data-panel] [data-tabs] button")].map((b) => b.textContent),'
+      + ' hint: (document.querySelector("[data-panel] [data-hintrow]") ?? {}).textContent ?? null,'
+      + ' footer: [...document.querySelectorAll("[data-panel] footer button")].map((b) => b.textContent)'
+      + ' })')
+    return {
+      booted, ready, localeNow, htmlLang, errors,
+      greet: JSON.parse(greet ?? 'null'),
+      ui: JSON.parse(ui ?? 'null'),
+      ...(parsed ?? {}),
+    }
   } finally {
     try { ws?.close() } catch { /* closed */ }
     killBrowser(edge)
@@ -107,6 +119,10 @@ check(en.option === 'Round glasses', '装扮选项按钮显示英文', String(en
 check(en.slot === 'Glasses', '槽位标题显示英文', String(en.slot))
 check(en.identity === '圆眼镜', 'data-slot-option 仍是清单原文（身份不变）', String(en.identity))
 check(Array.isArray(en.greet) && en.greet[0] === "Hi there! I'm the whale girl~", '台词使用英文覆盖层', JSON.stringify(en.greet))
+// 插件 UI（PR2）：面板页签 / 底部按钮 / 提示行也必须跟着同一个来源走。
+check(Array.isArray(en.ui?.tabs) && en.ui.tabs.some((text) => /^Motions/.test(text)), '面板页签是英文', JSON.stringify(en.ui?.tabs))
+check(en.ui?.footer?.includes('Reset') === true, '面板底部按钮是英文', JSON.stringify(en.ui?.footer))
+check(typeof en.ui?.hint === 'string' && en.ui.hint.includes('Right-click the pet'), '面板提示行是英文', String(en.ui?.hint))
 
 const zh = await runCase('zh', 'zh-CN', BASE + '/?hook=off&htmlLang=en')
 check(zh.localeNow === 'zh', 'navigator.language=zh-CN → 中文', String(zh.localeNow))
@@ -115,6 +131,8 @@ check(zh.option === '圆眼镜', '宿主的 lang=en 不影响中文判定', Stri
 check(zh.option === '圆眼镜', '中文界面里选项按钮仍是中文', String(zh.option))
 check(zh.slot === '眼镜', '中文界面里槽位标题仍是中文', String(zh.slot))
 check(Array.isArray(zh.greet) && String(zh.greet[0]).indexOf('你好') === 0, '中文台词', JSON.stringify(zh.greet))
+check(Array.isArray(zh.ui?.tabs) && zh.ui.tabs.some((text) => /^动作/.test(text)), '中文界面里面板页签仍是中文', JSON.stringify(zh.ui?.tabs))
+check(zh.ui?.footer?.includes('归位') === true, '中文界面里底部按钮仍是中文', JSON.stringify(zh.ui?.footer))
 
 // 钩子路径：页面在模块求值前写 window.__petLocale，必须优先于 navigator.language。
 const hooked = await runCase('hook', 'zh-CN', BASE + '/?lang=en&htmlLang=zh')

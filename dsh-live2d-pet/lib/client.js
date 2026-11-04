@@ -161,6 +161,255 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   const isDesktopShell = typeof window.__petDesktop === "object" && window.__petDesktop !== null;
 
   /**
+   * 界面文案的显示语言：**模块加载时判定一次**（与宠物文案共用同一个来源）。
+   *
+   * 来源是 `navigator.language` —— 浏览器 / WebView2 给的就是系统或浏览器语言。
+   * **不要用 `document.documentElement.lang`**：DSH 网页入口写死 `<html lang="en">`，
+   * 桌面端宠物页写死 `<html lang="zh">`，拿它当依据会让中文网页用户看到英文、
+   * 英文桌面用户永远看不到英文（PR #14 review 里实测过）。
+   *
+   * 测试钩子：页面可以在本模块求值前设 `window.__petLocale`（"zh" / "en" / "en-US"…）
+   * 强制语言；回归驱动除了用这个钩子，还会用 Chromium 的 `--accept-lang` 真改
+   * `navigator.language`。
+   */
+  const UI_LOCALE = (() => {
+    const read = (get) => {
+      try {
+        const value = get();
+        return typeof value === "string" ? value.trim() : "";
+      } catch {
+        return "";
+      }
+    };
+    const forced = read(() => window.__petLocale);
+    const raw = forced !== "" ? forced : read(() => navigator.language);
+    if (raw === "") return "zh";
+    return /^zh/i.test(raw) ? "zh" : "en";
+  })();
+
+  /**
+   * 界面文案的**中文 → 英文**对照表（PR2）。
+   *
+   * key 是 client.js 里的**中文原文**，逐字相同（含空格与全角标点）——所以它同时就是
+   * 默认文案：中文界面下 `t()` 原样返回，英文界面下查表。查不到就退回中文（宁可夹一句
+   * 中文，也不要显示一个空标签）。
+   *
+   * 几点约定：
+   *   * **身份字符串永远不进这张表**：槽位 id、选项标签、动作组、表情名、
+   *     `looksByPhase` / `pairs` / `requires` 的值、`data-*`、存档键 —— 它们按字符串
+   *     相等比较或被写进存档，翻译了就会静默失效（见 `slotOfLabel()` / `relationsOf()`）。
+   *   * 句子里带数字的走**片段**翻译：`"动作 " + n`、`"第 " + n + " 段"` —— 片段各自
+   *     查表，拼出来的英文语序不变。
+   */
+  const UI_EN = {
+    "(无部件)": "(no parts)",
+    "注视死区": "Gaze dead zone",
+    "注视满偏 px": "Gaze range px",
+    "收回倍数": "Release multiplier",
+    "嘴跟随意": "Mouth follow",
+    "嘴形强度": "Mouth strength",
+    "嘴缓动 ms": "Mouth easing ms",
+    "眨眼最短 ms": "Blink min ms",
+    "眨眼最长 ms": "Blink max ms",
+    "静置多久开始": "Idle before fidget",
+    "之后最长间隔": "Max gap afterwards",
+    "气泡左右偏移 px": "Bubble offset X px",
+    "气泡上下偏移 px": "Bubble offset Y px",
+    "一句话停留 ms": "Line hold ms",
+    "转几圈算晕": "Spins before dizzy",
+    "要在多少 ms 内": "Within ms",
+    "提示音音量": "Chime volume",
+    "手感": "Feel",
+    "指针 / 嘴 / 眨眼": "Pointer / mouth / blinking",
+    "摸鱼节奏": "Fidget rhythm",
+    "多久开始、间隔多长": "When it starts, how long between",
+    "互动": "Interaction",
+    "摸头 / 摸尾巴 / 转圈": "Head pats / tail pats / spinning",
+    "气泡": "Bubbles",
+    "显示什么 · 在哪": "What shows · where",
+    "显示什么 · 在哪 · 停留多久": "What shows · where · for how long",
+    "宠物尚未加载": "The pet isn't loaded yet",
+    "宠物还没加载好": "The pet isn't loaded yet",
+    "音频文件不能超过 1 MB": "Audio files must be 1 MB or smaller",
+    "音频文件损坏或格式不受支持": "The audio file is damaged or in an unsupported format",
+    "读取音频超时，请换一个文件": "Timed out reading the audio; try another file",
+    "读取音频文件失败": "Failed to read the audio file",
+    "仅支持 MP3、WAV、OGG 音频（最大 1 MB）": "Only MP3, WAV and OGG audio, up to 1 MB",
+    "保存音频失败（": "Failed to save audio (",
+    "保存音频失败": "Failed to save audio",
+    "恢复默认": "Reset to default",
+    "全部恢复默认": "Reset all to defaults",
+    "跨启动记住装扮": "Remember outfit across restarts",
+    "眼镜 / 发饰 / 魔爪 / 巴菲 / 桌布 / 手机换色 —— ": "Glasses / hair accessory / claws / parfait / tablecloth / phone colour — ",
+    "关掉会同时清掉已存的那套。": "Turning it off also clears the saved outfit.",
+    "已关闭，也不再记录。": "Off; no longer recorded.",
+    "已关：也不再记录": "Off: no longer recorded",
+    "已关：任何台词都不弹": "Off: no lines will pop up",
+    "还没有可用的 Live2D 宠物。": "No usable Live2D pets yet.",
+    "把宠物目录放到：": "Put a pet directory at:",
+    "缺少 Live2D Cubism Core 运行时": "The Live2D Cubism Core runtime is missing",
+    "请把官方 live2dcubismcore.min.js 放到：": "Put the official live2dcubismcore.min.js at:",
+    "加载失败": "Failed to load",
+    "加载模型…": "Loading model…",
+    "关闭（Esc）": "Close (Esc)",
+    "动作 ": "Motions ",
+    "装扮 ": "Outfit ",
+    "设置": "Settings",
+    "第 ": "Part ",
+    " 段": "",
+    "播放": "Play",
+    "在宠物身上点右键打开这里 · Esc 或点空白处关闭": "Right-click the pet to open this · Esc or click elsewhere to close",
+    "缩小": "Smaller",
+    "放大": "Larger",
+    "归位": "Reset",
+    "这只宠物没有配置任何会话相位": "This pet has no session phases configured",
+    "收起": "Collapse",
+    "展开": "Expand",
+    "恢复此相位的动作槽位默认值": "Restore this phase's default motion slots",
+    "恢复": "Restore",
+    "的动作槽位默认值": "'s default motion slots",
+    "重置动作": "Reset motions",
+    " 槽 · ": " slots · ",
+    " 候选": " candidates",
+    " 条候选": " candidates",
+    " · 已改": " · changed",
+    "台词 ": "Line: ",
+    "已改": "changed",
+    "默认": "default",
+    "音频 ": "Sound: ",
+    "已静音": "muted",
+    "已上传 ": "Uploaded ",
+    "已上传": "uploaded",
+    "未配置；可上传音频": "Not set; audio can be uploaded",
+    "未配置": "not set",
+    "宠物默认": "pet default",
+    " · 宠物默认": " · pet default",
+    " · 已静音": " · muted",
+    "气泡与提示音": "Bubble & chime",
+    "气泡台词": "Bubble line",
+    "提示音": "Chime",
+    "试听这个相位的有效来源（不受总开关与单相位静音影响，音量用当前提示音音量）": "Preview this phase's effective sound (ignores the master switch and per-phase mute; plays at the current chime volume)",
+    "试听": "Preview",
+    "上传中…": "Uploading…",
+    "上传音频": "Upload audio",
+    "替换音频": "Replace audio",
+    "MP3 / WAV / OGG，最多 1 MB": "MP3 / WAV / OGG, up to 1 MB",
+    "移除上传": "Remove upload",
+    "动作槽位": "Motion slots",
+    "按候选权重抽取": "Drawn by candidate weight",
+    "没有动作槽位，可在下方添加": "No motion slots; add one below",
+    "空着": "Empty",
+    "空表": "Empty",
+    "加槽位": "Add slot",
+    "给这个相位加一张槽位表": "Add a slot table to this phase",
+    "选了它就一起点亮": "Lights it up when selected",
+    "必须先处于这个状态才播得出来": "Only plays while this state is active",
+    "同时": "Together",
+    "前提": "Requires",
+    "删掉这条关系": "Delete this relation",
+    "删掉这一条": "Delete this row",
+    "（本槽位）": "(this slot)",
+    "＋ 关系": "+ Relation",
+    "把这个槽位从池子里拿掉": "Remove this slot from the pool",
+    "% 的概率": "% chance",
+    "空表：这个槽位在这个池子里不出手": "Empty: this slot never plays in this pool",
+    "还没有槽位 —— 在下面挑一个加进来": "No slots yet — pick one below",
+    "把这个槽位加进摸鱼池": "Add this slot to the fidget pool",
+    "开始的时候": "On greeting",
+    "点她身上（不是头和尾巴）": "Clicking her body (not head or tail)",
+    "摸摸头": "Head pat",
+    "摸尾巴": "Tail pat",
+    "被转晕": "Dizzy from spinning",
+    "点「归位」": "Pressing Reset",
+    "模型加载失败": "Model failed to load",
+    "思考中": "Thinking",
+    "用工具": "Running tools",
+    "等你批准": "Waiting for approval",
+    "等你回答": "Waiting for an answer",
+    "叫了帮手": "Helper called",
+    "消息排队": "Message queued",
+    "这一轮完成": "Turn complete",
+    "出错": "Error",
+    "（已改过）": "(customized)",
+    "（宠物默认）": "(pet default)",
+    "（内置默认）": "(built-in default)",
+    "（随机一个）": "(random pick)",
+    "这只宠物没有可选的动作/表情": "This pet has no motions or expressions to choose from",
+    "摸头有反应": "Reacts to head pats",
+    "摸尾巴有反应": "Reacts to tail pats",
+    "鼠标绕着转圈会晕": "Gets dizzy when the pointer circles her",
+    "摸头时演什么": "What plays on a head pat",
+    "摸尾巴时演什么": "What plays on a tail pat",
+    "转晕时演什么": "What plays when she is dizzy",
+    "多个变体用 | 分隔（随机挑一句）。留空 = 用宠物默认。": "Separate variants with | (one is picked at random). Leave empty to use the pet default.",
+    "自动": "Auto",
+    "桌面端在跑就用桌面，否则留在页面里": "Use the desktop window if it's running, otherwise stay in the page",
+    "页面内": "In page",
+    "永远在 DSH 页面里（随 DSH 启停）": "Always in the DSH page (starts and stops with DSH)",
+    "桌面": "Desktop",
+    "永远在桌面上；没跑就拉起一个": "Always on the desktop; launch one if it isn't running",
+    "正在切换…": "Switching…",
+    "切换失败：": "Switch failed: ",
+    "未知": "unknown",
+    "桌面端拉起来了，但它没在 6 秒内报活 —— 看看是不是被系统拦住了（未签名的 exe 会被 SmartScreen 拦）": "The desktop window started but did not report in within 6 seconds — check whether the system blocked it (unsigned executables are blocked by SmartScreen)",
+    "桌面端二进制不在": "Desktop binary not found",
+    "桌面端已在跑。": "The desktop window is already running.",
+    "已切回页面内。": "Switched back to the page.",
+    "正在下载桌面端（约 5MB）…": "Downloading the desktop window (~5 MB)…",
+    "下载已开始…": "Download started…",
+    "下载没能开始：": "Download didn't start: ",
+    "下载请求失败：": "Download request failed: ",
+    "正在下载…": "Downloading…",
+    "下载完成，已就绪": "Downloaded and ready",
+    "下载失败（": "Download failed (",
+    "本平台还没有桌面版构建": "No desktop build for this platform yet",
+    "桌面端：": "Desktop: ",
+    "运行中（已接管）": "running (in charge)",
+    "没在跑": "not running",
+    "下载中…": "Downloading…",
+    "下载桌面端（约 5MB）": "Download desktop window (~5 MB)",
+    "显示位置": "Display",
+    "页面内 / 桌面上": "In page / on desktop",
+    "会话提示音": "Session chimes",
+    "总开关 · 音量（拖滑杆会试听）": "Master switch · volume (drag to preview)",
+    "开启会话提示音": "Enable session chimes",
+    "默认静音": "Muted by default",
+    "会话相位": "Session phases",
+    "点开相位调整台词 · 音频 · 动作": "Open a phase to adjust its line, sound and motions",
+    "摸鱼": "Fidgeting",
+    "多久摸一次 · 摸鱼做什么": "How often · what she does",
+    "装扮": "Outfit",
+    "显示气泡": "Show bubbles",
+    "还没加载": "not loaded yet",
+    "现在在桌面上": "on the desktop now",
+    "现在在页面里": "in the page now",
+    "当前宠物：": "Current pet: ",
+    " · 显示位置：": " · Display: ",
+    "常用开关": "Common switches",
+    "点一下立刻生效": "Takes effect on click",
+    "注视范围 · 摸鱼节奏 · 音量": "Gaze range · fidget rhythm · volume",
+    "相位台词、池子编辑器、装扮与台词文案在「设置 → 桌宠」里改。": "Phase lines, pool editors, outfit and line text are edited in Settings → Desktop Pet.",
+    "桌宠": "Desktop Pet",
+  };
+
+  /** 取一条界面文案：中文界面原样返回，其它语言查表（查不到退回中文）。 */
+  const t = (zh) => (UI_LOCALE === "zh" ? zh : (UI_EN[zh] ?? zh));
+
+  /**
+   * 宿主（`lib/desktop.js` 的 `desktopHint`）返回的**动态**提示：宿主不知道界面语言，
+   * 所以按形状在这里翻。认不出来就原样返回 —— 宁可夹一句中文，也不要显示空。
+   */
+  const tHost = (text) => {
+    if (UI_LOCALE === "zh" || typeof text !== "string") return text;
+    const ready = /^桌面端已就绪（(.+)）$/.exec(text);
+    if (ready !== null) return "Desktop ready (" + ready[1] + ")";
+    if (text === "点「下载桌面端」拉一份（约 5MB）") return 'Click "Download desktop window" to fetch one (~5 MB)';
+    const unsupported = /^本平台（(.+)）还没有桌面版构建$/.exec(text);
+    if (unsupported !== null) return "No desktop build for this platform (" + unsupported[1] + ") yet";
+    return text;
+  };
+
+  /**
    * 桌面端：把"我按住她了"这件事交给壳，由壳**挪窗口**。
    *
    * 为什么桌面端不能像网页端那样"在窗口内挪位置"：窗口只有**一块屏**那么大，位置一旦
@@ -3071,7 +3320,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
             id,
             index,
             partId,
-            partName: partId === null ? "(无部件)" : (cdi3Names[partId] ?? partId),
+            partName: partId === null ? t("(无部件)") : (cdi3Names[partId] ?? partId),
             vertexCount,
             box: maxX > minX ? { minX: Math.round(minX), maxX: Math.round(maxX), minY: Math.round(minY), maxY: Math.round(maxY) } : null,
           };
@@ -3886,33 +4135,33 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
    * （比如死区 5）把宠物彻底冻住。
    */
   const TUNING_FIELDS = [
-    { key: "gazeDeadzone", label: "注视死区", min: 0, max: 0.6, step: 0.01 },
+    { key: "gazeDeadzone", label: t("注视死区"), min: 0, max: 0.6, step: 0.01 },
     // 「满偏半径」：离她多远算"看到最边上"。**调大 = 范围更大**（220 是"一个巴掌"）。
-    { key: "gazeRangePx", label: "注视满偏 px", min: 80, max: 900, step: 20 },
+    { key: "gazeRangePx", label: t("注视满偏 px"), min: 80, max: 900, step: 20 },
     // 「收回倍数」：满偏的多大倍数之外当她没在看（中间那段是缓动衰减，不是硬边界）。
-    { key: "gazeWatchingRatio", label: "收回倍数", min: 1.2, max: 6, step: 0.1 },
-    { key: "mouthFollow", label: "嘴跟随意", min: 0, max: 1, step: 0.05 },
-    { key: "mouthDrop", label: "嘴形强度", min: -1, max: 1, step: 0.05 },
-    { key: "mouthEaseMs", label: "嘴缓动 ms", min: 30, max: 800, step: 10 },
-    { key: "blinkMinMs", label: "眨眼最短 ms", min: 600, max: 20000, step: 100 },
-    { key: "blinkMaxMs", label: "眨眼最长 ms", min: 800, max: 40000, step: 100 },
+    { key: "gazeWatchingRatio", label: t("收回倍数"), min: 1.2, max: 6, step: 0.1 },
+    { key: "mouthFollow", label: t("嘴跟随意"), min: 0, max: 1, step: 0.05 },
+    { key: "mouthDrop", label: t("嘴形强度"), min: -1, max: 1, step: 0.05 },
+    { key: "mouthEaseMs", label: t("嘴缓动 ms"), min: 30, max: 800, step: 10 },
+    { key: "blinkMinMs", label: t("眨眼最短 ms"), min: 600, max: 20000, step: 100 },
+    { key: "blinkMaxMs", label: t("眨眼最长 ms"), min: 800, max: 40000, step: 100 },
     // 摸鱼那一组单独排，界面上分开展示（见 TUNING_GROUPS）。
-    { key: "fidgetQuietMs", label: "静置多久开始", min: 2000, max: 120000, step: 1000, group: "fidget" },
-    { key: "fidgetGapMs", label: "之后最长间隔", min: 4000, max: 300000, step: 1000, group: "fidget" },
+    { key: "fidgetQuietMs", label: t("静置多久开始"), min: 2000, max: 120000, step: 1000, group: "fidget" },
+    { key: "fidgetGapMs", label: t("之后最长间隔"), min: 4000, max: 300000, step: 1000, group: "fidget" },
     // 互动与气泡（见「互动」那张卡）。
-    { key: "bubbleOffsetX", label: "气泡左右偏移 px", min: -240, max: 240, step: 2, group: "bubble" },
-    { key: "bubbleOffsetY", label: "气泡上下偏移 px", min: -240, max: 240, step: 2, group: "bubble" },
-    { key: "bubbleHoldMs", label: "一句话停留 ms", min: 800, max: 15000, step: 200, group: "bubble" },
-    { key: "spinTurns", label: "转几圈算晕", min: 1, max: 6, step: 0.5, group: "interact" },
-    { key: "spinWindowMs", label: "要在多少 ms 内", min: 300, max: 6000, step: 100, group: "interact" },
-    { key: "soundVolume", label: "提示音音量", min: 0, max: 1, step: 0.05, group: "sound" },
+    { key: "bubbleOffsetX", label: t("气泡左右偏移 px"), min: -240, max: 240, step: 2, group: "bubble" },
+    { key: "bubbleOffsetY", label: t("气泡上下偏移 px"), min: -240, max: 240, step: 2, group: "bubble" },
+    { key: "bubbleHoldMs", label: t("一句话停留 ms"), min: 800, max: 15000, step: 200, group: "bubble" },
+    { key: "spinTurns", label: t("转几圈算晕"), min: 1, max: 6, step: 0.5, group: "interact" },
+    { key: "spinWindowMs", label: t("要在多少 ms 内"), min: 300, max: 6000, step: 100, group: "interact" },
+    { key: "soundVolume", label: t("提示音音量"), min: 0, max: 1, step: 0.05, group: "sound" },
   ];
   /** 可调项的分组（没写 group 的都归「手感」）。hint 显示在卡片右上角。 */
   const TUNING_GROUPS = [
-    { id: "feel", label: "手感", hint: "指针 / 嘴 / 眨眼" },
-    { id: "fidget", label: "摸鱼节奏", hint: "多久开始、间隔多长" },
-    { id: "interact", label: "互动", hint: "摸头 / 摸尾巴 / 转圈" },
-    { id: "bubble", label: "气泡", hint: "显示什么 · 在哪" },
+    { id: "feel", label: t("手感"), hint: t("指针 / 嘴 / 眨眼") },
+    { id: "fidget", label: t("摸鱼节奏"), hint: t("多久开始、间隔多长") },
+    { id: "interact", label: t("互动"), hint: t("摸头 / 摸尾巴 / 转圈") },
+    { id: "bubble", label: t("气泡"), hint: t("显示什么 · 在哪") },
   ];
   /** 这几组自己排进了「互动」「气泡」卡里，不要再单独出一张卡。 */
   const TUNING_GROUPS_INLINE = ["fidget", "interact", "bubble"];
@@ -4110,20 +4359,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
    * 全部保持清单原文，因为 `slotOfLabel()` / `relationsOf()` 以及用户存档都按字符串
    * 相等比较。
    */
-  const PET_LOCALE = (() => {
-    const read = (get) => {
-      try {
-        const value = get();
-        return typeof value === "string" ? value.trim() : "";
-      } catch {
-        return "";
-      }
-    };
-    const forced = read(() => window.__petLocale);
-    const raw = forced !== "" ? forced : read(() => navigator.language);
-    if (raw === "") return "zh";
-    return /^zh/i.test(raw) ? "zh" : "en";
-  })();
+  /** 宠物文案用同一个判定（见上方 `UI_LOCALE`）。 */
+  const PET_LOCALE = UI_LOCALE;
 
   /** 当前宠物在当前语言下的覆盖层；中文或没有覆盖层时返回 null（显示退回清单原文）。 */
   const petOverlay = () => {
@@ -4358,8 +4595,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   };
   const changeUploadedSound = async (phase, file) => {
     const id = MANIFEST.current?.id;
-    if (typeof id !== "string" || !PHASE_LINE_KEYS.includes(phase)) throw new Error("宠物尚未加载");
-    if (file && file.size > 1024 * 1024) throw new Error("音频文件不能超过 1 MB");
+    if (typeof id !== "string" || !PHASE_LINE_KEYS.includes(phase)) throw new Error(t("宠物尚未加载"));
+    if (file && file.size > 1024 * 1024) throw new Error(t("音频文件不能超过 1 MB"));
     if (file !== null) {
       const previewUrl = URL.createObjectURL(file);
       const preview = new window.Audio();
@@ -4368,8 +4605,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         await new Promise((resolve, reject) => {
           preview.preload = "metadata";
           preview.onloadedmetadata = () => resolve();
-          preview.onerror = () => reject(new Error("音频文件损坏或格式不受支持"));
-          timer = window.setTimeout(() => reject(new Error("读取音频超时，请换一个文件")), 5000);
+          preview.onerror = () => reject(new Error(t("音频文件损坏或格式不受支持")));
+          timer = window.setTimeout(() => reject(new Error(t("读取音频超时，请换一个文件"))), 5000);
           preview.src = previewUrl;
           preview.load();
         });
@@ -4383,7 +4620,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     const base64 = file === null ? null : await new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => resolve(String(reader.result).split(",")[1] ?? "");
-      reader.onerror = () => reject(new Error("读取音频文件失败"));
+      reader.onerror = () => reject(new Error(t("读取音频文件失败")));
       reader.readAsDataURL(file);
     });
     const response = await fetch(SOUND_URL + "/" + encodeURIComponent(id) + "/" + phase, {
@@ -4392,9 +4629,9 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     });
     if (!response.ok) {
       const result = await response.json().catch(() => ({}));
-      throw new Error(result.error === "invalid-audio" ? "仅支持 MP3、WAV、OGG 音频（最大 1 MB）"
-        : result.error === "body-too-large" ? "音频文件不能超过 1 MB"
-          : "保存音频失败（" + response.status + "）");
+      throw new Error(result.error === "invalid-audio" ? t("仅支持 MP3、WAV、OGG 音频（最大 1 MB）")
+        : result.error === "body-too-large" ? t("音频文件不能超过 1 MB")
+          : t("保存音频失败（") + response.status + "）");
     }
     await pullUploadedSounds();
   };
@@ -5072,7 +5309,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
             type: "button",
             "data-reset": "tuning",
             onClick: () => applyTuning(Object.assign({}, TUNING_DEFAULTS)),
-          }, keys === null ? "恢复默认" : "全部恢复默认"))
+          }, keys === null ? t("恢复默认") : t("全部恢复默认")))
         : null,
     );
   }
@@ -5103,11 +5340,11 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           "data-flag": "outfitArchive",
           onChange: (event) => applyFlag("outfitArchive", event.target.checked),
         }),
-        h("span", { "data-row-label": "" }, "跨启动记住装扮"),
+        h("span", { "data-row-label": "" }, t("跨启动记住装扮")),
       ),
       h("div", { "data-note": "" },
-        "眼镜 / 发饰 / 魔爪 / 巴菲 / 桌布 / 手机换色 —— ",
-        FLAGS.outfitArchive ? "关掉会同时清掉已存的那套。" : "已关闭，也不再记录。"),
+        t("眼镜 / 发饰 / 魔爪 / 巴菲 / 桌布 / 手机换色 —— "),
+        FLAGS.outfitArchive ? t("关掉会同时清掉已存的那套。") : t("已关闭，也不再记录。")),
     );
   }
   /** Quiet time before the first idle fidget, and the randomised gap after. */
@@ -8082,8 +8319,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     if (catalog !== null && catalog.pets.length === 0) {
       return h("div", { [PET_ATTR]: "", style: rootStyle(size, pos) },
         h("div", { "data-hint": "" },
-          h("div", null, "还没有可用的 Live2D 宠物。"),
-          h("div", { style: { marginTop: 6 } }, "把宠物目录放到："),
+          h("div", null, t("还没有可用的 Live2D 宠物。")),
+          h("div", { style: { marginTop: 6 } }, t("把宠物目录放到：")),
           h("code", null, "%DSH_HOME%\\pets\\<id>\\pet.json"),
         ),
       );
@@ -8092,17 +8329,17 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     let overlay = null;
     if (coreMissing) {
       overlay = h("div", { "data-hint": "" },
-        h("div", null, h("b", null, "缺少 Live2D Cubism Core 运行时")),
-        h("div", { style: { marginTop: 6 } }, "请把官方 live2dcubismcore.min.js 放到："),
+        h("div", null, h("b", null, t("缺少 Live2D Cubism Core 运行时"))),
+        h("div", { style: { marginTop: 6 } }, t("请把官方 live2dcubismcore.min.js 放到：")),
         h("code", null, "%DSH_HOME%\\pets\\.runtime\\live2dcubismcore.min.js"),
       );
     } else if (error !== null) {
       overlay = h("div", { "data-hint": "" },
-        h("div", null, h("b", null, "加载失败")),
+        h("div", null, h("b", null, t("加载失败"))),
         h("div", { style: { marginTop: 6, opacity: .8, fontSize: 11 } }, error),
       );
     } else if (!ready) {
-      overlay = h("div", { "data-hint": "", style: { opacity: .65 } }, "加载模型…");
+      overlay = h("div", { "data-hint": "", style: { opacity: .65 } }, t("加载模型…"));
     }
 
     /**
@@ -8165,16 +8402,16 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
             h("button", {
               type: "button",
               "data-close": "",
-              title: "关闭（Esc）",
+              title: t("关闭（Esc）"),
               onClick: () => setPanelOpen(false),
             }, "×"),
           ),
           h("div", { "data-tabs": "" },
-            h("button", { type: "button", ...(tab === "motions" ? { "data-on": "" } : {}), onClick: () => setTab("motions") }, "动作 " + pet.motions.length),
+            h("button", { type: "button", ...(tab === "motions" ? { "data-on": "" } : {}), onClick: () => setTab("motions") }, t("动作 ") + pet.motions.length),
             // 表情 and 装扮 are one menu now: all 44 expressions are slots
             // (glasses, stickers, hair, cloth, claws, desk, hands, then eyes,
             // mood, mouth, symbols, ambience, blush, desk actions).
-            h("button", { type: "button", ...(tab === "slots" ? { "data-on": "" } : {}), onClick: () => setTab("slots") }, "装扮 " + (pet.expressionSlots ?? []).length),
+            h("button", { type: "button", ...(tab === "slots" ? { "data-on": "" } : {}), onClick: () => setTab("slots") }, t("装扮 ") + (pet.expressionSlots ?? []).length),
             // 这里原来还有第三个「设置」页签。它从一开始就是**过渡**：设置正文真正的家是
             // DSH 自己的设置页（那一节由 host 注册，和这里共用同一份 store），右键面板
             // 里再放一份，只是"改池子不用翻设置"。用户要求去掉 —— 面板现在只负责
@@ -8187,7 +8424,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
               "data-tab-settings": "",
               ...(tab === "settings" ? { "data-on": "" } : {}),
               onClick: () => setTab("settings"),
-            }, "设置") : null,
+            }, t("设置")) : null,
           ),
           h("div", { "data-body": "" }, tab === "slots"            // Dress-up slots: one choice each, and choices in different slots
             // coexist (glasses AND cat ears AND a dark tablecloth).
@@ -8236,7 +8473,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
                     ...(motionGroup === entry.group ? { "data-on": "" } : {}),
                     "data-motion-group": entry.group,
                     onClick: () => playMotion(entry.group, index),
-                  }, entry.count > 1 ? "第 " + (index + 1) + " 段" : "播放")),
+                  }, entry.count > 1 ? t("第 ") + (index + 1) + t(" 段") : t("播放"))),
                 ),
               ))
             : tab === "settings"
@@ -8246,18 +8483,18 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
             ? h("div", { "data-settings": "", "data-panel-settings": "" }, h(PetSettingsBody, { compact: true }))
             : null,
           ),
-          h("div", { "data-hintrow": "" }, "在宠物身上点右键打开这里 · Esc 或点空白处关闭"),
+          h("div", { "data-hintrow": "" }, t("在宠物身上点右键打开这里 · Esc 或点空白处关闭")),
           h("footer", null,
-            h("button", { type: "button", title: "缩小", onClick: () => setSize((current) => Math.max(MIN_SIZE, current - 40)) }, "－"),
+            h("button", { type: "button", title: t("缩小"), onClick: () => setSize((current) => Math.max(MIN_SIZE, current - 40)) }, "－"),
             h("input", {
               type: "range", min: MIN_SIZE, max: MAX_SIZE, step: 20, value: size,
               title: size + "px",
               style: { "--fill": fillOf(size, MIN_SIZE, MAX_SIZE) + "%" },
               onChange: (event) => setSize(Number(event.target.value)),
             }),
-            h("button", { type: "button", title: "放大", onClick: () => setSize((current) => Math.min(MAX_SIZE, current + 40)) }, "＋"),
+            h("button", { type: "button", title: t("放大"), onClick: () => setSize((current) => Math.min(MAX_SIZE, current + 40)) }, "＋"),
             h("span", { "data-sizelabel": "" }, size + "px"),
-            h("button", { type: "button", onClick: resetAll }, "归位"),
+            h("button", { type: "button", onClick: resetAll }, t("归位")),
           ),
         )
       : null;
@@ -8398,14 +8635,14 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         if (file !== null && PHASE_OVERRIDES.sounds[phase]?.length === 0) setPhaseSoundMuted(phase, false);
       } catch (error) {
         setUploadErrors((previous) => Object.assign({}, previous, {
-          [phase]: error instanceof Error ? error.message : "保存音频失败",
+          [phase]: error instanceof Error ? error.message : t("保存音频失败"),
         }));
       } finally {
         setUploading((previous) => Object.assign({}, previous, { [phase]: false }));
       }
     };
     const pet = MANIFEST.current;
-    if (pet === null) return h("div", { "data-empty": "phases" }, "宠物还没加载好");
+    if (pet === null) return h("div", { "data-empty": "phases" }, t("宠物还没加载好"));
     const slots = pet.expressionSlots ?? [];
     const known = Array.from(new Set([
       ...PHASE_LINE_KEYS,
@@ -8426,7 +8663,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     // 以后默认值改进了也照样能吃到。
     return h("div", { "data-settings": "", "data-setting": "phases" },
       known.length === 0
-        ? h("div", { "data-empty": "phases" }, "这只宠物没有配置任何会话相位")
+        ? h("div", { "data-empty": "phases" }, t("这只宠物没有配置任何会话相位"))
         : null,
       known.map((phase) => {
         const custom = PHASE_OVERRIDES.phases[phase] !== undefined;
@@ -8445,7 +8682,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
                 type: "button",
                 "data-phase-toggle": phase,
                 "aria-expanded": open,
-                title: open ? "收起" : "展开",
+                title: open ? t("收起") : t("展开"),
                 onClick: () => compact
                   ? setFolded((prev) => Object.assign({}, prev, { [phase]: !(prev[phase] === true) }))
                   : setSelected((prev) => prev === phase ? null : phase),
@@ -8457,29 +8694,29 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
               custom ? h("button", {
                 type: "button",
                 "data-phase-remove": phase,
-                title: "恢复此相位的动作槽位默认值",
-                "aria-label": "恢复" + phase + "的动作槽位默认值",
+                title: t("恢复此相位的动作槽位默认值"),
+                "aria-label": t("恢复") + phase + t("的动作槽位默认值"),
                 onClick: () => removePhaseRow(phase),
-              }, "重置动作") : null,
+              }, t("重置动作")) : null,
             ),
             h("div", { "data-phase-meta": "" },
               h("span", { "data-phase-chip": "motion", ...(custom ? { "data-custom": "" } : {}) },
-                "动作 " + used.length + " 槽 · " + candidates + " 候选" + (custom ? " · 已改" : "")),
+                t("动作 ") + used.length + t(" 槽 · ") + candidates + t(" 候选") + (custom ? t(" · 已改") : "")),
               h("span", { "data-phase-chip": "line",
                 ...(PHASE_OVERRIDES.lines.phase?.[phase] !== undefined ? { "data-custom": "" } : {}) },
-                "台词 " + (PHASE_OVERRIDES.lines.phase?.[phase] !== undefined ? "已改" : "默认")),
+                t("台词 ") + (PHASE_OVERRIDES.lines.phase?.[phase] !== undefined ? t("已改") : t("默认"))),
               h("span", { "data-phase-chip": "sound",
                 ...(PHASE_OVERRIDES.sounds[phase] !== undefined || soundFile !== undefined ? { "data-custom": "" } : {}) },
-                "音频 " + (PHASE_OVERRIDES.sounds[phase] !== undefined ? "已静音"
-                  : soundFile !== undefined ? "已上传" : petSoundNotesFor(phase).length === 0 ? "未配置" : "宠物默认")),
+                t("音频 ") + (PHASE_OVERRIDES.sounds[phase] !== undefined ? t("已静音")
+                  : soundFile !== undefined ? t("已上传") : petSoundNotesFor(phase).length === 0 ? t("未配置") : t("宠物默认"))),
             ),
           ),
           open ? [
             h("div", { key: "details", "data-phase-details": "" },
-              h("div", { "data-phase-section-title": "" }, "气泡与提示音"),
+              h("div", { "data-phase-section-title": "" }, t("气泡与提示音")),
               h("div", { "data-phase-line": phase },
                 h("label", { "data-line-row": "phase:" + phase },
-                  h("span", { "data-row-label": "" }, "气泡台词"),
+                  h("span", { "data-row-label": "" }, t("气泡台词")),
                   h("input", {
                     type: "text",
                     "data-line-input": "phase:" + phase,
@@ -8497,16 +8734,16 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
                       saveOverrides();
                       notifySettings();
                     },
-                  }, "恢复默认") : null,
+                  }, t("恢复默认")) : null,
               ),
               h("label", { "data-phase-sound": phase },
-                h("span", { "data-row-label": "" }, "提示音"),
+                h("span", { "data-row-label": "" }, t("提示音")),
                 petSoundNotesFor(phase).length === 0 && soundFile === undefined
-                  ? h("span", { "data-note-inline": "" }, "未配置；可上传音频")
+                  ? h("span", { "data-note-inline": "" }, t("未配置；可上传音频"))
                   : h("span", { "data-phase-sound-control": "" },
                     h("input", {
                       type: "checkbox",
-                      "aria-label": (PHASE_LINE_FIELDS.find((field) => field.key === phase)?.label ?? phase) + "提示音",
+                      "aria-label": (PHASE_LINE_FIELDS.find((field) => field.key === phase)?.label ?? phase) + t("提示音"),
                       checked: PHASE_OVERRIDES.sounds[phase] === undefined
                         ? soundFile !== undefined || soundNotesFor(phase).length > 0
                         : soundNotesFor(phase).length > 0,
@@ -8515,11 +8752,11 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
                     h("span", { "data-note-inline": "" },
                       soundFile === undefined
                         ? petSoundNotesFor(phase).map((note) => note[0] + "Hz").join(" → ")
-                          + (PHASE_OVERRIDES.sounds[phase] === undefined ? " · 宠物默认" : " · 已静音")
-                        : "已上传 " + (soundFile.mime === "audio/mpeg" ? "MP3"
+                          + (PHASE_OVERRIDES.sounds[phase] === undefined ? t(" · 宠物默认") : t(" · 已静音"))
+                        : t("已上传 ") + (soundFile.mime === "audio/mpeg" ? "MP3"
                           : soundFile.mime.replace("audio/", "").toUpperCase())
                           + " · " + (soundFile.bytes < 1024 ? "<1" : Math.round(soundFile.bytes / 1024)) + " KB"
-                          + (PHASE_OVERRIDES.sounds[phase] === undefined ? "" : " · 已静音")))),
+                          + (PHASE_OVERRIDES.sounds[phase] === undefined ? "" : t(" · 已静音"))))),
               h("div", { "data-phase-upload": phase },
                 // 「试听」放在上传这一行：它既不为某个来源独占，也不该塞进上面那个
                 // `<label>`（label 里放 button，点试听会连带把静音勾选框点掉）。
@@ -8527,9 +8764,9 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
                   type: "button",
                   "data-phase-preview": phase,
                   disabled: !canPreviewPhaseSound(phase),
-                  title: "试听这个相位的有效来源（不受总开关与单相位静音影响，音量用当前提示音音量）",
+                  title: t("试听这个相位的有效来源（不受总开关与单相位静音影响，音量用当前提示音音量）"),
                   onClick: () => { previewPhaseSound(phase); },
-                }, "试听"),
+                }, t("试听")),
                 h("label", { "data-upload-picker": phase, "data-busy": uploading[phase] === true ? "" : undefined },
                   h("input", {
                     type: "file", accept: ".mp3,.wav,.ogg,audio/mpeg,audio/wav,audio/ogg",
@@ -8540,20 +8777,20 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
                       if (file) void updateUploaded(phase, file);
                     },
                   }),
-                  uploading[phase] ? "上传中…" : soundFile === undefined ? "上传音频" : "替换音频"),
-                h("span", { "data-upload-hint": "" }, "MP3 / WAV / OGG，最多 1 MB"),
+                  uploading[phase] ? t("上传中…") : soundFile === undefined ? t("上传音频") : t("替换音频")),
+                h("span", { "data-upload-hint": "" }, t("MP3 / WAV / OGG，最多 1 MB")),
                 soundFile === undefined ? null : h("button", {
                   type: "button", "data-upload-reset": phase, disabled: uploading[phase] === true,
                   onClick: () => { void updateUploaded(phase, null); },
-                }, "移除上传"),
+                }, t("移除上传")),
                 uploadErrors[phase] ? h("span", { role: "alert", "data-upload-error": phase }, uploadErrors[phase]) : null,
               ),
             ),
             h("div", { key: "motion-head", "data-phase-motion-head": "" },
-              h("span", null, "动作槽位"),
-              h("span", { "data-phase-motion-hint": "" }, "按候选权重抽取")),
+              h("span", null, t("动作槽位")),
+              h("span", { "data-phase-motion-hint": "" }, t("按候选权重抽取"))),
             used.length === 0
-              ? h("div", { "data-pool-empty": "", key: "empty" }, "没有动作槽位，可在下方添加")
+              ? h("div", { "data-pool-empty": "", key: "empty" }, t("没有动作槽位，可在下方添加"))
               : null,
             ...used.map((slotId) => {
               // 槽位 id 来自池子的键：清单里没有它（换了宠物）就退化成一个空槽位，
@@ -8564,7 +8801,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
                 key: slotId,
                 slot,
                 entries: pools[slotId],
-                noneLabel: "空着",
+                noneLabel: t("空着"),
                 allowAll: true,
                 owner: "phase:" + phase,
                 idPrefix: phase + ":",
@@ -8580,14 +8817,14 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
             // 「加槽位」和池内的「加候选」必须长得不一样：点错的后果不同 ——
             // 池内那个是往这张表加一条，这个是**新建一张表**。所以前面带一行小字。
             free.length === 0 ? null : h("div", { key: "addslot", "data-add-row": "", "data-slot-row": "" },
-              h("span", { "data-add-title": "" }, "加槽位"),
+              h("span", { "data-add-title": "" }, t("加槽位")),
               free.map((slot) => h("button", {
                 key: slot.id,
                 type: "button",
                 "data-phase-slot-add": phase,
                 "data-add-option": slot.id,
                 "data-slot-chip": "",
-                title: "给这个相位加一张槽位表",
+                title: t("给这个相位加一张槽位表"),
                 onClick: () => {
                   // 新加的槽位先给一张**空表**：空表 = 这个槽位在这个相位下不出手。
                   // 想让它清空，就加一条「空着」。
@@ -8630,9 +8867,9 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       // 同一个选项会同时出现在摸鱼表和相位池里（关系是选项的属性），所以行上
       // 再标一下"这是在哪张表里显示的"，测试才能分别寻址。
       "data-relation-in": owner,
-      title: kind === "pair" ? "选了它就一起点亮" : "必须先处于这个状态才播得出来",
+      title: kind === "pair" ? t("选了它就一起点亮") : t("必须先处于这个状态才播得出来"),
     },
-    h("b", null, kind === "pair" ? "同时" : "前提"),
+    h("b", null, kind === "pair" ? t("同时") : t("前提")),
     // 两种关系都写全「槽位 = 选项」：只写选项名的话（"同时：猫猫"）看不出猫猫是
     // 贴在哪个槽位上的，而关系恰恰是跨槽位的东西。
     targetSlot === null || targetSlot === undefined
@@ -8641,7 +8878,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     h("button", {
       type: "button",
       "data-relation-remove": "",
-      title: "删掉这条关系",
+      title: t("删掉这条关系"),
       onClick: () => removeRelation(key, kind === "pair" ? "pairs" : "requires", { slot: targetSlot ?? null, label }),
     }, "×"),
     );
@@ -8688,7 +8925,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         key: item.slot + ":" + item.label,
         value: kind + "|" + item.slot + "|" + item.label,
         // 本槽位的前提在显示上加一句说明，免得跟"同槽位互斥"混淆。
-      }, (item.slot === slot.id ? "（本槽位）" : item.slotLabel) + " = " + item.displayLabel));
+      }, (item.slot === slot.id ? t("（本槽位）") : item.slotLabel) + " = " + item.displayLabel));
     const pairOptions = options("pair");
     const requireOptions = options("require");
     if (pairOptions.length === 0 && requireOptions.length === 0) return null;
@@ -8708,9 +8945,9 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         });
       },
     },
-    h("option", { value: "" }, "＋ 关系"),
-    pairOptions.length === 0 ? null : h("optgroup", { label: "同时" }, pairOptions),
-    requireOptions.length === 0 ? null : h("optgroup", { label: "前提" }, requireOptions),
+    h("option", { value: "" }, t("＋ 关系")),
+    pairOptions.length === 0 ? null : h("optgroup", { label: t("同时") }, pairOptions),
+    requireOptions.length === 0 ? null : h("optgroup", { label: t("前提") }, requireOptions),
     );
   }
 
@@ -8765,13 +9002,13 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       h("div", { "data-pool-head": "" },
         h("span", { "data-pool-title": "" }, displaySlotLabel(slot.id)),
         h("span", { "data-pool-meta": "" },
-          entries.length === 0 ? "空表" : entries.length + " 条候选"),
+          entries.length === 0 ? t("空表") : entries.length + t(" 条候选")),
         // 用户自己加进来的槽位可以整个拿掉（默认集合不给删：它们是宠物自己的身子，
         // 删了这张表就再也回不来了）。
         typeof props.removeSlot === "function" ? h("button", {
           type: "button",
           "data-pool-remove-slot": slot.id,
-          title: "把这个槽位从池子里拿掉",
+          title: t("把这个槽位从池子里拿掉"),
           onClick: props.removeSlot,
         }, "×") : null,
       ),
@@ -8792,7 +9029,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         h("span", { "data-row-label": "", title: labelOf(entry) }, labelOf(entry)),
         // 条是主角（抽中概率），占比数字紧随；权重原始值在右边那一列，只是个旋钮。
         h("span", { "data-weight-cell": "" },
-          h("span", { "data-weight-bar": "", title: share + "% 的概率" },
+          h("span", { "data-weight-bar": "", title: share + t("% 的概率") },
             h("i", { "data-weight-fill": "", style: { width: share + "%" } })),
           h("span", { "data-share": "" }, share + "%"),
         ),
@@ -8805,7 +9042,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           type: "button",
           "data-pool-remove": "",
           [removeAttr]: keyOf(entry),
-          title: "删掉这一条",
+          title: t("删掉这一条"),
           onClick: () => setEntries(entries.filter((_, at) => at !== index)),
         }, "×"),
         // 「＋ 关系」是这一行的第 5 列（不是另起一行）：多数条目没有任何关系，
@@ -8821,7 +9058,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         );
       }),
       entries.length === 0
-        ? h("div", { "data-pool-empty": "" }, "空表：这个槽位在这个池子里不出手")
+        ? h("div", { "data-pool-empty": "" }, t("空表：这个槽位在这个池子里不出手"))
         : null,
       // 候选直接摆出来（虚线的「＋ 名字」），点一下就加 —— 比一个写着"添加"的下拉框
       // 更像"往池子里放东西"，也省掉了"打开下拉才发现有什么"的一步。
@@ -8841,7 +9078,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   function FidgetControls() {
     useSettings();
     const pet = MANIFEST.current;
-    if (pet === null) return h("div", { "data-empty": "fidget" }, "宠物还没加载好");
+    if (pet === null) return h("div", { "data-empty": "fidget" }, t("宠物还没加载好"));
     const used = fidgetSlotsFor(pet);
     const occupied = new Set(used.map((slot) => slot.id));
     const free = (pet.expressionSlots ?? [])
@@ -8850,7 +9087,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     // 已经占了这个名字，同名会让按 data-setting 选择的测试/探针命中两处。
     return h("div", { "data-settings": "", "data-setting": "fidget-pools" },
       used.length === 0
-        ? h("div", { "data-empty": "fidget" }, "还没有槽位 —— 在下面挑一个加进来")
+        ? h("div", { "data-empty": "fidget" }, t("还没有槽位 —— 在下面挑一个加进来"))
         : null,
       used.map((slot) => h(PoolTable, {
         key: slot.id,
@@ -8859,7 +9096,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         // 「默认」＝这个槽位这次不动（用户定的叫法）。它就是池子里的一条普通条目：
         // 可以删（删了就是"这个槽位每次摸鱼都得出点东西"），所以**不置顶、不置灰**，
         // 也不给它任何特殊待遇。
-        noneLabel: "默认",
+        noneLabel: t("默认"),
         // 候选**全都**能加：`fidget:false` 只决定"默认池子里有没有它"，不决定
         // "能不能配"。原先这里传 false，于是 吐舌 / 星星眼 这些在界面上根本点不到。
         allowAll: true,
@@ -8877,14 +9114,14 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       // 池内那个是往这张表加一条，这个是**新建一张表**。所以前面带一行小字。
       // 药丸基色走 `data-add-option`（漏了它就是裸按钮），`data-slot-chip` 再加区分。
       free.length === 0 ? null : h("div", { "data-add-row": "", "data-slot-row": "" },
-        h("span", { "data-add-title": "" }, "加槽位"),
+        h("span", { "data-add-title": "" }, t("加槽位")),
         free.map((slot) => h("button", {
           key: slot.id,
           type: "button",
           "data-fidget-slot-add": slot.id,
           "data-add-option": slot.id,
           "data-slot-chip": "",
-          title: "把这个槽位加进摸鱼池",
+          title: t("把这个槽位加进摸鱼池"),
           onClick: () => addFidgetSlot(slot.id),
         }, "＋ " + displaySlotLabel(slot.id)))),
     );
@@ -8902,23 +9139,23 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
    */
   /** 设置页里每条台词的标题（顺序 = 显示顺序）。 */
   const LINE_FIELDS = [
-    { key: "greet", label: "开始的时候" },
-    { key: "click", label: "点她身上（不是头和尾巴）" },
-    { key: "pat", label: "摸摸头" },
-    { key: "tail", label: "摸尾巴" },
-    { key: "spin", label: "被转晕" },
-    { key: "reset", label: "点「归位」" },
-    { key: "loadFailed", label: "模型加载失败" },
+    { key: "greet", label: t("开始的时候") },
+    { key: "click", label: t("点她身上（不是头和尾巴）") },
+    { key: "pat", label: t("摸摸头") },
+    { key: "tail", label: t("摸尾巴") },
+    { key: "spin", label: t("被转晕") },
+    { key: "reset", label: t("点「归位」") },
+    { key: "loadFailed", label: t("模型加载失败") },
   ];
   const PHASE_LINE_FIELDS = [
-    { key: "thinking", label: "思考中" },
-    { key: "tool", label: "用工具" },
-    { key: "waiting", label: "等你批准" },
-    { key: "asking", label: "等你回答" },
-    { key: "helper", label: "叫了帮手" },
-    { key: "queued", label: "消息排队" },
-    { key: "done", label: "这一轮完成" },
-    { key: "failed", label: "出错" },
+    { key: "thinking", label: t("思考中") },
+    { key: "tool", label: t("用工具") },
+    { key: "waiting", label: t("等你批准") },
+    { key: "asking", label: t("等你回答") },
+    { key: "helper", label: t("叫了帮手") },
+    { key: "queued", label: t("消息排队") },
+    { key: "done", label: t("这一轮完成") },
+    { key: "failed", label: t("出错") },
   ];
 
   /**
@@ -8964,14 +9201,14 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     // 内置的那几个 —— 不说清楚他会以为"这是宠物自己的设定，改宠物就能改默认"。
     const sourceNote = (key) => {
       const source = reactionSource(key);
-      if (source === "user") return "（已改过）";
-      return source === "pet" ? "（宠物默认）" : "（内置默认）";
+      if (source === "user") return t("（已改过）");
+      return source === "pet" ? t("（宠物默认）") : t("（内置默认）");
     };
     const reactionRow = (key, title) => h("div", { "data-reaction-set": key, ...(reactionSource(key) === "builtin" ? { "data-reaction-builtin": "" } : {}) },
       h("div", { "data-row-label": "" }, title,
-        h("span", { "data-note-inline": "" }, sourceNote(key), "（随机一个）")),
+        h("span", { "data-note-inline": "" }, sourceNote(key), t("（随机一个）"))),
       h("div", { "data-chips": "" }, candidates.length === 0
-        ? h("span", { "data-note-inline": "" }, "这只宠物没有可选的动作/表情")
+        ? h("span", { "data-note-inline": "" }, t("这只宠物没有可选的动作/表情"))
         : candidates.map((label) => {
           const on = listFor(key).includes(label);
           return h("button", {
@@ -8984,13 +9221,13 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         })),
     );
     return h("div", { "data-settings": "", "data-setting": "interact" },
-      switchRow("patEnabled", "摸头有反应"),
-      switchRow("tailEnabled", "摸尾巴有反应"),
-      switchRow("spinEnabled", "鼠标绕着转圈会晕"),
+      switchRow("patEnabled", t("摸头有反应")),
+      switchRow("tailEnabled", t("摸尾巴有反应")),
+      switchRow("spinEnabled", t("鼠标绕着转圈会晕")),
       h(TuningControls, { key: "spin", group: "interact" }),
-      reactionRow("patReactions", "摸头时演什么"),
-      reactionRow("tailReactions", "摸尾巴时演什么"),
-      reactionRow("spinReactions", "转晕时演什么"),
+      reactionRow("patReactions", t("摸头时演什么")),
+      reactionRow("tailReactions", t("摸尾巴时演什么")),
+      reactionRow("spinReactions", t("转晕时演什么")),
     );
   }
 
@@ -9015,7 +9252,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       }),
     );
     return h("div", { "data-settings": "", "data-setting": "lines" },
-      h("div", { "data-note": "" }, "多个变体用 | 分隔（随机挑一句）。留空 = 用宠物默认。"),
+      h("div", { "data-note": "" }, t("多个变体用 | 分隔（随机挑一句）。留空 = 用宠物默认。")),
       ...LINE_FIELDS.map((field) => row(
         field.key,
         field.label,
@@ -9043,13 +9280,13 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     const [note, setNote] = useState("");
     const current = layer;
     const options = [
-      ["auto", "自动", "桌面端在跑就用桌面，否则留在页面里"],
-      ["inline", "页面内", "永远在 DSH 页面里（随 DSH 启停）"],
-      ["desktop", "桌面", "永远在桌面上；没跑就拉起一个"],
+      ["auto", t("自动"), t("桌面端在跑就用桌面，否则留在页面里")],
+      ["inline", t("页面内"), t("永远在 DSH 页面里（随 DSH 启停）")],
+      ["desktop", t("桌面"), t("永远在桌面上；没跑就拉起一个")],
     ];
     const choose = (mode) => {
       setBusy(true);
-      setNote("正在切换…");
+      setNote(t("正在切换…"));
       fetch(API + "/layer", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -9062,19 +9299,19 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         // 这条是补的：第一版只把 `desktopRunning` 翻成一句陈述句（"桌面端没在跑。"），
         // 用户点完看到的字和点之前几乎一样，于是合理地报"啥变化都没有"。
         if (payload?.ok !== true) {
-          setNote("切换失败：" + (payload?.error ?? "未知"));
+          setNote(t("切换失败：") + (payload?.error ?? t("未知")));
           return;
         }
         if (payload.mode === "desktop" && payload.desktopRunning !== true) {
           setNote(payload.binary?.found === true
-            ? "桌面端拉起来了，但它没在 6 秒内报活 —— 看看是不是被系统拦住了（未签名的 exe 会被 SmartScreen 拦）"
-            : "桌面端二进制不在" + (payload.binary?.hint === undefined ? "" : "：" + payload.binary.hint));
+            ? t("桌面端拉起来了，但它没在 6 秒内报活 —— 看看是不是被系统拦住了（未签名的 exe 会被 SmartScreen 拦）")
+            : t("桌面端二进制不在") + (payload.binary?.hint === undefined ? "" : "：" + tHost(payload.binary.hint)));
           return;
         }
-        setNote(payload.desktopRunning === true ? "桌面端已在跑。" : "已切回页面内。");
+        setNote(payload.desktopRunning === true ? t("桌面端已在跑。") : t("已切回页面内。"));
       }).catch((error) => {
         setBusy(false);
-        setNote("切换失败：" + String(error && error.message));
+        setNote(t("切换失败：") + String(error && error.message));
       });
     };
     const binary = current.binary ?? {};
@@ -9083,21 +9320,21 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     const missing = supported && binary.found !== true;
     /** 惰性下载：二进制不在时那个按钮做的事（先回话、后台下，进度靠每秒轮询带回来）。 */
     const fetchBinary = () => {
-      setNote("正在下载桌面端（约 5MB）…");
+      setNote(t("正在下载桌面端（约 5MB）…"));
       fetch(API + "/layer", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action: "download-desktop" }),
       }).then((response) => response.json()).then((payload) => {
-        setNote(payload?.download?.started === true ? "下载已开始…" : "下载没能开始：" + (payload?.download?.reason ?? "未知"));
-      }).catch((error) => setNote("下载请求失败：" + String(error && error.message)));
+        setNote(payload?.download?.started === true ? t("下载已开始…") : t("下载没能开始：") + (payload?.download?.reason ?? t("未知")));
+      }).catch((error) => setNote(t("下载请求失败：") + String(error && error.message)));
     };
     const downloadLine = download.state === "downloading"
-      ? "正在下载…"
+      ? t("正在下载…")
       : download.state === "done"
-        ? "下载完成，已就绪"
+        ? t("下载完成，已就绪")
         : download.state === "failed"
-          ? "下载失败（" + String(download.reason ?? "未知") + (download.detail === null || download.detail === undefined ? "" : "：" + download.detail) + "）"
+          ? t("下载失败（") + String(download.reason ?? t("未知")) + (download.detail === null || download.detail === undefined ? "" : "：" + download.detail) + "）"
           : null;
     return h("div", { "data-setting": "layer" },
       // 三个选项是**药丸按钮**：形状与反应候选那排 chips 共用同一条规则，所以外面要套一层
@@ -9119,10 +9356,10 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       // 缺二进制时给一个**能点的下一步**：只说"不在"，用户除了盯着看没有别的动作可做 ——
       // 这正是"点了桌面没反应"那次投诉的另一半。
       h("div", { "data-note-inline": "", "data-layer-status": "" },
-        [supported ? null : "本平台还没有桌面版构建",
-          missing ? "桌面端二进制不在" : null,
+        [supported ? null : t("本平台还没有桌面版构建"),
+          missing ? t("桌面端二进制不在") : null,
           supported && binary.found === true
-            ? "桌面端：" + (current.desktopRunning ? "运行中（已接管）" : "没在跑") + "（" + String(binary.source ?? "") + "）"
+            ? t("桌面端：") + (current.desktopRunning ? t("运行中（已接管）") : t("没在跑")) + "（" + String(binary.source ?? "") + "）"
             : null,
           downloadLine,
           note === "" ? null : note,
@@ -9133,7 +9370,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           disabled: busy || download.state === "downloading",
           "data-layer-download": "",
           onClick: fetchBinary,
-        }, download.state === "downloading" ? "下载中…" : "下载桌面端（约 5MB）")) : null,
+        }, download.state === "downloading" ? t("下载中…") : t("下载桌面端（约 5MB）"))) : null,
     );
   }
 
@@ -9160,8 +9397,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       ...TUNING_GROUPS.filter((group) => !TUNING_GROUPS_INLINE.includes(group.id)).map((group) => card(
         "tune-" + group.id, group.label, group.hint, h(TuningControls, { group: group.id }))),
       // 显示层放最上面：它是"这只宠物在哪"的问题，比手感/池子更先要回答。
-      card("layer", "显示位置", "页面内 / 桌面上", h(LayerControls, null)),
-      card("sound", "会话提示音", "总开关 · 音量（拖滑杆会试听）", [
+      card("layer", t("显示位置"), t("页面内 / 桌面上"), h(LayerControls, null)),
+      card("sound", t("会话提示音"), t("总开关 · 音量（拖滑杆会试听）"), [
         h("label", { key: "enabled", "data-flag-row": "soundEnabled" },
           h("input", {
             type: "checkbox",
@@ -9169,22 +9406,22 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
             "data-flag": "soundEnabled",
             onChange: (event) => applyFlag("soundEnabled", event.target.checked),
           }),
-          h("span", { "data-row-label": "" }, "开启会话提示音"),
-          h("span", { "data-note-inline": "" }, FLAGS.soundEnabled ? "" : "默认静音"),
+          h("span", { "data-row-label": "" }, t("开启会话提示音")),
+          h("span", { "data-note-inline": "" }, FLAGS.soundEnabled ? "" : t("默认静音")),
         ),
         h(TuningControls, { key: "volume", group: "sound" }),
       ]),
-      card("phases", "会话相位", "点开相位调整台词 · 音频 · 动作", h(PhaseControls, { compact })),
+      card("phases", t("会话相位"), t("点开相位调整台词 · 音频 · 动作"), h(PhaseControls, { compact })),
       // 「摸鱼节奏」（多久摸一次）和「摸鱼」（摸鱼做什么）是同一件事的两半，原来
       // 被「会话相位」隔成两张卡，调摸鱼要上下跳。合成一张：节奏在上、池子在下。
-      card("pools", "摸鱼", "多久摸一次 · 摸鱼做什么", [
+      card("pools", t("摸鱼"), t("多久摸一次 · 摸鱼做什么"), [
         h(TuningControls, { key: "rhythm", group: "fidget" }),
         h(FidgetControls, { key: "pools" }),
       ]),
-      card("outfit", "装扮", null, h(OutfitControls, null)),
+      card("outfit", t("装扮"), null, h(OutfitControls, null)),
       // 相位台词在相位卡；气泡卡只保留互动台词、开关和位置。
-      card("interact", "互动", "摸头 / 摸尾巴 / 转圈", h(InteractControls, null)),
-      card("bubble", "气泡", "显示什么 · 在哪 · 停留多久", [
+      card("interact", t("互动"), t("摸头 / 摸尾巴 / 转圈"), h(InteractControls, null)),
+      card("bubble", t("气泡"), t("显示什么 · 在哪 · 停留多久"), [
         h("label", { key: "enabled", "data-flag-row": "bubbleEnabled" },
           h("input", {
             type: "checkbox",
@@ -9192,8 +9429,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
             "data-flag": "bubbleEnabled",
             onChange: (event) => applyFlag("bubbleEnabled", event.target.checked),
           }),
-          h("span", { "data-row-label": "" }, "显示气泡"),
-          h("span", { "data-note-inline": "" }, FLAGS.bubbleEnabled ? "" : "已关：任何台词都不弹"),
+          h("span", { "data-row-label": "" }, t("显示气泡")),
+          h("span", { "data-note-inline": "" }, FLAGS.bubbleEnabled ? "" : t("已关：任何台词都不弹")),
         ),
         h(TuningControls, { key: "bubble", group: "bubble" }),
         h(LineControls, { key: "lines" }),
@@ -9227,9 +9464,9 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     const pet = MANIFEST.current ?? {};
     const petLabel = typeof pet.label === "string" && pet.label !== ""
       ? pet.label
-      : (typeof pet.id === "string" && pet.id !== "" ? pet.id : "还没加载");
-    const modeLabel = layer.mode === "inline" ? "页面内" : (layer.mode === "desktop" ? "桌面" : "自动");
-    const ownerLabel = layer.owner === "desktop" ? "现在在桌面上" : "现在在页面里";
+      : (typeof pet.id === "string" && pet.id !== "" ? pet.id : t("还没加载"));
+    const modeLabel = layer.mode === "inline" ? t("页面内") : (layer.mode === "desktop" ? t("桌面") : t("自动"));
+    const ownerLabel = layer.owner === "desktop" ? t("现在在桌面上") : t("现在在页面里");
     const flagRow = (key, label, note) => h("label", { key, "data-flag-row": key },
       h("input", {
         type: "checkbox",
@@ -9244,20 +9481,20 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       // 第一行先说"这只宠物现在在哪"：它比任何开关都更该先回答，
       // 而且换过显示位置的人回来第一眼就是找这一句。
       h("div", { "data-plugin-status": "" },
-        "当前宠物：" + petLabel + " · 显示位置：" + modeLabel + "（" + ownerLabel + "）"),
-      settingsCard("plugin-flags", "常用开关", "点一下立刻生效", [
-        flagRow("bubbleEnabled", "显示气泡", FLAGS.bubbleEnabled ? undefined : "已关：任何台词都不弹"),
-        flagRow("soundEnabled", "会话提示音", FLAGS.soundEnabled ? undefined : "默认静音"),
-        flagRow("patEnabled", "摸头有反应", undefined),
-        flagRow("tailEnabled", "摸尾巴有反应", undefined),
-        flagRow("spinEnabled", "鼠标绕着转圈会晕", undefined),
-        flagRow("outfitArchive", "跨启动记住装扮", FLAGS.outfitArchive ? undefined : "已关：也不再记录"),
+        t("当前宠物：") + petLabel + t(" · 显示位置：") + modeLabel + "（" + ownerLabel + "）"),
+      settingsCard("plugin-flags", t("常用开关"), t("点一下立刻生效"), [
+        flagRow("bubbleEnabled", t("显示气泡"), FLAGS.bubbleEnabled ? undefined : t("已关：任何台词都不弹")),
+        flagRow("soundEnabled", t("会话提示音"), FLAGS.soundEnabled ? undefined : t("默认静音")),
+        flagRow("patEnabled", t("摸头有反应"), undefined),
+        flagRow("tailEnabled", t("摸尾巴有反应"), undefined),
+        flagRow("spinEnabled", t("鼠标绕着转圈会晕"), undefined),
+        flagRow("outfitArchive", t("跨启动记住装扮"), FLAGS.outfitArchive ? undefined : t("已关：也不再记录")),
       ]),
-      settingsCard("plugin-tuning", "手感", "注视范围 · 摸鱼节奏 · 音量",
+      settingsCard("plugin-tuning", t("手感"), t("注视范围 · 摸鱼节奏 · 音量"),
         h(TuningControls, { keys: ["gazeRangePx", "gazeWatchingRatio", "fidgetQuietMs", "soundVolume"] })),
-      settingsCard("plugin-layer", "显示位置", "页面内 / 桌面上", h(LayerControls, null)),
+      settingsCard("plugin-layer", t("显示位置"), t("页面内 / 桌面上"), h(LayerControls, null)),
       h("div", { "data-note": "" },
-        "相位台词、池子编辑器、装扮与台词文案在「设置 → 桌宠」里改。"),
+        t("相位台词、池子编辑器、装扮与台词文案在「设置 → 桌宠」里改。")),
     );
   }
 
@@ -9270,7 +9507,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         name: "settings.section",
         id: "pet-settings",
         order: 40,
-        label: () => "桌宠",
+        label: () => t("桌宠"),
       }, () => h(PetSettingsSection, null)));
     } catch {
       /* 老版本 DSH 没有这个 slot：右键面板那份还在，不影响使用 */

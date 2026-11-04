@@ -323,6 +323,7 @@ dsh plugin --profile web add "link:./dsh-pet-live2d/dsh-live2d-pet"
   `{ "displayName", "description", "lines", "slots": { "<槽位 id>": { "label", "none", "options": { "<选项标签>": "<译文>" } } }, "catalog": { "motions": { "<动作组>": "<译文>" }, "expressions": { "<表情名>": "<译文>" } } }`。
   键里的槽位 id、选项标签、动作组、表情名都是**身份**（`looksByPhase` / 关系 / 存档按字符串相等比较），
   只能当 key 用，不能改写；客户端按 `navigator.language`（系统 / 浏览器语言）选覆盖层（`zh*` 用清单原文，其它语言没有覆盖层就退回中文）。
+- **界面文案**跟同一个语言来源：非中文界面下，右键面板 / 设置页 / 提示都显示英文（内部标识与存档键不翻）。
 - `sounds`：宠物声明后只有列出的相位会响；每相位最多 8 个正弦音符，频率 80–4000 Hz、起始时间 0–2 秒。没写整个字段的旧宠物沿用内置四声；无效音符不会播放。声音由页面合成，音量和静音可在设置页调整。
 - `motionOptions`：`hold`（停在最后一帧）/ `persist`（定格且不自动放手）/ `prepend`（先播前置
   动作）/ `preset`（开播前把某些参数写死）。不写就是"播一次然后回待机"。
