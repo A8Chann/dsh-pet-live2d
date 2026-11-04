@@ -32,6 +32,7 @@ export const SUITE = {
   'cdp-plugin-page.mjs': '官方「插件」页的配置区：按包名注册、渲染得出来、开关真的写进插件状态',
   'cdp-rendercount.mjs': '显示层状态没变就不许每秒重渲染（issue #3：打开右键面板后宠物与面板持续闪）',
   'cdp-texroute.mjs': '贴图取法：Worker 被协议门禁拦住时退回主线程，宠物照样加载（issue #10）',
+  'cdp-locale.mjs': '语言来源：navigator.language（zh 原样，其它语言走宠物英文覆盖层），身份字段不变',
 }
 
 /**

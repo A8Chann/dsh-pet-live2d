@@ -3781,7 +3781,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
 
   /** 有效台词：宠物默认 + 用户覆盖（覆盖为空就退回默认）。 */
   const linesNow = () => {
-    const base = MANIFEST.current?.lines ?? {};
+    const base = petDefaultLines();
     const over = PHASE_OVERRIDES.lines ?? {};
     const out = {};
     for (const key of LINE_KEYS) {
@@ -4089,6 +4089,96 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   const MANIFEST = { current: null };
 
   /**
+   * 宠物文案的显示语言：**模块加载时判定一次**。
+   *
+   * 来源是 `navigator.language` —— 浏览器 / WebView2 给的就是系统或浏览器语言，正是
+   * 我们要的。**不要用 `document.documentElement.lang`**：DSH 网页入口写死
+   * `<html lang="en">`，桌面端宠物页写死 `<html lang="zh">`；拿它当依据会让中文网页用户
+   * 看到英文、英文桌面用户永远看不到英文（PR #14 review 里实测过）。
+   *
+   * 判定：`zh*` 保持清单原文（随包 pet.json 就是中文）；其它语言优先用宠物自带的覆盖层
+   * （`<pet>/locale/<lang>.json`，宿主随 catalog 下发），没有覆盖层就退回清单原文；
+   * 读不到语言（空串）时**回落 zh** —— 清单原文就是宠物自己的语言。
+   *
+   * 测试钩子：页面可以在本模块求值前设置 `window.__petLocale`（"zh" / "en" / "en-US"…）
+   * 强制语言。回归驱动除了用这个钩子，还会用 Chromium 的 `--accept-lang` 真实改
+   * `navigator.language`（`Emulation.setLocaleOverride` 只改 `Intl` 的 locale，不改它），
+   * 确定性地走一遍"非中文 → 英文"。
+   *
+   * 这里只决定**拿哪一份显示文案**，不碰任何身份字段 —— 槽位 id、选项标签
+   * （`option.label`）、`looksByPhase` / `pairs` / `requires` 的值、`data-*` 属性
+   * 全部保持清单原文，因为 `slotOfLabel()` / `relationsOf()` 以及用户存档都按字符串
+   * 相等比较。
+   */
+  const PET_LOCALE = (() => {
+    const read = (get) => {
+      try {
+        const value = get();
+        return typeof value === "string" ? value.trim() : "";
+      } catch {
+        return "";
+      }
+    };
+    const forced = read(() => window.__petLocale);
+    const raw = forced !== "" ? forced : read(() => navigator.language);
+    if (raw === "") return "zh";
+    return /^zh/i.test(raw) ? "zh" : "en";
+  })();
+
+  /** 当前宠物在当前语言下的覆盖层；中文或没有覆盖层时返回 null（显示退回清单原文）。 */
+  const petOverlay = () => {
+    if (PET_LOCALE === "zh") return null;
+    const locales = MANIFEST.current?.locales;
+    if (locales === null || typeof locales !== "object") return null;
+    const overlay = locales[PET_LOCALE];
+    return overlay !== null && typeof overlay === "object" ? overlay : null;
+  };
+
+  /** 覆盖层里按路径取值；取不到返回 undefined。 */
+  const overlayAt = (...keys) => {
+    let node = petOverlay();
+    for (const key of keys) {
+      if (node === null || typeof node !== "object") return undefined;
+      node = node[key];
+    }
+    return node;
+  };
+
+  const pickText = (value, fallback) => (typeof value === "string" && value !== "" ? value : fallback);
+
+  /** 显示用的宠物名 / 描述。参数是 catalog 里的一只宠物，可能不是当前这只。 */
+  const petDisplayName = (pet) => pickText(pet?.locales?.[PET_LOCALE]?.displayName, pet?.displayName ?? "");
+  const petDescription = (pet) => pickText(pet?.locales?.[PET_LOCALE]?.description, pet?.description ?? "");
+
+  /** 台词默认值：覆盖层优先，缺哪句退哪句；用户覆盖仍由 `linesNow()` 再叠一层。 */
+  const petDefaultLines = () => {
+    const base = MANIFEST.current?.lines ?? {};
+    const overlay = overlayAt("lines");
+    if (overlay === null || typeof overlay !== "object") return base;
+    const merged = Object.assign({}, base);
+    if (overlay.phase !== null && typeof overlay.phase === "object") {
+      merged.phase = Object.assign({}, base.phase ?? {}, overlay.phase);
+    }
+    for (const key of Object.keys(overlay)) {
+      if (key !== "phase" && Array.isArray(overlay[key])) merged[key] = overlay[key];
+    }
+    return merged;
+  };
+
+  /** 槽位 / 选项 / 动作 / 表情的**显示**标签；身份字段仍是清单原文。 */
+  const displaySlotLabel = (slotId) => pickText(
+    overlayAt("slots", slotId, "label"),
+    (MANIFEST.current?.expressionSlots ?? []).find((slot) => slot.id === slotId)?.label ?? slotId,
+  );
+  const displaySlotNone = (slot) => pickText(overlayAt("slots", slot?.id, "none"), slot?.none ?? "");
+  const displayOptionLabel = (slotId, label) => pickText(overlayAt("slots", slotId, "options", label), label);
+  const displayMotionLabel = (motion) => pickText(overlayAt("catalog", "motions", motion?.group), motion?.label ?? "");
+  const displayExpressionLabel = (expression) => pickText(
+    overlayAt("catalog", "expressions", expression?.name),
+    expression?.label ?? "",
+  );
+
+  /**
    * 选项的**关系**覆盖，键 `<槽位>:<选项标签>`。
    *
    *   pairs:    { <槽位>: <选项标签> }   —— 「同时」：选了它就一起点亮
@@ -4103,9 +4193,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   // （读的地方全写着 `?.`，所以"能读、写不进去"，只有正面写它的界面会踩到）。
   const PHASE_OVERRIDES = { phases: {}, fidget: {}, relations: {}, interactions: {}, lines: {}, sounds: {} };
 
-  /** 槽位 id -> 中文标签（关系行显示「贴纸」而不是 `sticker`）。 */
-  const slotLabelOf = (slotId) =>
-    (MANIFEST.current?.expressionSlots ?? []).find((slot) => slot.id === slotId)?.label ?? slotId;
+  /** 槽位 id -> **显示**标签（覆盖层优先；关系行显示「贴纸」而不是 `sticker`）。 */
+  const slotLabelOf = (slotId) => displaySlotLabel(slotId);
 
   /** 某个选项标签属于哪个槽位；找不到返回 null（前提可以只写标签）。 */
   const slotOfLabel = (label) =>
@@ -5626,6 +5715,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       // 台词的**有效值**（宠物默认 + 用户覆盖）—— "改文本"这类断言要能直接读到结果，
       // 而不是去 DOM 里抠 input.value（那是"界面显示了什么"，不是"她真的会说什么"）。
       api.effectiveLines = () => linesNow();
+      /** 诊断：宠物文案当前解析到的语言（"zh" / "en"）。 */
+      api.locale = () => PET_LOCALE;
       /** 某个互动的**有效**反应候选（同样是与宠物默认合并后的结果）。 */
       api.effectiveReactions = (key) => interactionReactions(key);
       /**
@@ -8069,8 +8160,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
               ? h("select", {
                   value: pet.id,
                   onChange: (event) => setPetId(event.target.value),
-                }, catalog.pets.map((entry) => h("option", { key: entry.id, value: entry.id }, entry.displayName)))
-              : h("span", { "data-title": "" }, pet.displayName),
+                }, catalog.pets.map((entry) => h("option", { key: entry.id, value: entry.id }, petDisplayName(entry))))
+              : h("span", { "data-title": "", title: petDescription(pet) }, petDisplayName(pet)),
             h("button", {
               type: "button",
               "data-close": "",
@@ -8115,14 +8206,14 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
                 const chosenLabel = effectiveSlotChoice(slot.id);
                 const active = slot.options.find((option) => option.label === chosenLabel);
                 return h("div", { "data-group": "", key: slot.id, "data-slot": slot.id },
-                  h("span", null, slot.label),
+                  h("span", null, displaySlotLabel(slot.id)),
                   h("div", { "data-chips": "" },
                     h("button", {
                       type: "button",
                       key: "__none",
                       ...(active === undefined ? { "data-on": "" } : {}),
                       onClick: () => chooseSlotOption(slot, null),
-                    }, slot.none),
+                    }, displaySlotNone(slot)),
                     slot.options.map((option) => h("button", {
                       type: "button",
                       key: option.label,
@@ -8130,14 +8221,14 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
                       "data-slot-option": option.label,
                       // `true` = 手动点选：带动作的选项，前提由插件补齐（点自拍会先掏手机）。
                       onClick: () => chooseSlotOption(slot, option, true),
-                    }, option.label)),
+                    }, displayOptionLabel(slot.id, option.label))),
                   ),
                 );
               })
             : tab === "motions"
             ? pet.motions.filter((entry) => !(pet.hiddenMotions ?? []).includes(entry.group))
               .map((entry) => h("div", { "data-group": "", key: entry.group },
-                h("span", null, entry.label),
+                h("span", null, displayMotionLabel(entry)),
                 h("div", { "data-chips": "" },
                   Array.from({ length: entry.count }, (_, index) => h("button", {
                     key: index,
@@ -8502,7 +8593,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
                   // 想让它清空，就加一条「空着」。
                   setPhasePool(phase, slot.id, []);
                 },
-              }, "＋ " + slot.label))),
+              }, "＋ " + displaySlotLabel(slot.id)))),
           ] : null,
         );
       }),
@@ -8546,7 +8637,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     // 贴在哪个槽位上的，而关系恰恰是跨槽位的东西。
     targetSlot === null || targetSlot === undefined
       ? "：" + label
-      : "：" + slotLabelOf(targetSlot) + " = " + label,
+      : "：" + slotLabelOf(targetSlot) + " = " + displayOptionLabel(targetSlot, label),
     h("button", {
       type: "button",
       "data-relation-remove": "",
@@ -8579,7 +8670,12 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         if (other.id === slot.id && kind === "pair") continue;
         for (const option of other.options ?? []) {
           if (option.label === entry.label) continue;
-          out.push({ slot: other.id, slotLabel: other.label, label: option.label });
+          out.push({
+            slot: other.id,
+            slotLabel: displaySlotLabel(other.id),
+            label: option.label,
+            displayLabel: displayOptionLabel(other.id, option.label),
+          });
         }
       }
       return out;
@@ -8592,7 +8688,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         key: item.slot + ":" + item.label,
         value: kind + "|" + item.slot + "|" + item.label,
         // 本槽位的前提在显示上加一句说明，免得跟"同槽位互斥"混淆。
-      }, (item.slot === slot.id ? "（本槽位）" : item.slotLabel) + " = " + item.label));
+      }, (item.slot === slot.id ? "（本槽位）" : item.slotLabel) + " = " + item.displayLabel));
     const pairOptions = options("pair");
     const requireOptions = options("require");
     if (pairOptions.length === 0 && requireOptions.length === 0) return null;
@@ -8642,7 +8738,10 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     // 属性值要不要带前缀：摸鱼表就是槽位名（`mouth:吹泡泡糖`），相位池要带相位名
     // （`tool:rhand:写本本`）—— 两个相位可以同时开着同一张槽位表，不带前缀就没法寻址。
     const idPrefix = props.idPrefix ?? "";
-    const labelOf = (entry) => (entry.label === null || entry.label === undefined ? noneLabel : entry.label);
+    // 条目的 label 是身份（存档 / 关系都用它），这里只换**渲染**出来的文字。
+    const labelOf = (entry) => (entry.label === null || entry.label === undefined
+      ? noneLabel
+      : displayOptionLabel(slot.id, entry.label));
     const keyOf = (entry) => idPrefix + slot.id + ":" + entryKeyOf(entry);
     const addKey = idPrefix + slot.id;
     const numberInput = (value, onChange, extra) => h("input", Object.assign({
@@ -8656,7 +8755,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       // 不该在没人管的时候自己出现。相位池是另一回事，那边全都能配。
       : (slot.options ?? []).filter((option) => option.fidget !== false);
     const addable = [{ value: "__none", label: noneLabel }]
-      .concat(candidates.map((option) => ({ value: option.label, label: option.label })))
+      .concat(candidates.map((option) => ({ value: option.label, label: displayOptionLabel(slot.id, option.label) })))
       .filter((item) => !present.has(item.value));
     // 权重条按**占池子总权重的比例**画：它就是这个条目被抽中的概率。
     // 分母为 0（全是 0 或空表）时退化成一条空槽，不会出现 NaN 宽度。
@@ -8664,7 +8763,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     const add = (value) => setEntries(entries.concat([{ label: value === "__none" ? null : value, weight: 1 }]));
     return h("div", { "data-pool": owner, "data-pool-slot": slot.id },
       h("div", { "data-pool-head": "" },
-        h("span", { "data-pool-title": "" }, slot.label),
+        h("span", { "data-pool-title": "" }, displaySlotLabel(slot.id)),
         h("span", { "data-pool-meta": "" },
           entries.length === 0 ? "空表" : entries.length + " 条候选"),
         // 用户自己加进来的槽位可以整个拿掉（默认集合不给删：它们是宠物自己的身子，
@@ -8787,7 +8886,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           "data-slot-chip": "",
           title: "把这个槽位加进摸鱼池",
           onClick: () => addFidgetSlot(slot.id),
-        }, "＋ " + slot.label))),
+        }, "＋ " + displaySlotLabel(slot.id)))),
     );
   }
   /**
@@ -8845,6 +8944,12 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       ...(pet.motions ?? []).map((motion) => motion.label),
       ...(pet.expressions ?? []).map((expression) => expression.label),
     ].filter((label) => typeof label === "string" && label !== "")));
+    /** 标签（身份）-> 显示文案；只换按钮上的字，key / data-* / 存档仍是标签。 */
+    const candidateLabel = new Map();
+    for (const motion of pet.motions ?? []) candidateLabel.set(motion.label, displayMotionLabel(motion));
+    for (const expression of pet.expressions ?? []) {
+      if (!candidateLabel.has(expression.label)) candidateLabel.set(expression.label, displayExpressionLabel(expression));
+    }
     const switchRow = (key, label, note) => h("label", { "data-flag-row": key },
       h("input", {
         type: "checkbox",
@@ -8875,7 +8980,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
             "data-reaction-chip": key + ":" + label,
             ...(on ? { "data-on": "" } : {}),
             onClick: () => toggle(key, label),
-          }, label);
+          }, candidateLabel.get(label) ?? label);
         })),
     );
     return h("div", { "data-settings": "", "data-setting": "interact" },
@@ -8916,7 +9021,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         field.label,
         joinLineInput(effective[field.key]),
         (text) => setLines({ [field.key]: splitLineInput(text) }),
-        joinLineInput(MANIFEST.current?.lines?.[field.key]),
+        joinLineInput(petDefaultLines()[field.key]),
       )),
     );
   }

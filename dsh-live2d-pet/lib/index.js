@@ -88,6 +88,41 @@ function readJson(file) {
   }
 }
 
+/**
+ * Read the pet's language overrides: `<pet>/locale/<lang>.json`.
+ *
+ * The file is keyed by its own name (`en` -> `locale/en.json`). Only display
+ * text lives in it: display name, description, lines and the labels of slots,
+ * options, motions and expressions. Identity fields (slot ids, option labels,
+ * `looksByPhase` / relation values, everything the browser half compares by
+ * string equality or stores in a save) are never in an overlay; the browser half
+ * only swaps the text it renders, so settings and history keep working.
+ *
+ * A missing directory, an unreadable file or a non-object value means this pet
+ * simply has no overlay for that language. File names follow the same
+ * [A-Za-z0-9_-] rule as pet path segments; readdir order is sorted so the
+ * catalog JSON is deterministic.
+ */
+function readPetLocales(dir) {
+  const locales = {}
+  let names
+  try {
+    names = readdirSync(join(dir, 'locale')).sort()
+  } catch {
+    return locales
+  }
+  for (const name of names) {
+    const ext = extname(name)
+    if (ext !== '.json') continue
+    const language = name.slice(0, -ext.length)
+    if (!/^[A-Za-z0-9_-]+$/.test(language)) continue
+    const parsed = readJson(join(dir, 'locale', name))
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) continue
+    locales[language] = parsed
+  }
+  return locales
+}
+
 /** Safe relative path: no absolute paths, no backslashes, no traversal, plain segments. */
 export function safeRel(raw) {
   if (typeof raw !== 'string' || raw.trim() === '') return undefined
@@ -516,6 +551,8 @@ export function scanPet(dir, id) {
     id,
     displayName: typeof manifest.displayName === 'string' && manifest.displayName !== '' ? manifest.displayName : id,
     description: typeof manifest.description === 'string' ? manifest.description : '',
+    // Optional display-text overrides shipped beside the manifest (see readPetLocales).
+    locales: readPetLocales(dir),
     scale: typeof block.scale === 'number' && block.scale > 0 && block.scale <= 10 ? block.scale : 1,
     // The manifest's phase -> motion-group / expression maps (same keys the
     // catalog uses), so the browser half can retarget session phases per pet.
@@ -605,12 +642,18 @@ const BUNDLED_PET_HASHES = {
     '88b86f32833882893e8ec10a9320bb4d9899a0211811d5a96544e4b97b804234',
     // 25c4d285（2.3.0 前）：台词 / 反应候选 / 摸鱼槽位
     '18840cd90fe70aa68632c45f77b4af1254595b5f963d261d2cbf34f6fbcaf579',
-    // 1.0.1（2.3.0 ~ 2.3.2 随包的那份）：内容与上面那条相同，只是换了插件版本号
-    '7c6cdb9c9f3d92636c388bffb3229c439cf01a65fe6a8a88499a8e4071f7884a',
-    // 1.1.0（会话提示音进入随包宠物之前）
+    // 35e5a395（3.0.0 前；只存在于 git 历史，未随任何 npm 版本发布）：自拍举手三条坑 + 反应收回默认 + 重锤先清冲突
+    '310d56ee01913fadb2288d44b48c2c032d5e2da032d2206a0928b64ec6bd9268',
+    // 811f8212（v2.3.3 / v2.3.4 随包）：撤回自拍举手那轮改动
+    '767fb2f583365487058304cef09c36061dddaa252ea33342750c2764763f7fbe',
+    // 0622d8fd（v3.0.0 发版）：桌面端随包分发 + 八条用户报的修复
+    '184aa8cfa16ff32743f905550cb3eeda10fd82f2ae886e2a83250830224514c7',
+    // 0b66c311（1.1.0 后半）：会话提示音（可上传）
     '31eb2a210d3d99d2f2d53462b8a074ae22209579f7b8fcaa41dd5516e0a861b3',
     // 1.1.1（给晕晕/开心兴奋等"整体换眼"的选项补互斥声明之前）
     'ee6e54afd8f5d2983fdc07306da4ddf12638e1b37985aa03beceb70135aa9aa4',
+    // 1.1.2（英文语言覆盖层进入随包宠物之前）
+    '3d05a44e0650527dd06e67ca922c9fd0034cfed4b5cc470b6d42561332b42d11',
   ],
 }
 
@@ -897,6 +940,7 @@ function catalogRoute() {
           id: pet.id,
           displayName: pet.displayName,
           description: pet.description,
+          locales: pet.locales,
           modelUrl: pet.modelUrl,
           scale: pet.scale,
           translate: pet.translate,

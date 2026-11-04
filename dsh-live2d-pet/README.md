@@ -270,6 +270,7 @@ dsh plugin --profile web add "link:./dsh-pet-live2d/dsh-live2d-pet"
 ```
 %DSH_HOME%\pets\<id>\
   pet.json          # 清单（renderer: live2d）
+  locale\           # 可选：<语言>.json 显示文案覆盖层（如 en.json）
   c_0120.model3.json
   model\            # .moc3 / physics3 / cdi3
   textures\         # 贴图
@@ -318,6 +319,10 @@ dsh plugin --profile web add "link:./dsh-pet-live2d/dsh-live2d-pet"
 
 - **动作和表情列表以 `.model3.json` 里声明的为准**，插件启动时从模型读出 —— 换模型 / 改模型
   文件立刻生效，不用改插件代码。
+- **语言覆盖层**（可选）：`locale/<语言>.json` 只放**显示文案**，形状是
+  `{ "displayName", "description", "lines", "slots": { "<槽位 id>": { "label", "none", "options": { "<选项标签>": "<译文>" } } }, "catalog": { "motions": { "<动作组>": "<译文>" }, "expressions": { "<表情名>": "<译文>" } } }`。
+  键里的槽位 id、选项标签、动作组、表情名都是**身份**（`looksByPhase` / 关系 / 存档按字符串相等比较），
+  只能当 key 用，不能改写；客户端按 `navigator.language`（系统 / 浏览器语言）选覆盖层（`zh*` 用清单原文，其它语言没有覆盖层就退回中文）。
 - `sounds`：宠物声明后只有列出的相位会响；每相位最多 8 个正弦音符，频率 80–4000 Hz、起始时间 0–2 秒。没写整个字段的旧宠物沿用内置四声；无效音符不会播放。声音由页面合成，音量和静音可在设置页调整。
 - `motionOptions`：`hold`（停在最后一帧）/ `persist`（定格且不自动放手）/ `prepend`（先播前置
   动作）/ `preset`（开播前把某些参数写死）。不写就是"播一次然后回待机"。

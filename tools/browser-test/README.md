@@ -9,7 +9,7 @@
 npm install              # 提供 React UMD（server.mjs 从 node_modules 直接读）
 npm run dev -- head      # 【日常用这个】只跑匹配的 driver，几十秒
 npm run dev              # 同上，但常驻监听：改动 client.js / index.js / pet.json 自动重跑
-npm run suite            # 【提交前】全部 14 个 driver，并发跑
+npm run suite            # 【提交前】全部 24 个浏览器 driver + 5 条纯 node 测试，并发跑
 ```
 
 耗时（本机 20 核）：
