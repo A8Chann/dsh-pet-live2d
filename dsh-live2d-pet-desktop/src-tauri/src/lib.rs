@@ -600,12 +600,27 @@ fn spawn_display_loop(app: AppHandle, shared: Arc<Mutex<Shared>>, home: std::pat
     // 第一次决定显隐时记一条日志（**只记一次**，不然每秒一行）。用户双击之后"没看到窗口"
     // 的时候，这一行就是答案："按偏好让位给页面内那只"。
     let mut announced = false;
+    // 页面报来的界面语言（见 `/__desktop/locale`）：变了就重建托盘。起手记 0 = "还没报过"。
+    let mut locale_rev = 0u64;
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_millis(1000));
         // 心跳：只要进程活着就一直刷（哪怕窗口是藏着的）—— 藏起来不等于退出，
         // 用户可能只是想暂时看页面里那只。
         if host::display::publish_heartbeat(&home).is_err() {
             continue;
+        }
+        // 界面语言：页面加载后报一次，壳自己的托盘菜单按它换文案。
+        //
+        // 为什么放在这个 1 秒循环里：语言不影响任何时序（托盘晚一秒变英文没人看得出来），
+        // 而这里已经拿着 `AppHandle`，`tray::refresh` 直接调。
+        let (next_locale, next_rev) = {
+            let guard = shared.lock().unwrap_or_else(|p| p.into_inner());
+            (guard.ui_locale.clone(), guard.ui_locale_rev)
+        };
+        if next_rev != locale_rev {
+            locale_rev = next_rev;
+            crate::tray::refresh(&app);
+            let _ = logbook::log(&home, &format!("[shell] 托盘语言：{next_locale}"));
         }
         let preference = host::display::read_preference(&home);
         let mode = host::display::normalise_mode(preference.get("mode"));

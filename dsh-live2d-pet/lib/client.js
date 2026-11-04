@@ -410,6 +410,23 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   };
 
   /**
+   * 桌面端：把界面语言报给壳 —— **托盘菜单与弹框由壳渲染**，它读不到 `navigator.language`。
+   *
+   * 只发一次（语言在模块加载时判定一次）。壳收到后会重建托盘；页面没起来时托盘按中文，
+   * 这是刻意的（壳的启动期弹框本来就只有中文，那时页面还没加载）。
+   */
+  if (isDesktopShell) {
+    try {
+      fetch("/__desktop/locale", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ lang: UI_LOCALE }),
+        cache: "no-store",
+      }).catch(() => { /* 老壳没有这条路由：托盘保持中文 */ });
+    } catch { /* fetch 不可用：同上 */ }
+  }
+
+  /**
    * 桌面端：把"我按住她了"这件事交给壳，由壳**挪窗口**。
    *
    * 为什么桌面端不能像网页端那样"在窗口内挪位置"：窗口只有**一块屏**那么大，位置一旦

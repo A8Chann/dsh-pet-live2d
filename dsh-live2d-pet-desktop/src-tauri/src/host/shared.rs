@@ -93,6 +93,27 @@ pub struct Shared {
     /// 没有 `window.__TAURI__`（`withGlobalTauri: false`）。原来"设置""归位"两项就是这么
     /// 静默失效的 —— 事件发出来了，页面从来没收到。现在走已有的 HTTP 通道。
     pub commands: Vec<String>,
+    /// 界面语言（`"zh"` / `"en"`）：页面加载后 POST 一次，壳用它渲染**托盘菜单**。
+    ///
+    /// 壳自己读不到 `navigator.language`（那是渲染进程的），而两边的语言必须同一个来源 ——
+    /// 否则会出现"英文界面 + 中文托盘"的拼盘。所以由页面报给壳，壳收到后重建托盘。
+    pub ui_locale: String,
+    /// 语言变化计数：显示循环靠它决定要不要重建托盘（菜单是整份 `set_menu` 换掉的）。
+    pub ui_locale_rev: u64,
+}
+
+/// `navigator.language` 这类取值 → `"zh"` / `"en"`，规则与客户端**逐条一致**：
+/// 空串回落 `zh`（清单原文就是中文），`zh*` 是 `zh`，其它语言统一 `en`。
+pub fn normalise_locale(raw: &str) -> &'static str {
+    let text = raw.trim();
+    if text.is_empty() {
+        return "zh";
+    }
+    if text.to_ascii_lowercase().starts_with("zh") {
+        "zh"
+    } else {
+        "en"
+    }
 }
 
 impl Shared {
@@ -126,6 +147,9 @@ impl Shared {
             drag_request: None,
             dragging: false,
             commands: Vec::new(),
+            // 页面还没报之前按中文起手（壳自己的启动期弹框也只有中文）。
+            ui_locale: "zh".to_string(),
+            ui_locale_rev: 0,
         }))
     }
 
@@ -231,6 +255,9 @@ impl Shared {
             "probes": self.probes,
             "changes": self.changes,
             "probeErrors": self.probe_errors,
+            // 托盘用的界面语言（页面报上来的那份），驱动据此判"壳收到没有"。
+            "locale": self.ui_locale,
+            "localeRev": self.ui_locale_rev,
             "uptimeMs": self.started.elapsed().as_millis() as u64,
         })
     }
@@ -242,5 +269,25 @@ impl Shared {
             "dropped": self.stats.dropped,
             "lastReason": self.stats.last_reason,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalise_locale;
+
+    /// 与客户端 `UI_LOCALE` 的规则逐条一致 —— 两边分叉的症状是"英文界面 + 中文托盘"，
+    /// 而那种错只在英文系统上看得到，很容易漏。
+    #[test]
+    fn locale_matches_the_client_rule() {
+        assert_eq!(normalise_locale(""), "zh", "读不到语言时回落中文（清单原文）");
+        assert_eq!(normalise_locale("   "), "zh");
+        assert_eq!(normalise_locale("zh"), "zh");
+        assert_eq!(normalise_locale("zh-CN"), "zh");
+        assert_eq!(normalise_locale("zh-Hans-CN"), "zh");
+        assert_eq!(normalise_locale("ZH-TW"), "zh");
+        assert_eq!(normalise_locale("en"), "en");
+        assert_eq!(normalise_locale("en-US"), "en");
+        assert_eq!(normalise_locale("ja-JP"), "en", "其它语言统一走英文");
     }
 }

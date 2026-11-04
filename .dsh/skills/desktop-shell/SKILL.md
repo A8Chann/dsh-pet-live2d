@@ -71,6 +71,26 @@ HTTP：壳 POST `/__desktop/probe` 问判定，页面 GET 插件自己的 `/api/
 * **macOS 要 `set_visible_on_all_workspaces(true)`**：不加这一条，切一次桌面空间她就没了
   （issue #11 前半段）。Windows 上没有对应物。
 
+### 界面语言：壳读不到 `navigator.language`，只能由**页面报**
+
+英文界面（PR2）牵涉三处渲染者，语言来源必须只有一个：
+
+| 渲染者 | 怎么知道语言 |
+|---|---|
+| 宠物文案 + 插件 UI（`client.js`） | `window.__petLocale`（测试钩子）→ `navigator.language`，空串回落 zh |
+| 网页端宿主（`lib/index.js`） | 不需要知道：它只发**数据**，文案在客户端 |
+| 壳（托盘菜单、弹框） | **读不到** —— 页面加载后 `POST /__desktop/locale {lang}`，壳存进 `Shared.ui_locale`，显示循环看到 `ui_locale_rev` 变了就 `tray::refresh` 重建菜单 |
+
+踩过的点：
+
+* **别用 `document.documentElement.lang`**：DSH 网页入口写死 `<html lang="en">`，桌面端
+  宠物页写死 `<html lang="zh">`。拿它当依据的后果是"中文网页用户看到英文、英文桌面用户
+  永远看不到英文"（PR #14 review 实测）。桌面宠物页那两个 `lang="zh"` 已经删了。
+* **启动期弹框仍是中文**（页面还没加载，语言还没报上来）—— 那是"没起来的最后一句"，
+  翻不翻不影响用，别为它加一套系统语言探测。
+* **托盘重建只认 rev**：`POST` 同一个语言不推进 `ui_locale_rev`，否则页面每发一次就重建
+  一遍菜单（`set_menu` 是整份换掉的）。
+
 验证：`tools/probe-multimonitor.ps1` 断的是"光标走遍每一块屏、窗口矩形一个像素都不变"
 （**拖动**才允许动窗口，光标移动不允许）。拖动本身只能在真机上验。
 

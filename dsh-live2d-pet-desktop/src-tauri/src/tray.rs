@@ -248,13 +248,27 @@ fn try_register(home: &std::path::Path, hwnd: windows_sys::Win32::Foundation::HW
 /// 列表是在用菜单代替拖动，用户明确说不要。
 fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let hidden = hidden_by_user(app);
-    let show_item = MenuItem::with_id(app, "show", "显示桌宠", hidden, None::<&str>)?;
-    let hide_item = MenuItem::with_id(app, "hide", "藏起来", !hidden, None::<&str>)?;
+    // 界面语言：由**页面**报上来（`POST /__desktop/locale`），与网页端/桌面窗口里的
+    // 文案同一个来源 —— 壳自己读不到 `navigator.language`。页面还没报之前按中文。
+    let english = shared(app)
+        .and_then(|state| state.lock().ok().map(|guard| guard.ui_locale == "en"))
+        .unwrap_or(false);
+    let tr = |zh: &'static str, en: &'static str| if english { en.to_string() } else { zh.to_string() };
+    // 启动期（页面还没加载）的弹框在 `lib.rs` 里，仍是中文：那时语言还没报上来，
+    // 而那些框本身是"没起来的最后一句"，翻不翻不影响用。
+    let show_item = MenuItem::with_id(app, "show", tr("显示桌宠", "Show pet"), hidden, None::<&str>)?;
+    let hide_item = MenuItem::with_id(app, "hide", tr("藏起来", "Hide"), !hidden, None::<&str>)?;
     // 措辞跟着"拖动"改：她可以被拖到任意一块屏上，所以归位是"回到光标所在的这块屏"，
     // 而不是当年那个"哪块屏由菜单选"的说法。
-    let reset_item = MenuItem::with_id(app, "reset", "归位（光标所在屏幕右下角）", true, None::<&str>)?;
-    let settings_item = MenuItem::with_id(app, "settings", "设置…", true, None::<&str>)?;
-    let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+    let reset_item = MenuItem::with_id(
+        app,
+        "reset",
+        tr("归位（光标所在屏幕右下角）", "Reset position (bottom-right of the screen under the cursor)"),
+        true,
+        None::<&str>,
+    )?;
+    let settings_item = MenuItem::with_id(app, "settings", tr("设置…", "Settings…"), true, None::<&str>)?;
+    let quit_item = MenuItem::with_id(app, "quit", tr("退出", "Quit"), true, None::<&str>)?;
     Menu::with_items(
         app,
         &[

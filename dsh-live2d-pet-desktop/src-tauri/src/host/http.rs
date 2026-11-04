@@ -565,6 +565,32 @@ fn route(
         )?;
         return Ok(true);
     }
+    // **界面语言**：页面加载后报一次，壳拿它渲染托盘菜单（壳读不到 `navigator.language`）。
+    //
+    // 与 `/__desktop/drag` 同一条通道（页面 → 壳）。真正的"重建托盘"在显示循环里做
+    // —— 这里只有 `Shared`，没有 `AppHandle`。
+    if path == "/__desktop/locale" && method == "POST" {
+        let parsed: Value = serde_json::from_str(if body.trim().is_empty() { "{}" } else { body })
+            .unwrap_or_else(|_| json!({}));
+        let raw = parsed.get("lang").and_then(Value::as_str).unwrap_or("");
+        let next = super::shared::normalise_locale(raw).to_string();
+        let changed = {
+            let mut guard = state.shared.lock().unwrap_or_else(|p| p.into_inner());
+            if guard.ui_locale == next {
+                false
+            } else {
+                guard.ui_locale = next.clone();
+                guard.ui_locale_rev += 1;
+                true
+            }
+        };
+        send_json(
+            stream,
+            200,
+            &json!({ "ok": true, "locale": next, "changed": changed, "raw": raw }),
+        )?;
+        return Ok(true);
+    }
     if path == "/__desktop/probe/answer" && method == "POST" {
         let parsed: Value = serde_json::from_str(body).unwrap_or(Value::Null);
         let seq = parsed.get("seq").and_then(Value::as_u64).unwrap_or(0);
@@ -1393,6 +1419,41 @@ mod drag_tests {
                 "不是 true 就当没在拖：body={body:?}"
             );
         }
+    }
+
+    /// 界面语言上报：**只有在真的变了**才推进 rev —— 显示循环靠 rev 决定要不要重建托盘，
+    /// 每次都推的话，页面每发一次就重建一遍菜单。
+    #[test]
+    fn locale_route_normalises_and_bumps_the_revision_once() {
+        let shared = Shared::new(false);
+        let host = serve(
+            shared.clone(),
+            temp_dir("pets3"),
+            temp_dir("plugin3"),
+            None,
+            temp_dir("home3"),
+        )
+        .expect("起宿主");
+
+        // 默认是 zh：报 zh-CN 不该算变化。
+        let response = post(host.port, "/__desktop/locale", r#"{"lang":"zh-CN"}"#);
+        assert!(response.contains("\"locale\":\"zh\""), "响应：{response}");
+        assert!(response.contains("\"changed\":false"), "响应：{response}");
+        assert_eq!(shared.lock().unwrap_or_else(|p| p.into_inner()).ui_locale_rev, 0);
+
+        let response = post(host.port, "/__desktop/locale", r#"{"lang":"en-US"}"#);
+        assert!(response.contains("\"locale\":\"en\""), "响应：{response}");
+        assert!(response.contains("\"changed\":true"), "响应：{response}");
+        {
+            let guard = shared.lock().unwrap_or_else(|p| p.into_inner());
+            assert_eq!(guard.ui_locale, "en");
+            assert_eq!(guard.ui_locale_rev, 1);
+        }
+
+        // 同一个语言再来一次：不推进。
+        let response = post(host.port, "/__desktop/locale", r#"{"lang":"en"}"#);
+        assert!(response.contains("\"changed\":false"), "响应：{response}");
+        assert_eq!(shared.lock().unwrap_or_else(|p| p.into_inner()).ui_locale_rev, 1);
     }
 }
 
