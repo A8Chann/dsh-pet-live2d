@@ -1,6 +1,24 @@
 <!doctype html>
 <html><head><meta charset="utf-8"><title>pending</title>
 <script>
+// 语言夹具：`documentElement.lang` 在真实宿主上是被写死的（DSH 网页 en / 桌面宠物页 zh），
+// 与用户语言无关，所以默认不解析它。
+// * 默认：用 window.__petLocale 钩子固定成中文 —— 所有 driver 都用中文文案定位，
+//   固定语言才不会被跑测试那台机器的系统语言左右。
+// * `?lang=en`：用钩子强制英文。
+// * `?hook=off`：不设钩子，走真实的 navigator.language（用 Chromium 的启动参数
+//   `--accept-lang` 控制；`Emulation.setLocaleOverride` 只改 Intl，不改它）。
+// * `?htmlLang=zh`：把 `<html lang>` 设成宿主的写死值，专门证明客户端不看它
+//   （cdp-locale.mjs 的 en / zh 用例分别配 zh / en 的假 lang）。
+(function () {
+  var query = new URLSearchParams(window.location.search);
+  var htmlLang = query.get('htmlLang');
+  if (htmlLang) document.documentElement.lang = htmlLang;
+  if (query.get('hook') === 'off') return;
+  window.__petLocale = query.get('lang') || 'zh';
+})();
+</script>
+<script>
 window.__ModuleLoader__ = {
   mode: 'queue',
   pendingQueue: [],
