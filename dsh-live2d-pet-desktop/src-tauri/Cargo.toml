@@ -38,7 +38,9 @@ base64 = "0.22.1"
 [target.'cfg(windows)'.dependencies]
 # `Win32_UI_Shell` 是给托盘诊断用的：`Shell_NotifyIconW` / `NOTIFYICONDATAW` 在 Shell 里，
 # 不在 WindowsAndMessaging（一开始就是按后者找的，编译期直接报 unresolved import）。
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell"] }
+# `Win32_UI_Input_KeyboardAndMouse` 是拖动的收尾判据：`GetAsyncKeyState(VK_LBUTTON)`
+# 问的是**物理按键状态**，与焦点、与窗口吃不吃事件都无关（穿透场景正需要这个性质）。
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_UI_Input_KeyboardAndMouse"] }
 
 # 顺带记一条同源但不同 feature 的坑：`skip_taskbar(true)` 在 macOS 上**没有实现**
 # （tauri-runtime-wry 的 macOS 分支是空函数，tao 也只给 Windows/Linux 写了实现），

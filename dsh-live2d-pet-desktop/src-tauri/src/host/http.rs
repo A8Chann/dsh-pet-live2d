@@ -530,6 +530,41 @@ fn route(
         send_json(stream, 200, &payload)?;
         return Ok(true);
     }
+    // **拖动 = 挪窗口**：页面在"按住她"的那一刻把落点投进来，松手时投 `active:false`。
+    //
+    // 为什么由页面发起而不是壳自己看按键：页面知道这一下按在**她**身上还是按在右键面板
+    // 上（面板也在窗口里），壳只知道光标下面有没有东西。壳负责的是"跟着光标挪窗口"
+    // —— 那件事需要 `AppHandle`，所以在这里只能写进共享状态，由 `spawn_drag_loop` 去挪。
+    //
+    // 单位：`x/y` 是 `pointerdown` 的 `clientX/clientY`，即**窗口本地 CSS 像素** ——
+    // 与壳里 `pointer_local` 同一个口径，不用从光标反推（反推会把"按下到发请求"这几
+    // 毫秒的手部位移算成抓取偏移，拖动一开始她会跳一下）。
+    if path == "/__desktop/drag" && method == "POST" {
+        let parsed: Value = serde_json::from_str(if body.trim().is_empty() { "{}" } else { body })
+            .unwrap_or_else(|_| json!({}));
+        let active = parsed.get("active").and_then(Value::as_bool).unwrap_or(false);
+        let point = (
+            parsed.get("x").and_then(Value::as_f64).unwrap_or(0.0),
+            parsed.get("y").and_then(Value::as_f64).unwrap_or(0.0),
+        );
+        let (requested, dragging) = {
+            let mut guard = state.shared.lock().unwrap_or_else(|p| p.into_inner());
+            guard.drag_request = if active { Some(point) } else { None };
+            (guard.drag_request, guard.dragging)
+        };
+        send_json(
+            stream,
+            200,
+            &json!({
+                "ok": true,
+                "active": active,
+                // 回读：页面/驱动据此确认"壳收到了"，而不是只证明自己发过。
+                "request": requested.map(|(x, y)| json!([x, y])).unwrap_or(Value::Null),
+                "dragging": dragging,
+            }),
+        )?;
+        return Ok(true);
+    }
     if path == "/__desktop/probe/answer" && method == "POST" {
         let parsed: Value = serde_json::from_str(body).unwrap_or(Value::Null);
         let seq = parsed.get("seq").and_then(Value::as_u64).unwrap_or(0);
@@ -1240,6 +1275,124 @@ mod sound_tests {
         let home = Path::new("/nonexistent-sound-home");
         assert!(sound_path(home, "../evil", "thinking", true).is_err());
         assert!(sound_path(home, "pet", "idle", true).is_err());
+    }
+}
+
+/// **页面 ↔ 壳的拖动契约**。
+///
+/// 这一段在真机上没法离线验（窗口要真挪），但**协议那一半**可以：路径、字段名、单位
+/// （窗口本地 CSS 像素）以及回读的形状。它钉住的是"改客户端时别再猜壳收什么"——
+/// 这一层错了的表现是"拖不动"，而拖不动在 GUI 里和"穿透判定坏了"长得一模一样。
+#[cfg(test)]
+mod drag_tests {
+    use super::*;
+    use std::io::{BufRead, BufReader, Read};
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "dsh-pet-http-{tag}-{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::create_dir_all(&path);
+        path
+    }
+
+    /// 裸 TCP 发一个真请求（不引 HTTP 客户端），按 content-length 读回响应体。
+    fn post(port: u16, path: &str, body: &str) -> String {
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("连上宿主");
+        stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
+        let request = format!(
+            "POST {path} HTTP/1.1\r\nhost: 127.0.0.1:{port}\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(request.as_bytes()).expect("发请求");
+        let mut reader = BufReader::new(stream.try_clone().expect("复制 socket"));
+        let mut head = String::new();
+        loop {
+            let mut line = String::new();
+            if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                break;
+            }
+            if line.trim_end().is_empty() {
+                break;
+            }
+            head.push_str(&line);
+        }
+        let length = head
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                if name.eq_ignore_ascii_case("content-length") {
+                    value.trim().parse::<usize>().ok()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0);
+        let mut buffer = vec![0u8; length];
+        reader.read_exact(&mut buffer).expect("读响应体");
+        String::from_utf8_lossy(&buffer).to_string()
+    }
+
+    /// 按下 → 存档里有落点；松手 → 清空。顺带断言响应里带**回读**（页面能自证壳收到了）。
+    #[test]
+    fn drag_route_records_the_press_point_and_clears_on_release() {
+        let shared = Shared::new(false);
+        let host = serve(
+            shared.clone(),
+            temp_dir("pets"),
+            temp_dir("plugin"),
+            None,
+            temp_dir("home"),
+        )
+        .expect("起宿主");
+
+        let response = post(host.port, "/__desktop/drag", r#"{"active":true,"x":120.5,"y":80}"#);
+        assert!(response.contains("\"ok\":true"), "响应：{response}");
+        {
+            let guard = shared.lock().unwrap_or_else(|p| p.into_inner());
+            assert_eq!(
+                guard.drag_request,
+                Some((120.5, 80.0)),
+                "落点必须原样记下（单位是窗口本地 CSS 像素，壳不做任何换算）"
+            );
+            assert!(!guard.dragging, "挪窗口的是后台线程，HTTP 这一层不该自己改 dragging");
+        }
+
+        let response = post(host.port, "/__desktop/drag", r#"{"active":false}"#);
+        assert!(response.contains("\"request\":null"), "响应：{response}");
+        assert_eq!(
+            shared.lock().unwrap_or_else(|p| p.into_inner()).drag_request,
+            None,
+            "松手必须清空，否则下一拍又会被重新拖起来"
+        );
+    }
+
+    /// 空 body / 坏 JSON 都不能把宿主搞崩（老客户端可能什么都不发）。
+    #[test]
+    fn drag_route_tolerates_a_broken_body() {
+        let shared = Shared::new(false);
+        let host = serve(
+            shared.clone(),
+            temp_dir("pets2"),
+            temp_dir("plugin2"),
+            None,
+            temp_dir("home2"),
+        )
+        .expect("起宿主");
+        for body in ["", "{", "null", r#"{"active":"yes"}"#] {
+            let response = post(host.port, "/__desktop/drag", body);
+            assert!(response.contains("\"ok\":true"), "body={body:?} 响应：{response}");
+            assert_eq!(
+                shared.lock().unwrap_or_else(|p| p.into_inner()).drag_request,
+                None,
+                "不是 true 就当没在拖：body={body:?}"
+            );
+        }
     }
 }
 

@@ -156,7 +156,8 @@ node tools/lab.mjs raw "<一段 JS>"             # 直接在试验台页面里�
 | 哪类状态 | 放哪 |
 |---|---|
 | 跨窗口该一致的（可调项 / 相位池子覆盖 + 开关 / 装扮） | `%DSH_HOME%\pet-settings.json`（`lib/settings.js` + `GET\|POST /api/live2d-pet/settings`） |
-| 每个窗口各不相同的（位置、大小） | `localStorage`（各窗口各一份才对） |
+| 每个窗口各不相同的（页面内位置、大小） | `localStorage`（各窗口各一份才对） |
+| **桌面端窗口在哪** | `%DSH_HOME%\pet-window.json`（`pet_window.rs`，**壳独占**）。⚠️ 不能用 localStorage：桌面窗口的 origin 是壳每次随机开的端口，重启就换 origin ⇒ localStorage 每次都是空的。口径是**屏幕坐标**（她能被拖到任意一块屏上，见 skill: desktop-shell），不是"相对某块屏的第几个像素" |
 | "谁在管这只宠物" | `%DSH_HOME%\pet-desktop.json`（`lib/display.js`，Rust 侧 `host/display.rs` 逐字对应） |
 
 新增跨窗口状态的步骤：`settings.js` 加键 → 路由透传（`buildRoutes` 已经带上）→

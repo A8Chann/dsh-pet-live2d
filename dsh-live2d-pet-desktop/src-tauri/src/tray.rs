@@ -1,7 +1,11 @@
 // 托盘图标与菜单。
 //
 // 桌宠没有任务栏按钮（`skip_taskbar`），所以托盘是**唯一**的常驻入口：显示/隐藏她、
-// 归位、选屏幕、打开设置、退出。没有它，用户把宠物藏起来之后就再也找不到她了。
+// 归位、打开设置、退出。没有它，用户把宠物藏起来之后就再也找不到她了。
+//
+// **这里没有「屏幕」子菜单了**：拖她就能换屏（拖宠物 = 挪窗口，见 `lib.rs` 的
+// `spawn_drag_loop`）。原来那一列"第几块屏 2560×1440 @-2560,0"是在用菜单代替拖动 ——
+// 用户的原话是"不要这种选择屏幕的，直接能在多屏直接拖动"。
 //
 // 两条硬纪律（都是踩出来的）：
 //
@@ -12,9 +16,9 @@
 //   2. **"藏起来"要记成用户意图，不能只 hide 窗口。** 显示循环按显示层规则每帧决定显隐，
 //      不记住意图的话，她过一会儿又自己冒出来（用户报的 bug）。
 //
-// 菜单项的状态（显示/隐藏哪个可用、当前选的是哪块屏）靠**重建整份菜单**来更新 ——
-// 启动时建好就定住的话，用户在菜单里的选择永远反映不出来。
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+// 菜单项的状态（显示/隐藏哪个可用）靠**重建整份菜单**来更新 —— 启动时建好就定住的话，
+// 用户在菜单里的选择永远反映不出来。
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use std::sync::{Arc, Mutex};
 
@@ -27,9 +31,6 @@ use crate::pet_window;
 /// 托盘图标的尺寸。**32×32 而不是把大图缩下去**：托盘那块地方只有 16×16 /
 /// 20×20，点对点的小图才清晰（大图缩下来会发糊）。
 const TRAY_ICON: &[u8] = include_bytes!("../icons/32x32.png");
-
-/// 屏幕菜单项 id 的前缀：`screen:<序号>`。
-const SCREEN_PREFIX: &str = "screen:";
 
 /// 建托盘图标。**注册完会自证一次**，并在这个过程中留下可查的日志。
 ///
@@ -47,7 +48,7 @@ const SCREEN_PREFIX: &str = "screen:";
 /// （实测过：同一个图标在溢出区里 `rect()` 失败，而它明明在）。所以这里**不重试、不重建**
 /// —— 只如实记一条日志，再跑一遍 [`diagnose_native_tray`] 把机制问清楚。
 pub fn setup(app: &App, home: &std::path::Path) -> tauri::Result<()> {
-    let menu = build_menu(app.handle(), current_monitor_index(app.handle()))?;
+    let menu = build_menu(app.handle())?;
     let icon = tauri::image::Image::from_bytes(TRAY_ICON)?;
     let built = TrayIconBuilder::with_id("pet-tray")
         .icon(icon)
@@ -56,17 +57,6 @@ pub fn setup(app: &App, home: &std::path::Path) -> tauri::Result<()> {
         .tooltip("DSH 桌宠")
         .on_menu_event(|app: &AppHandle, event| {
             let id = event.id.as_ref();
-            if let Some(index) = id.strip_prefix(SCREEN_PREFIX) {
-                if let Ok(index) = index.parse::<usize>() {
-                    if pet_window::place_on_monitor(app, index) {
-                        // 换了屏 = 换了窗口尺寸：轮廓快照要重抓，位置也要归位到新屏右下角
-                        // （留着旧坐标她会跑到屏幕外）。两件事都交给页面做。
-                        push(app, "reset");
-                        refresh(app);
-                    }
-                }
-                return;
-            }
             match id {
                 "show" => {
                     set_hidden_by_user(app, false);
@@ -81,8 +71,16 @@ pub fn setup(app: &App, home: &std::path::Path) -> tauri::Result<()> {
                     refresh(app);
                 }
                 "reset" => {
-                    // 页面的位置是它自己的状态（localStorage），壳硬挪窗口只会让"她"和判定
-                    // 用的坐标错位 —— 所以让**页面**去清，壳只负责把命令递过去。
+                    // **壳负责窗口、"她"负责页面**：窗口先回到光标所在那块屏的工作区，
+                    // 再让页面把位置与大小也归位（`pet://reset`）。
+                    //
+                    // 为什么壳要动窗口：拖动之后窗口是漂着的（拖宠物 = 挪窗口），归位
+                    // 就得把它重新对齐到一块屏上 —— 否则"归位"只把她挪到那个漂着的窗口
+                    // 角落，用户看到的仍然是"没回来"。
+                    //
+                    // 这里**不立刻**写位置存档：`set_position` 是投递给事件循环的，
+                    // 紧接着读 `outer_position` 拿到的可能还是旧值。退出时会再记一次。
+                    pet_window::place_on_monitor(app, pet_window::monitor_index_at_cursor(app));
                     set_hidden_by_user(app, false);
                     pet_window::show_pet(app);
                     push(app, "reset");
@@ -245,13 +243,17 @@ fn try_register(home: &std::path::Path, hwnd: windows_sys::Win32::Foundation::HW
 }
 
 /// 建整份菜单（启动时一次、之后每次状态变化重建一次）。
-fn build_menu(app: &AppHandle, current: usize) -> tauri::Result<Menu<tauri::Wry>> {
+///
+/// **没有「屏幕」子菜单**：换屏靠拖（见 `lib.rs` 的 `spawn_drag_loop`）。一块屏一项的
+/// 列表是在用菜单代替拖动，用户明确说不要。
+fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let hidden = hidden_by_user(app);
     let show_item = MenuItem::with_id(app, "show", "显示桌宠", hidden, None::<&str>)?;
     let hide_item = MenuItem::with_id(app, "hide", "藏起来", !hidden, None::<&str>)?;
-    let reset_item = MenuItem::with_id(app, "reset", "归位（右下角）", true, None::<&str>)?;
+    // 措辞跟着"拖动"改：她可以被拖到任意一块屏上，所以归位是"回到光标所在的这块屏"，
+    // 而不是当年那个"哪块屏由菜单选"的说法。
+    let reset_item = MenuItem::with_id(app, "reset", "归位（光标所在屏幕右下角）", true, None::<&str>)?;
     let settings_item = MenuItem::with_id(app, "settings", "设置…", true, None::<&str>)?;
-    let screen_menu = build_screen_submenu(app, current)?;
     let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
     Menu::with_items(
         app,
@@ -260,7 +262,6 @@ fn build_menu(app: &AppHandle, current: usize) -> tauri::Result<Menu<tauri::Wry>
             &hide_item,
             &PredefinedMenuItem::separator(app)?,
             &reset_item,
-            &screen_menu,
             &settings_item,
             &PredefinedMenuItem::separator(app)?,
             &quit_item,
@@ -268,48 +269,7 @@ fn build_menu(app: &AppHandle, current: usize) -> tauri::Result<Menu<tauri::Wry>
     )
 }
 
-/// 「屏幕」子菜单：一块屏一项，标出分辨率与位置，当前那块打点。
-///
-/// 单项而不是"循环切换"：多屏的分辨率/相对位置各不相同，用户需要看到**自己选的是哪一块**。
-fn build_screen_submenu(app: &AppHandle, current: usize) -> tauri::Result<Submenu<tauri::Wry>> {
-    let monitors = app.available_monitors().unwrap_or_default();
-    let mut items: Vec<MenuItem<tauri::Wry>> = Vec::new();
-    for (index, monitor) in monitors.iter().enumerate() {
-        let size = monitor.size();
-        let position = monitor.position();
-        // 用全角空格占位，免得"● "与"　 "宽度不同导致文字错位。
-        let label = format!(
-            "{}{}  {}×{}  @{},{}",
-            if index == current { "● " } else { "　 " },
-            index + 1,
-            size.width,
-            size.height,
-            position.x,
-            position.y,
-        );
-        items.push(MenuItem::with_id(
-            app,
-            format!("{SCREEN_PREFIX}{index}"),
-            label,
-            true,
-            None::<&str>,
-        )?);
-    }
-    if items.is_empty() {
-        items.push(MenuItem::with_id(
-            app,
-            SCREEN_PREFIX.to_string() + "0",
-            "（没检测到屏幕）",
-            false,
-            None::<&str>,
-        )?);
-    }
-    let refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> =
-        items.iter().map(|item| item as &dyn tauri::menu::IsMenuItem<tauri::Wry>).collect();
-    Submenu::with_id_and_items(app, "pet-screen-menu", "屏幕", true, &refs)
-}
-
-/// 重建一份菜单塞回托盘（选中项、显示/隐藏的可用状态都会跟着更新）。
+/// 重建一份菜单塞回托盘（显示/隐藏的可用状态会跟着更新）。
 ///
 /// `pub(crate)`：显示循环在窗口显隐变化时也要叫它一次（否则菜单上"显示/藏起来"的
 /// 可用状态会停在旧值上）。
@@ -317,7 +277,7 @@ pub(crate) fn refresh(app: &AppHandle) {
     let Some(tray) = app.tray_by_id("pet-tray") else {
         return;
     };
-    match build_menu(app, current_monitor_index(app)) {
+    match build_menu(app) {
         Ok(menu) => {
             if let Err(error) = tray.set_menu(Some(menu)) {
                 eprintln!("[tray] 重建菜单失败：{error}");
@@ -325,18 +285,6 @@ pub(crate) fn refresh(app: &AppHandle) {
         }
         Err(error) => eprintln!("[tray] 建菜单失败：{error}"),
     }
-}
-
-/// 她当前在哪块屏（按**窗口位置**判，不是光标 —— 她是固定位置的）。
-fn current_monitor_index(app: &AppHandle) -> usize {
-    let Some(window) = app.get_webview_window(pet_window::PET_WINDOW) else {
-        return 0;
-    };
-    let Ok(position) = window.outer_position() else {
-        return 0;
-    };
-    // `monitor_index_at` 收窄在具体运行时上，泛型的 `AppHandle<R>` 得先转成它。
-    pet_window::monitor_index_at(app, position.x, position.y)
 }
 
 /// 共享状态：`manage` 进去的是 `Arc<Mutex<Shared>>`，所以这里取的就是它（不是 `Shared`）。

@@ -161,6 +161,40 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   const isDesktopShell = typeof window.__petDesktop === "object" && window.__petDesktop !== null;
 
   /**
+   * 桌面端：把"我按住她了"这件事交给壳，由壳**挪窗口**。
+   *
+   * 为什么桌面端不能像网页端那样"在窗口内挪位置"：窗口只有**一块屏**那么大，位置一旦
+   * 相对窗口存，她就永远跨不出这块屏（issue #11 的"连多屏后拖不到别的屏幕"）。改成
+   * "拖宠物 = 挪窗口"之后，屏幕坐标说了算 —— 多屏、异形排布、负原点、换分辨率全都
+   * 自动成立，也就不再需要托盘里那个「屏幕」子菜单。
+   *
+   * 落点用 `clientX/clientY`（**窗口本地 CSS 像素**）：壳反推窗口原点时用的就是这个
+   * 口径。换成屏幕坐标再让壳换算的话，"按下 → 发请求"这几毫秒的手部位移会被算成抓取
+   * 偏移 —— 拖动一开始她会跳一下。
+   *
+   * 这里**不 await**、也不重试：拖动是"有就更好"的动作，壳不在（网页端）就什么都不做。
+   */
+  function postWindowDrag(payload) {
+    if (!isDesktopShell) return;
+    try {
+      fetch("/__desktop/drag", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+        cache: "no-store",
+      }).catch(() => { /* 壳没接住就算了 */ });
+    } catch {
+      /* fetch 不可用（老壳）：退回"窗口内挪位置"那条路 */
+    }
+  }
+
+  /** 按住她了：壳从这个落点开始把窗口跟着指针挪。 */
+  const beginWindowDrag = (x, y) => postWindowDrag({ active: true, x, y });
+
+  /** 松手了：停。壳那边还有"左键已松开"与超时两道兜底，这条只是让它立刻停。 */
+  const endWindowDrag = () => postWindowDrag({ active: false });
+
+  /**
    * 这一份客户端该不该**出声**。
    *
    * 页面与桌面窗口各跑一份客户端、各收一份 SSE：让位只做在渲染上时，两份都会响，
@@ -7832,6 +7866,14 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       dragState.current = {
         startX: event.clientX,
         startY: event.clientY,
+        // 桌面端判"拖动 / 点击"与"她被拖了多远"用的是**屏幕**坐标（见 onMove/onUp）：
+        // 壳挪窗口时 `clientX` 是常量，只有屏幕坐标反映用户的手真的走了。
+        startScreenX: event.screenX,
+        startScreenY: event.screenY,
+        // 再记一份"窗口现在在哪"：壳把窗口挪走之后 `window.screenX` 会跟着变，这是
+        // 屏幕坐标之外的第二个独立证据（`screenX` 在某些壳里可能报 0）。
+        startWindowX: window.screenX,
+        startWindowY: window.screenY,
         right: posRef.current.right,
         bottom: posRef.current.bottom,
         moved: false,
@@ -7843,6 +7885,9 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       };
       lastPressRef.current = Object.assign({ at: Date.now(), layer: event.currentTarget?.getAttribute?.("data-tail") !== null ? "tail" : "hit" }, dragState.current);
       setDragging(true);
+      // 桌面端：**按住她 = 让壳开始挪窗口**（网页端什么都不发）。
+      // 判断"按在谁身上"只能在页面里做 —— 右键面板也在同一个窗口里，壳分不出来。
+      beginWindowDrag(event.clientX, event.clientY);
       try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* not capturable */ }
     }, [hitsModel, hitsHead, hitsTail]);
 
@@ -7850,10 +7895,16 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       const onMove = (event) => {
         const state = dragState.current;
         if (state === null) return;
-        const dx = event.clientX - state.startX;
-        const dy = event.clientY - state.startY;
+        // 网页端量 `client`（位置就在窗口里挪）；桌面端量 `screen` —— 那边壳在挪**窗口**，
+        // 指针相对窗口根本没动，用 client 的话"拖了半天一次都没超过 slop"，松手会被
+        // 当成点击（她会说一句话，而不是待在原地）。
+        const dx = isDesktopShell ? event.screenX - state.startScreenX : event.clientX - state.startX;
+        const dy = isDesktopShell ? event.screenY - state.startScreenY : event.clientY - state.startY;
         if (!state.moved && Math.abs(dx) < DRAG_SLOP_PX && Math.abs(dy) < DRAG_SLOP_PX) return;
         state.moved = true;
+        // 桌面端：位置归**壳**管（窗口跟着指针走），页面里的 right/bottom 一动不动。
+        // 两边同时动就是双倍位移 —— 这是最容易写出来的错。
+        if (isDesktopShell) return;
         const width = sizeRef.current;
         const nextPos = {
           right: Math.max(0, Math.min(window.innerWidth - width, state.right - dx)),
@@ -7861,17 +7912,36 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         };
         setPos(nextPos);
       };
-      const onUp = () => {
+      const onUp = (event) => {
         const state = dragState.current;
         if (state === null) return;
         dragState.current = null;
         setDragging(false);
-        if (state.moved) {
+        // 桌面端：告诉壳"我松手了"。壳那边还有按键状态与超时兜底，这条只是让它立刻停。
+        endWindowDrag();
+        // 桌面端：`pointermove` 可能漏几帧（窗口在追指针），松手这一刻的坐标才是
+        // "她到底被拖了多远"的最终答案。三条证据取其一即可：
+        //   1. 拖动过程中已经判过（`state.moved`）；
+        //   2. 指针的屏幕坐标变了（`event.screenX/screenY`）；
+        //   3. **窗口**的屏幕位置变了（`window.screenX/screenY`）—— 壳挪窗口这件事的
+        //      直接后果，与指针事件的语义无关。
+        const moved = state.moved || (isDesktopShell && (
+          Math.abs((event?.screenX ?? state.startScreenX) - state.startScreenX) >= DRAG_SLOP_PX
+          || Math.abs((event?.screenY ?? state.startScreenY) - state.startScreenY) >= DRAG_SLOP_PX
+          || Math.abs(window.screenX - state.startWindowX) >= DRAG_SLOP_PX
+          || Math.abs(window.screenY - state.startWindowY) >= DRAG_SLOP_PX
+        ));
+        if (moved) {
           lastInteraction.current = Date.now();
-          setPos((current) => {
-            saveStored({ right: Math.round(current.right), bottom: Math.round(current.bottom) });
-            return current;
-          });
+          // 网页端：位置是这一份自己的（localStorage）。桌面端：位置在壳那边
+          // （屏幕坐标，`pet-window.json`）—— 这里再存一遍反而会盖掉"窗口内挪位置"
+          // 那套已经不再成立的口径。
+          if (!isDesktopShell) {
+            setPos((current) => {
+              saveStored({ right: Math.round(current.right), bottom: Math.round(current.bottom) });
+              return current;
+            });
+          }
         } else if (state.onModel) {
           lastInteraction.current = Date.now();
           // **摸尾巴优先于摸头**（2026-09 按用户要求翻回来的）。

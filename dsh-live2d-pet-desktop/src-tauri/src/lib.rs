@@ -23,9 +23,9 @@ mod pet_window;
 mod tray;
 
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Manager, PhysicalPosition};
 
 use host::shared::{Point, Shared};
 
@@ -101,12 +101,35 @@ fn parse_arg(flag: &str) -> Option<String> {
     args.get(at + 1).cloned()
 }
 
+/// 一个**开关**在不在（`--from-plugin` 这种没有值的参数）。
+///
+/// ⚠️ 别拿 [`parse_arg`] 判开关：它读的是**下一个参数**，而 `--from-plugin` 在插件那边
+/// 恰恰是**最后一个**参数（`['--attach', url, '--from-plugin']`）⇒ `parse_arg` 返回 `None`
+/// ⇒ 插件拉起的那一只被当成"手动启动"。症状很隐蔽：日志里那句"手动启动"就是它，
+/// 而更实质的后果是「页面内」偏好会被**改写**（见 `launched_by_plugin` 的用途）。
+///
+/// 三种写法都认：`--from-plugin`（末尾）→ `Some("")`；`--from-plugin=false` → `Some("false")`；
+/// `--from-plugin --attach …`（后面还有别的参数）→ `Some("")`（下一个以 `--` 开头，当没值）。
+fn flag_value(args: &[String], flag: &str) -> Option<String> {
+    // `--flag=value` 那种写法先认（插件那边可能按开关传值）。
+    let with_equals = format!("{flag}=");
+    if let Some(argument) = args.iter().find(|argument| argument.starts_with(&with_equals)) {
+        return Some(argument[with_equals.len()..].to_string());
+    }
+    let at = args.iter().position(|arg| arg == flag)?;
+    match args.get(at + 1) {
+        Some(value) if !value.starts_with("--") => Some(value.clone()),
+        _ => Some(String::new()),
+    }
+}
+
 /// 这一份是不是**插件拉起的**（`--from-plugin` / `PET_DESKTOP_FROM_PLUGIN`）。
 ///
 /// 用途只有一个：区分"用户手动启动"与"插件按设置拉起" —— 前者遇到「页面内」偏好要改写成
 /// 「桌面」，后者要严格尊重用户的选择。见 `host::display::manual_launch_overrides_inline`。
 fn launched_by_plugin() -> bool {
-    if let Some(value) = parse_arg("--from-plugin") {
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(value) = flag_value(&args, "--from-plugin") {
         // 允许 `--from-plugin=false` 这种写法（插件那边可能按开关传值）。
         return value != "false" && value != "0";
     }
@@ -296,6 +319,167 @@ pub(crate) fn pointer_local_with(
 /// 本平台口径下的 [`pointer_local_with`]。
 pub(crate) fn pointer_local(cursor: (f64, f64), window_origin: (f64, f64), scale: f64) -> (f64, f64) {
     pointer_local_with(cursor, window_origin, scale, CURSOR_IS_LOGICAL)
+}
+
+/// [`pointer_local_with`] 的**逆运算**：知道"指针该落在窗口里的哪个点"，反推窗口原点。
+///
+/// 拖动窗口时唯一要维持的量就是这个点：每一拍拿当前光标反推窗口该摆在哪儿，指针于是
+/// 始终压在她身上原来那个位置 —— 她跟着手走。**跨屏不需要任何额外逻辑**：窗口只是
+/// 一个矩形，没有"第几块屏"这回事（这正是替掉托盘「屏幕」子菜单的那一步）。
+pub(crate) fn window_origin_for_local_with(
+    cursor: (f64, f64),
+    local: (f64, f64),
+    scale: f64,
+    logical: bool,
+) -> (f64, f64) {
+    let scale = if scale > 0.0 { scale } else { 1.0 };
+    let k = if logical { scale } else { 1.0 };
+    (cursor.0 * k - local.0 * scale, cursor.1 * k - local.1 * scale)
+}
+
+/// 本平台口径下的 [`window_origin_for_local_with`]。
+pub(crate) fn window_origin_for_local(
+    cursor: (f64, f64),
+    local: (f64, f64),
+    scale: f64,
+) -> (f64, f64) {
+    window_origin_for_local_with(cursor, local, scale, CURSOR_IS_LOGICAL)
+}
+
+/// 鼠标左键现在按着没有（拖动收尾的兜底：页面的 `pointerup` 可能永远到不了）。
+///
+/// Windows 用 `GetAsyncKeyState` —— 它问的是**键盘/鼠标的物理状态**，与谁有焦点、
+/// 窗口吃不吃事件都无关（穿透场景里正好需要这个性质）。
+#[cfg(windows)]
+pub(crate) fn left_button_down() -> bool {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
+    unsafe { (GetAsyncKeyState(VK_LBUTTON as i32) as u16 & 0x8000) != 0 }
+}
+
+/// macOS 用 CoreGraphics 的按键状态（同样与焦点无关）。
+///
+/// `kCGEventSourceStateCombinedSessionState = 0`、`kCGMouseButtonLeft = 0`。
+/// 不引 objc2：C 的 `_Bool` 与 Rust 的 `bool` 都是 1 字节，签名对得上。
+#[cfg(target_os = "macos")]
+pub(crate) fn left_button_down() -> bool {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGEventSourceButtonState(state_id: i32, button: u32) -> bool;
+    }
+    unsafe { CGEventSourceButtonState(0, 0) }
+}
+
+/// 其它平台读不到按键：只能靠页面松手的那条消息收尾。
+///
+/// 返回 `true` 而不是 `false`：`false` 会被当成"用户已经松手"，拖动一启动就结束 ——
+/// 宁可让 `DRAG_MAX` 兜底，也不要在读不到的平台上把拖动做成一次性的。
+#[cfg(not(any(windows, target_os = "macos")))]
+pub(crate) fn left_button_down() -> bool {
+    true
+}
+
+/// 拖动的轮询周期。
+///
+/// 8ms ≈ 125 次/秒：比一帧（16.7ms）密，比高刷鼠标事件（最高 1000Hz）稀 —— 再稀一点
+/// 就能看出"窗口一格一格追着指针"。每拍只做三件事：读光标、读窗口位置、必要时挪一下。
+const DRAG_POLL_MS: u64 = 8;
+
+/// 一次拖动最多持续这么久（页面没发松手 + 按键状态也读不到时的兜底）。
+///
+/// 没有它的话，任何"松手没被观察到"的情形都会变成**窗口永远跟着鼠标跑** —— 那正是
+/// 用户最讨厌的失控方式。到点就当她已经放下。
+const DRAG_MAX: Duration = Duration::from_secs(120);
+
+/// 拖动循环：页面说"按住她了"之后，把窗口挪到"指针相对窗口的位置保持不变"。
+///
+/// 为什么由壳来挪、而不是页面在 `pointermove` 里发窗口坐标：
+///
+///   * `pointermove` 只有在指针**落在窗口内**时才来。窗口一旦被甩在后面，事件就断了 ——
+///     壳自己轮询光标没有这个死角（这也是它一直在做的事，见 `spawn_hover_loop`）；
+///   * 页面发的屏幕坐标要先换算成物理像素，而"缩放"在跨屏时是会变的；壳手里两样都是
+///     原生量，不需要换算。
+///
+/// 落点（`local`）是页面给的 `clientX/clientY`，单位正好是窗口本地 CSS 像素 —— 于是
+/// "按下 → 发请求"那几毫秒里手已经挪开的距离不会被算成抓取偏移（否则拖动一开始她会跳）。
+fn spawn_drag_loop(app: AppHandle, shared: Arc<Mutex<Shared>>, home: std::path::PathBuf) {
+    std::thread::spawn(move || {
+        let mut anchor: Option<((f64, f64), Instant)> = None;
+        // 这一轮拖动有没有**真的**挪过窗口。
+        //
+        // 为什么要它：按下点一下也算"一次拖动"（页面每次 pointerdown 都会报落点），而
+        // 收尾要写位置存档 —— 不判这一下，用户每摸一次她都会写一次盘。
+        let mut moved = false;
+        // 这一次拖动里**见过按键按下**没有。
+        //
+        // 只在"见过按下、现在松了"时才收尾。因为读按键的那两个平台 API 一旦不可用
+        // （macOS 缺少输入权限之类）会恒返回 false —— 不判这一下，拖动会在第一拍就
+        // 结束（症状是"拖不动"）。这样退化之后仍然是：页面发松手 / `DRAG_MAX` 收尾。
+        let mut saw_down = false;
+        loop {
+            std::thread::sleep(Duration::from_millis(DRAG_POLL_MS));
+            let request = {
+                let guard = shared.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                guard.drag_request
+            };
+            // 页面的"按住"进来了：记下抓取点，这一拍就开始跟。
+            if let (Some(point), None) = (request, anchor) {
+                anchor = Some((point, Instant::now()));
+                moved = false;
+                saw_down = false;
+                let mut guard = shared.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                guard.dragging = true;
+            }
+            let Some((point, started)) = anchor else {
+                continue;
+            };
+            let down = left_button_down();
+            saw_down = saw_down || down;
+            // 三种收尾：页面松手了 / 按键确实按下过、现在松了 / 拖太久了。
+            if request.is_none() || (saw_down && !down) || started.elapsed() > DRAG_MAX {
+                finish_drag(&app, &shared, &home, moved);
+                anchor = None;
+                continue;
+            }
+            if follow_cursor(&app, point) {
+                moved = true;
+            }
+        }
+    });
+}
+
+/// 把窗口挪到"指针还压在 `local` 这个点上"的地方。返回**这一拍真的挪了没有**。
+fn follow_cursor(app: &AppHandle, local: (f64, f64)) -> bool {
+    let Some(window) = app.get_webview_window(pet_window::PET_WINDOW) else {
+        return false;
+    };
+    let Some((cursor_x, cursor_y)) = cursor_screen_pos() else {
+        return false;
+    };
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let (target_x, target_y) = window_origin_for_local((cursor_x, cursor_y), local, scale);
+    let Ok(current) = window.outer_position() else {
+        return false;
+    };
+    let (x, y) = (target_x.round() as i32, target_y.round() as i32);
+    // 只在真的变了才调：`set_position` 每次都惊动窗口管理器，静止时别白叫。
+    if x == current.x && y == current.y {
+        return false;
+    }
+    let _ = window.set_position(PhysicalPosition::new(x, y));
+    true
+}
+
+/// 拖动收尾：清状态；**真的挪过**才写位置存档（点一下不该写盘）。
+fn finish_drag(app: &AppHandle, shared: &Arc<Mutex<Shared>>, home: &std::path::Path, moved: bool) {
+    {
+        let mut guard = shared.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.dragging = false;
+        // 请求也要清：页面的松手消息可能晚到几毫秒，留着它下一拍会**重新拖起来**。
+        guard.drag_request = None;
+    }
+    if moved {
+        pet_window::remember_position(app, home);
+    }
 }
 
 /// 穿透轮询：读光标 → 问页面（经 host 的内存任务）→ 切窗口的忽略状态 → 写回状态。
@@ -627,7 +811,7 @@ pub fn run() {
                 if let Some(existing) = app.get_webview_window(pet_window::PET_WINDOW) {
                     let _ = existing.destroy();
                 }
-                match pet_window::create_pet_window(&handle, &host::page_url(&host)) {
+                match pet_window::create_pet_window(&handle, &host::page_url(&host), &home) {
                     Ok(()) => break,
                     Err(error) if attempt < 4 => {
                         say(format!(
@@ -642,6 +826,25 @@ pub fn run() {
             }
             // 托盘已经在前面建好了（那次挪动是实验的一部分，见上面的注释）。
             spawn_hover_loop(handle.clone(), shared.clone());
+            // ---- 拖宠物 = 挪窗口（多屏就靠这一条）----
+            //
+            // 窗口只有一块屏那么大，位置一旦相对窗口存，她就永远跨不出这块屏
+            // （issue #11 的"连多屏后无法拖到别的屏幕"）。改成挪窗口之后，屏幕坐标
+            // 说了算，多屏 / 异形排布 / 负原点 / 换分辨率全都自动成立。
+            spawn_drag_loop(handle.clone(), shared.clone(), home.clone());
+
+            // ---- macOS：她得在**所有桌面空间**上都看得见 ----
+            //
+            // macOS 的窗口默认归属创建时那个 Space，切一次桌面她就不见了（issue #11
+            // 前半段："切换桌面后消失"）。`CanJoinAllSpaces` 才是那个开关 —— 在
+            // Windows 上它没有对应物（那边每个虚拟桌面本来就是同一批窗口）。
+            #[cfg(target_os = "macos")]
+            if let Some(window) = app.get_webview_window(pet_window::PET_WINDOW) {
+                match window.set_visible_on_all_workspaces(true) {
+                    Ok(()) => say("[shell] 窗口在所有桌面空间可见（切 Space 不会消失）".to_string()),
+                    Err(error) => say(format!("[shell] 设置「所有空间可见」失败：{error}")),
+                }
+            }
             // ---- 显示层：桌面端要不要显示、以及"我还活着"的心跳 ----
             //
             // 用户在 DSH 设置里选了「页面内」时，这个窗口必须让位（否则桌面上和页面里各
@@ -671,6 +874,9 @@ pub fn run() {
             if let tauri::RunEvent::Exit = event {
                 // 退出时清掉心跳：页面里那只**立刻**回来，不用等 6 秒超时。
                 let home = resolve_home();
+                // 她最后待在哪，下次就在哪 —— 拖动结束时已经记过一次，这里再记一次是为了
+                // "没拖过、但窗口被别的东西挪了"这类情况（归位之后立刻退出也走这里）。
+                pet_window::remember_position(_app, &home);
                 host::display::clear_heartbeat(&home);
             }
         });
@@ -678,7 +884,31 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::pointer_local_with;
+    use super::{flag_value, pointer_local_with, window_origin_for_local_with};
+
+    /// `--from-plugin` 在插件那边是**最后一个**参数 —— 这一条就是为此钉的。
+    ///
+    /// 用的正是 2026-11 那次"桌面起不来"现场里抓到的命令行：
+    /// `… --attach http://127.0.0.1:3080 --from-plugin`。
+    #[test]
+    fn from_plugin_flag_is_recognised_at_the_end_of_the_command_line() {
+        let argv = |args: &[&str]| args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
+
+        let actual = argv(&["pet.exe", "--attach", "http://127.0.0.1:3080", "--from-plugin"]);
+        assert_eq!(flag_value(&actual, "--from-plugin"), Some(String::new()), "末尾那个开关必须认出来");
+
+        // 后面还有别的参数（下一个以 `--` 开头 ⇒ 当它没有值）
+        let actual = argv(&["pet.exe", "--from-plugin", "--attach", "http://127.0.0.1:3080"]);
+        assert_eq!(flag_value(&actual, "--from-plugin"), Some(String::new()));
+
+        // 显式给值
+        assert_eq!(
+            flag_value(&argv(&["pet.exe", "--from-plugin=false"]), "--from-plugin"),
+            Some("false".to_string())
+        );
+        // 没有这个开关
+        assert_eq!(flag_value(&argv(&["pet.exe", "--attach", "x"]), "--from-plugin"), None);
+    }
 
     /// 这是整条"穿透判定"链上唯一一段能在本机（Windows）对**两个平台**都验的代码 ——
     /// 所以 `logical` 才做成参数：macOS 那一支否则要等到 CI 才有第一次编译机会。
@@ -726,5 +956,40 @@ mod tests {
             let (x, y) = pointer_local_with((300.0, 200.0), (100.0, 50.0), bad, true);
             assert!(x.is_finite() && y.is_finite(), "缩放 {bad} 时算出了 {x},{y}");
         }
+    }
+
+    /// 拖动用的那条公式必须是 `pointer_local` 的**逆** —— 两个平台、几种缩放都成立。
+    ///
+    /// 这就是"拖宠物 = 挪窗口"的全部数学：知道指针该压在窗口里的哪一点，反推窗口原点。
+    #[test]
+    fn window_origin_反推回同一个原点() {
+        for logical in [false, true] {
+            for scale in [1.0, 1.25, 1.5, 2.0] {
+                for origin in [(0.0, 0.0), (100.0, 50.0), (-2560.0, -200.0), (3440.0, 0.0)] {
+                    for cursor in [(660.0, 480.0), (1200.0, 700.0), (-300.0, 90.0)] {
+                        let local = pointer_local_with(cursor, origin, scale, logical);
+                        let back = window_origin_for_local_with(cursor, local, scale, logical);
+                        assert!(
+                            (back.0 - origin.0).abs() < 1e-9 && (back.1 - origin.1).abs() < 1e-9,
+                            "logical={logical} scale={scale} origin={origin:?} cursor={cursor:?} \
+                             → local={local:?} → {back:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// 拖动时"指针在窗口里的那个点"要保持不变：光标走多远，窗口就走多远。
+    #[test]
+    fn window_origin_跟着光标走同样的距离() {
+        // Windows 口径（物理像素、缩放无关）：抓在 (200,150)，光标从 (300,200) 移到 (500,260)
+        let start = window_origin_for_local_with((300.0, 200.0), (200.0, 150.0), 1.0, false);
+        let moved = window_origin_for_local_with((500.0, 260.0), (200.0, 150.0), 1.0, false);
+        assert_eq!((moved.0 - start.0, moved.1 - start.1), (200.0, 60.0));
+        // macOS 口径（光标是逻辑点、窗口原点是物理像素、2 倍屏）：屏幕上的位移也要 ×2
+        let start = window_origin_for_local_with((150.0, 100.0), (50.0, 25.0), 2.0, true);
+        let moved = window_origin_for_local_with((250.0, 130.0), (50.0, 25.0), 2.0, true);
+        assert_eq!((moved.0 - start.0, moved.1 - start.1), (200.0, 60.0));
     }
 }

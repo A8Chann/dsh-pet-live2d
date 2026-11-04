@@ -74,6 +74,19 @@ pub struct Shared {
     /// 和 `window_visible` 分开记：那个是"按显示层规则该不该显示"的结果，这个是用户的意图。
     /// 早先只有前者，于是"藏起来"过一会儿就被显示循环重新显示出来（用户报的 bug）。
     pub hidden_by_user: bool,
+    /// **拖动窗口的请求**：页面在"按住她"的那一刻把落点（**窗口本地 CSS 像素**，
+    /// 就是 `pointerdown` 的 `clientX/clientY`）投进来；松手时置回 `None`。
+    ///
+    /// 为什么这个状态要经过页面：页面知道"这一下是按在她身上还是按在右键面板上"，
+    /// 壳只知道光标下面有没有东西。用 `clientX/clientY` 而不是屏幕坐标，是因为它在
+    /// 壳那边正好是 `pointer_local` 的口径 —— 不必从光标反推，也就不会把"按下 → 发请求"
+    /// 这几毫秒的位移算成抓取偏移（那样拖动一开始她会跳一下）。
+    ///
+    /// 真正的移动在 `lib.rs::spawn_drag_loop` 里做（那里有 `AppHandle`）—— HTTP 线程
+    /// 拿不到窗口，只能写这个邮箱。
+    pub drag_request: Option<(f64, f64)>,
+    /// 拖动线程真的在拖（诊断读口用；`drag_request` 只是"页面的意图"）。
+    pub dragging: bool,
     /// 给页面的命令队列（托盘菜单进来，页面每 33ms 取走）。
     ///
     /// 为什么不用 Tauri 的 `window.emit()`：**它不发 DOM 事件**，只走 IPC，而外部页面
@@ -110,6 +123,8 @@ impl Shared {
             layer_mode: "auto".to_string(),
             window_visible: true,
             hidden_by_user: false,
+            drag_request: None,
+            dragging: false,
             commands: Vec::new(),
         }))
     }
@@ -205,6 +220,10 @@ impl Shared {
             "scale": if self.scale > 0.0 { self.scale } else { 1.0 },
             "cursor": self.cursor.map(|(x, y)| json!([x, y])).unwrap_or(Value::Null),
             "cursorLocal": self.local.map(|(x, y)| json!([x, y])).unwrap_or(Value::Null),
+            // 拖动：`active` 是线程真的在拖，`request` 是页面投进来的落点（窗口本地 CSS 像素）。
+            // 驱动靠这两个字段判"页面 → 壳 → 窗口在动"这条链，而不是靠窗口矩形猜。
+            "dragging": self.dragging,
+            "dragRequest": self.drag_request.map(|(x, y)| json!([x, y])).unwrap_or(Value::Null),
             "interactive": self.interactive,
             "ignored": self.ignored,
             "active": self.active,
