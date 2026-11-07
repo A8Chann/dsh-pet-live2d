@@ -1238,7 +1238,7 @@ const TOOL_IDLE_MS = 1200
  * Fold the official DSH events into hub phases. Every subscription is optional
  * at runtime: an older host that lacks one simply keeps mirroring the others.
  */
-export function attachActivityEvents(ctx, hub) {
+export function attachActivityEvents(ctx, hub, getScope) {
   const on = (event, handler) => {
     try {
       ctx.on(event, handler)
@@ -1263,13 +1263,122 @@ export function attachActivityEvents(ctx, hub) {
       /* host without this event */
     }
   }
+  // ---------------------------------------------------------------------
+  // 会话进度折叠：失败/中断判定 · 完成抑制 · 子会话聚合
+  //
+  // 判据对照宿主 `turn/end` 的 data.reason 契约（与 dsh-purge / 通知插件同源）：
+  //   reason.kind ∈ { completed, blocked, aborted, error, interrupted, max-tokens }
+  //   aborted 且 reason.reason 为 user/cancel ⇒ 用户主动中止（不报错、也不庆祝）。
+  //
+  // 注意：`agent/turn-stopping` 触发时本轮的 `turn/end` 还没落盘，拿不到 reason；
+  // 所以在 `agent/status=idle`（turn 已结束、turn/end 已写入）之后再读
+  // `session.snapshotEvents()`，这是唯一稳妥的时机。
+  // ---------------------------------------------------------------------
+  let sawRunning = false        // 上电后是否真的跑过一轮（加载即空闲不庆祝）
+  let sawError = false          // 本轮出现过 agent/error（仅当 turn/end 缺 reason 时兜底判失败）
+  let activeSubagents = 0       // 正在跑的子代理数（子会话聚合：等它们全完再庆祝）
+  let pendingCelebrate = false  // 主回合已结束、但被子代理挡住的待庆祝
+  let celebrateTimer
+
+  /** 取消任何挂起的「完成」庆祝（新一轮 / 新活动 / 排队输入都会取消）。 */
+  const cancelCelebration = () => {
+    pendingCelebrate = false
+    if (celebrateTimer !== undefined) {
+      clearTimeout(celebrateTimer)
+      celebrateTimer = undefined
+    }
+  }
+
+  /** 读本会话最近一条 `turn/end` 的 reason；拿不到返回 undefined（旧宿主降级）。 */
+  const lastTurnReason = (agent) => {
+    try {
+      const session = agent?.session
+      const events = typeof session?.snapshotEvents === 'function' ? session.snapshotEvents() : undefined
+      if (!Array.isArray(events)) return undefined
+      for (let i = events.length - 1; i >= 0; i -= 1) {
+        const event = events[i]
+        if (event?.type === 'turn/end') return event.data?.reason
+      }
+      return undefined
+    } catch {
+      return undefined
+    }
+  }
+  const isUserAbort = (reason) => {
+    if (!reason || reason.kind !== 'aborted') return false
+    const cause = reason.reason
+    if (cause === 'user' || cause === 'cancel') return true
+    return Boolean(cause && typeof cause === 'object' && (cause.kind === 'user' || cause.kind === 'cancel'))
+  }
+  const isAbnormalReason = (reason) => Boolean(reason
+    && ['error', 'aborted', 'interrupted', 'max-tokens'].includes(reason.kind))
+  const inboxBusy = (agent) => {
+    try {
+      const inbox = agent?.inbox
+      if (!inbox) return false
+      if (typeof inbox.hasPending === 'function') return Boolean(inbox.hasPending())
+      if (typeof inbox.size === 'number') return inbox.size > 0
+      if (typeof inbox.length === 'number') return inbox.length > 0
+    } catch {
+      /* ignore */
+    }
+    return false
+  }
+  /**
+   * 完成庆祝：延迟一小段再演。期间若又开了新一轮（自动续跑 / 排队输入 / goal 续跑），
+   * `agent/status=running` 会把它取消 —— 这就是「自动续跑不重复庆祝」。
+   * 有子代理在跑则先挂起，等最后一个 `subagent/end` 再庆祝（子会话聚合）。
+   */
+  const DONE_DEBOUNCE_MS = 450
+  // 提醒范围 = 'main' 时不等子会话（主会话一结束就庆祝）；其余范围沿用子会话聚合。
+  const scopeIsMainOnly = () => {
+    try { return typeof getScope === 'function' && getScope() === 'main' } catch { return false }
+  }
+  const scheduleCelebration = (agent) => {
+    if (!scopeIsMainOnly() && activeSubagents > 0) { pendingCelebrate = true; return }
+    if (inboxBusy(agent)) return // 还有排队输入：这一轮不是真正的结束
+    if (celebrateTimer !== undefined) clearTimeout(celebrateTimer)
+    celebrateTimer = setTimeout(() => {
+      celebrateTimer = undefined
+      if (!scopeIsMainOnly() && activeSubagents > 0) { pendingCelebrate = true; return }
+      hub.celebrate()
+    }, DONE_DEBOUNCE_MS)
+    celebrateTimer?.unref?.()
+  }
+
   on('agent/status', (payload) => {
     const status = payload?.status
-    if (status === 'running') hub.set('thinking', '')
-    else if (status === 'idle' && hub.phase !== 'done') hub.set('idle', '')
+    const agent = payload?.agent
+    if (status === 'running') {
+      sawRunning = true
+      sawError = false
+      cancelCelebration() // 新一轮开始：取消任何待庆祝（自动续跑 / 排队 / goal）
+      hub.set('thinking', '')
+      return
+    }
+    if (status !== 'idle') return
+    if (!sawRunning) { // 插件加载时就空闲：不庆祝
+      if (hub.phase !== 'done') hub.set('idle', '')
+      return
+    }
+    const reason = lastTurnReason(agent)
+    const wasError = sawError
+    sawError = false
+    if (isAbnormalReason(reason)) {
+      if (isUserAbort(reason)) hub.set('idle', '')  // 用户主动中止：安静归位
+      else hub.set('failed', '')                    // 出错 / 中断 / 超长：判失败，不庆祝
+      return
+    }
+    if (reason === undefined && wasError) {         // 旧宿主无 reason，但本轮见过 agent/error
+      hub.set('failed', '')
+      return
+    }
+    // completed / blocked / 未知：按完成处理（延迟 + 可取消）
+    if (hub.phase !== 'done') hub.set('idle', '')
+    scheduleCelebration(agent)
   })
-  on('agent/turn-stopping', () => hub.celebrate())
-  on('agent/error', () => hub.set('failed', ''))
+  // 只记错误信号，不立刻切 failed —— 让「被重试挽回」的轮次能安静走到完成，不误报。
+  on('agent/error', () => { sawError = true })
   // approval/request is a waterfall event: it MUST resume the chain.
   on('approval/request', (_request, next) => {
     hub.set('waiting', '')
@@ -1294,6 +1403,7 @@ export function attachActivityEvents(ctx, hub) {
       clearTimeout(toolIdleTimer)
       toolIdleTimer = undefined
     }
+    cancelCelebration() // 又有工具开跑：本轮还没结束，撤掉待庆祝
     const name = exec?.name
     hub.set('tool', typeof name === 'string' ? name : '')
     return next()
@@ -1340,15 +1450,25 @@ export function attachActivityEvents(ctx, hub) {
     return answered
   })
   on('subagent/start', (info) => {
+    activeSubagents += 1 // 子会话聚合：子代理在跑，主回合即使结束也先别庆祝
     const label = typeof info?.name === 'string'
       ? info.name
       : (typeof info?.label === 'string' ? info.label : '')
     hub.set('helper', label)
   })
   on('subagent/end', () => {
-    if (hub.phase === 'helper') hub.set('thinking', '')
+    activeSubagents = Math.max(0, activeSubagents - 1)
+    if (activeSubagents > 0) return
+    if (pendingCelebrate) {
+      // 主回合早已结束，一直在等这些子代理收尾 —— 现在才真正完成
+      pendingCelebrate = false
+      hub.celebrate()
+    } else if (hub.phase === 'helper') {
+      hub.set('thinking', '')
+    }
   })
   on('agent/inbox/inserted', () => {
+    cancelCelebration() // 有排队输入 = 本轮还没真正结束，撤销待庆祝
     // 回到"刚才在演的那个"（可能是 tool / asking，也可能是 idle）——不要一律回 idle，
     // 那会让一个正在跑工具的回合看起来停了。
     const previous = hub.phase
@@ -1606,7 +1726,9 @@ export function buildRoutes(hub, display, home) {
 
 export function apply(ctx) {
   const hub = new ActivityHub()
-  attachActivityEvents(ctx, hub)
+  attachActivityEvents(ctx, hub, () => {
+    try { return readSettings(dshHome()).overrides?.notify?.scope ?? 'wait' } catch { return 'wait' }
+  })
   ctx.effect(() => () => hub.dispose(), 'live2d-pet: activity hub')
 
   // 显示层：每秒一次"按偏好把两边摆正"。桌面端的二进制由平台子包带下来
