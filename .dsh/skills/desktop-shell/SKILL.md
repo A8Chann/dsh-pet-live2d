@@ -419,6 +419,36 @@ DSH 那边，不是第二份实现）。连不上不是错误：宠物照样站�
 实测：`probe-phase.mjs` 观察 20 秒，`data-phase` 在 `tool` 与 `thinking` 之间跟着真实的
 工具调用往返（当时的"工具"就是这个驱动自己）。
 
+### 两种 SSE 帧：相位帧 vs 按会话的提醒帧（2026-11 起）
+
+DSH 侧的宿主半区现在推**两种**帧，形状不同：
+
+| 帧 | 形状 | 谁消费 |
+|---|---|---|
+| 相位帧 | `{ phase, detail, at }` | 动画（网页端与桌面端都用） |
+| 提醒帧 | `{ type: "sound", phase, detail, sessionId, key, at }` | 提示音，按 `key` 去重（同窗口 300 条 LRU） |
+
+桌面端的 Rust 半区**只转相位帧**（`dsh_link.rs` 读 `payload.phase`，`http.rs` 再按
+`{ phase, detail, at }` 发给自己页面）。这不是遗漏，是口径：桌面只有一个相位流喂一只宠物，
+没有会话维度，「这个提醒是哪个会话的」在这里归不了属。
+
+所以 `lib/client.js` 里的判断是：
+
+```js
+if (!initial && !sawSoundFrame && isDesktopShell && isPhaseSoundOwner(...)) playPhaseSoundNow(phase)
+```
+
+**桌面壳按相位响**（= 3.5.0 行为），网页端按 sound 帧响。哪天 Rust 侧也转 sound 帧，客户端
+收到第一帧后 `sawSoundFrame` 置真，这条回落自动关机，不会双响。
+
+免打扰档位（`hidden / unfocused / always`）在桌面壳里**直接放行**：小窗的
+`document.visibilityState` 恒为 `visible`，而档位描述的是「你在不在看 DSH」——小窗观察不到。
+套上默认档「仅后台」的结果是**把她永久静音**（这次实际踩到：先加了相位回落，桌面端仍然不响，
+因为 `reminderSoundAllowed()` 先返回了 false，回落到不了 `playPhaseSoundNow`）。
+
+诊断顺序（"桌面端没声音"）：① 设置页总开关与音量；② `data-phase` 有没有在变（不变是 SSE 断了）；
+③ 客户端是不是**嵌在 exe 里**的那一份（改了 `lib/client.js` 只 F5 没用，必须重建 exe）。
+
 ## 常驻开销（Windows，debug 构建，3440×1440@100%）
 
 | 项 | 实测 |
