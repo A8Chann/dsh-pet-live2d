@@ -1159,6 +1159,7 @@ export class ActivityHub {
     this.detail = ''
     this.listeners = new Set()
     this.holdTimer = undefined
+    this.eventSeq = 0
   }
 
   /** Current snapshot (sent as the first frame of every stream). */
@@ -1216,6 +1217,29 @@ export class ActivityHub {
     }
   }
 
+  /**
+   * 发一条独立的“提醒事件”。它不参与全局 phase 去重，因此同一个 phase 的
+   * 第二个会话事件也会被推给浏览器；浏览器按 key 去重并播放提示音。
+   */
+  notify(phase, detail = '', sessionId = '', key) {
+    const eventKey = key ?? `${phase}:${sessionId}:${Date.now()}:${++this.eventSeq}`
+    const payload = {
+      type: 'sound',
+      phase,
+      detail,
+      sessionId,
+      key: eventKey,
+      at: Date.now(),
+    }
+    for (const listener of this.listeners) {
+      try {
+        listener(payload)
+      } catch {
+        /* a dead stream must not break the others */
+      }
+    }
+  }
+
   dispose() {
     if (this.holdTimer !== undefined) {
       clearTimeout(this.holdTimer)
@@ -1238,7 +1262,7 @@ const TOOL_IDLE_MS = 1200
  * Fold the official DSH events into hub phases. Every subscription is optional
  * at runtime: an older host that lacks one simply keeps mirroring the others.
  */
-export function attachActivityEvents(ctx, hub) {
+export function attachActivityEvents(ctx, hub, getScope) {
   const on = (event, handler) => {
     try {
       ctx.on(event, handler)
@@ -1263,13 +1287,171 @@ export function attachActivityEvents(ctx, hub) {
       /* host without this event */
     }
   }
+  // 这里只订阅事件、不取 `agents` / `sessions` 服务：事件载荷里已经带着 agent
+  // 对象（`agent/status`、`agent/error`、`tools/*` 都是），把服务写进 `inject`
+  // 只会让整只插件在缺服务的宿主上**不加载**，换不到任何东西。
+  // ---------------------------------------------------------------------
+  // 会话进度折叠：失败/中断判定 · 完成抑制 · 子会话聚合
+  //
+  // 判据对照宿主 `turn/end` 的 data.reason 契约（与 dsh-purge / 通知插件同源）：
+  //   reason.kind ∈ { completed, blocked, aborted, error, interrupted, max-tokens }
+  //   aborted 且 reason.reason 为 user/cancel ⇒ 用户主动中止（不报错、也不庆祝）。
+  //
+  // 注意：`agent/turn-stopping` 触发时本轮的 `turn/end` 还没落盘，拿不到 reason；
+  // 所以在 `agent/status=idle`（turn 已结束、turn/end 已写入）之后再读
+  // `session.snapshotEvents()`，这是唯一稳妥的时机。
+  // ---------------------------------------------------------------------
+  let activeSubagents = 0       // 正在跑的子代理数（子会话聚合：等它们全完再庆祝）
+  const runningSubagents = new Set()
+  const pendingCelebrateSessions = new Set() // 主回合已结束、但被子代理挡住的待庆祝（按会话）
+  const celebrateTimers = new Map()          // 每个会话独立的完成防抖计时器
+  // 这两个状态必须**按会话**记：多会话同时跑时，A 会话的 running 不能代表 B 会话跑过，
+  // A 会话的 error 也不能让 B 会话在缺 reason 时被误判失败。
+  const ranSessions = new Set()     // 上电后真的跑过一轮的会话（加载即空闲不庆祝）
+  const erredSessions = new Set()   // 本轮出现过 agent/error（仅当 turn/end 缺 reason 时兜底判失败）
+  /** 会话键：优先 agent id，拿不到时退回 session id（最后才用 'main'）。 */
+  const sessionKeyOf = (agent) => agent?.id ?? agent?.session?.id ?? 'main'
+
+  /**
+   * 取消某会话挂起的「完成」庆祝（新一轮 / 新活动 / 排队输入都会取消）。
+   *
+   * `undefined` 表示**不知道是哪个会话**：这时什么都不做，而不是清空全局 ——
+   * 以前那种写法在 `tools/pre-execute` 拿不到 `exec.agent`（PTC / 嵌套调用）时
+   * 会把别的会话刚排好的庆祝一起清掉。
+   */
+  const cancelCelebration = (agentId) => {
+    if (agentId === undefined) return
+    const timer = celebrateTimers.get(agentId)
+    if (timer !== undefined) clearTimeout(timer)
+    celebrateTimers.delete(agentId)
+    pendingCelebrateSessions.delete(agentId)
+  }
+
+  /** 读本会话最近一条 `turn/end` 的 reason；拿不到返回 undefined（旧宿主降级）。 */
+  const lastTurnReason = (agent) => {
+    try {
+      const session = agent?.session
+      const events = typeof session?.snapshotEvents === 'function' ? session.snapshotEvents() : undefined
+      if (!Array.isArray(events)) return undefined
+      for (let i = events.length - 1; i >= 0; i -= 1) {
+        const event = events[i]
+        if (event?.type === 'turn/end') return event.data?.reason
+      }
+      return undefined
+    } catch {
+      return undefined
+    }
+  }
+  const isUserAbort = (reason) => {
+    if (!reason || reason.kind !== 'aborted') return false
+    const cause = reason.reason
+    if (cause === 'user' || cause === 'cancel') return true
+    return Boolean(cause && typeof cause === 'object' && (cause.kind === 'user' || cause.kind === 'cancel'))
+  }
+  const isAbnormalReason = (reason) => Boolean(reason
+    && ['error', 'aborted', 'interrupted', 'max-tokens'].includes(reason.kind))
+  const inboxBusy = (agent) => {
+    try {
+      const inbox = agent?.inbox
+      if (!inbox) return false
+      if (typeof inbox.hasPending === 'function') return Boolean(inbox.hasPending())
+      if (typeof inbox.size === 'number') return inbox.size > 0
+      if (typeof inbox.length === 'number') return inbox.length > 0
+    } catch {
+      /* ignore */
+    }
+    return false
+  }
+  /**
+   * 完成庆祝：延迟一小段再演。期间若又开了新一轮（自动续跑 / 排队输入 / goal 续跑），
+   * `agent/status=running` 会把它取消 —— 这就是「自动续跑不重复庆祝」。
+   * 有子代理在跑则先挂起，等最后一个 `subagent/end` 再庆祝（子会话聚合）。
+   */
+  const DONE_DEBOUNCE_MS = 450
+  // 提醒范围 = 'main' 时不等子会话（主会话一结束就庆祝）；其余范围沿用子会话聚合。
+  const scopeIsMainOnly = () => {
+    try { return typeof getScope === 'function' && getScope() === 'main' } catch { return false }
+  }
+  const scheduleCelebration = (agent) => {
+    const agentId = sessionKeyOf(agent)
+    if (!scopeIsMainOnly() && activeSubagents > 0) { pendingCelebrateSessions.add(agentId); return }
+    if (inboxBusy(agent)) return // 还有排队输入：这一轮不是真正的结束
+    const previous = celebrateTimers.get(agentId)
+    if (previous !== undefined) clearTimeout(previous)
+    const timer = setTimeout(() => {
+      celebrateTimers.delete(agentId)
+      if (!scopeIsMainOnly() && activeSubagents > 0) { pendingCelebrateSessions.add(agentId); return }
+      hub.celebrate()
+      hub.notify('done', '', agentId)
+    }, DONE_DEBOUNCE_MS)
+    celebrateTimers.set(agentId, timer)
+    timer?.unref?.()
+  }
+
   on('agent/status', (payload) => {
     const status = payload?.status
-    if (status === 'running') hub.set('thinking', '')
-    else if (status === 'idle' && hub.phase !== 'done') hub.set('idle', '')
+    const agent = payload?.agent
+    // 子代理的 status 也是全局事件；主会话的「完成/失败」判定不能拿它当自己结束。
+    if (agent?.session?.header?.origin === 'subagent') {
+      if (status === 'running') {
+        runningSubagents.add(agent.id)
+        activeSubagents = runningSubagents.size
+        if (hub.phase !== 'waiting' && hub.phase !== 'asking') {
+          hub.set('helper', agent.session.header.title ?? agent.id ?? '')
+        }
+        hub.notify('helper', '', agent.id)
+      } else if (status === 'idle') {
+        runningSubagents.delete(agent.id)
+        activeSubagents = runningSubagents.size
+        if (activeSubagents > 0) return
+        const waiting = [...pendingCelebrateSessions]
+        pendingCelebrateSessions.clear()
+        if (waiting.length > 0) {
+          hub.celebrate()
+          for (const id of waiting) hub.notify('done', '', id)
+        } else if (hub.phase === 'helper') {
+          hub.set('thinking', '')
+        }
+      }
+      return
+    }
+    if (status === 'running') {
+      const key = sessionKeyOf(agent)
+      ranSessions.add(key)
+      erredSessions.delete(key)
+      cancelCelebration(key) // 新一轮开始：只取消这个会话的待庆祝
+      hub.set('thinking', '')
+      hub.notify('thinking', '', key)
+      return
+    }
+    if (status !== 'idle') return
+    const key = sessionKeyOf(agent)
+    if (!ranSessions.delete(key)) { // 插件加载时就空闲的会话：不庆祝
+      if (hub.phase !== 'done') hub.set('idle', '')
+      return
+    }
+    const reason = lastTurnReason(agent)
+    const wasError = erredSessions.delete(key)
+    if (isAbnormalReason(reason)) {
+      if (isUserAbort(reason)) {
+        hub.set('idle', '')  // 用户主动中止：安静归位
+      } else {
+        hub.set('failed', '')                    // 出错 / 中断 / 超长：判失败，不庆祝
+        hub.notify('failed', '', key)
+      }
+      return
+    }
+    if (reason === undefined && wasError) {         // 旧宿主无 reason，但本轮见过 agent/error
+      hub.set('failed', '')
+      hub.notify('failed', '', key)
+      return
+    }
+    // completed / blocked / 未知：按完成处理（延迟 + 可取消）
+    if (hub.phase !== 'done') hub.set('idle', '')
+    scheduleCelebration(agent)
   })
-  on('agent/turn-stopping', () => hub.celebrate())
-  on('agent/error', () => hub.set('failed', ''))
+  // 只记错误信号，不立刻切 failed —— 让「被重试挽回」的轮次能安静走到完成，不误报。
+  on('agent/error', (payload) => { erredSessions.add(sessionKeyOf(payload?.agent)) })
   // approval/request is a waterfall event: it MUST resume the chain.
   on('approval/request', (_request, next) => {
     hub.set('waiting', '')
@@ -1294,8 +1476,11 @@ export function attachActivityEvents(ctx, hub) {
       clearTimeout(toolIdleTimer)
       toolIdleTimer = undefined
     }
+    const toolAgentId = exec?.agent?.id ?? exec?.session?.id
+    cancelCelebration(toolAgentId) // 又有工具开跑：只取消这个会话的待庆祝
     const name = exec?.name
     hub.set('tool', typeof name === 'string' ? name : '')
+    hub.notify('tool', typeof name === 'string' ? name : '', toolAgentId)
     return next()
   })
   onWaterfall('tools/post-execute', (_exec, _result, next) => {
@@ -1340,20 +1525,89 @@ export function attachActivityEvents(ctx, hub) {
     return answered
   })
   on('subagent/start', (info) => {
+    const id = info?.id ?? info?.sessionId
+    if (id !== undefined) runningSubagents.add(id)
+    activeSubagents = runningSubagents.size
     const label = typeof info?.name === 'string'
       ? info.name
       : (typeof info?.label === 'string' ? info.label : '')
-    hub.set('helper', label)
+    if (hub.phase !== 'waiting' && hub.phase !== 'asking') hub.set('helper', label)
   })
-  on('subagent/end', () => {
-    if (hub.phase === 'helper') hub.set('thinking', '')
+  on('subagent/end', (info) => {
+    const id = info?.id ?? info?.sessionId
+    if (id !== undefined) runningSubagents.delete(id)
+    activeSubagents = runningSubagents.size
+    if (activeSubagents > 0) return
+    if (pendingCelebrateSessions.size > 0) {
+      // 主回合早已结束，一直在等这些子代理收尾 —— 现在才真正完成
+      const waiting = [...pendingCelebrateSessions]
+      pendingCelebrateSessions.clear()
+      hub.celebrate()
+      for (const waitingId of waiting) hub.notify('done', '', waitingId)
+    } else if (hub.phase === 'helper') {
+      hub.set('thinking', '')
+    }
   })
-  on('agent/inbox/inserted', () => {
+  on('agent/inbox/inserted', (payload) => {
+    const agentId = payload?.agent?.id ?? payload?.agent?.session?.id
+    cancelCelebration(agentId) // 有排队输入 = 这个会话还没真正结束，撤销待庆祝
     // 回到"刚才在演的那个"（可能是 tool / asking，也可能是 idle）——不要一律回 idle，
     // 那会让一个正在跑工具的回合看起来停了。
     const previous = hub.phase
     hub.hold('queued', QUEUED_HOLD_MS, previous === 'queued' ? 'thinking' : previous)
+    hub.notify('queued', '', agentId)
   })
+
+  // 审批 / 提问是 agent-scoped 的 waterfall 事件；宿主插件挂在根作用域时不一定收到
+  // （实测 DSH 0.2.2：`ask_user_question` 只发 tool 相位，asking 完全没出现）。
+  // TypertGateway 的 `getPendingRemoteEvents()` 是宿主侧权威的"正在等用户"清单，
+  // 会话控制器判断 pendingInput 用的也是它。这里低频轮询，把它折成 waiting/asking。
+  //
+  // **先做能力探测再接管**：这个方法 0.2.2 才有（0.2.1-rc.2 的 gateway 上没有）。
+  // 老宿主上它拿不到、清单恒为空，若照旧执行 `else hub.set('thinking')`，
+  // 就会把 `approval/request` 刚设好的 waiting 每 250 ms 踩回去一次 —— 用户看到的是
+  // "审批时宠物闪一下就回去干活"。所以方法不存在时整段不介入，交回上面的事件订阅。
+  const seenPendingKeys = new Set()
+  const pendingTimer = setInterval(() => {
+    let gateway
+    try {
+      gateway = typeof ctx.get === 'function' ? ctx.get('typertGateway') : undefined
+    } catch {
+      gateway = undefined
+    }
+    if (typeof gateway?.getPendingRemoteEvents !== 'function') return
+    try {
+      const rows = gateway.getPendingRemoteEvents() ?? []
+      let phase = ''
+      const nextPending = new Set()
+      for (const row of rows) {
+        if (row?.event !== 'approval/request' && row?.event !== 'user-questions/request') continue
+        const kind = row.event === 'approval/request' ? 'waiting' : 'asking'
+        phase = kind === 'waiting' ? 'waiting' : (phase === '' ? 'asking' : phase)
+        const agentId = row.agentId === undefined ? '' : String(row.agentId)
+        const key = `pending:${row.event}:${agentId}`
+        nextPending.add(key)
+        if (!seenPendingKeys.has(key)) {
+          seenPendingKeys.add(key)
+          hub.notify(kind, '', agentId)
+        }
+      }
+      for (const key of [...seenPendingKeys]) if (!nextPending.has(key)) seenPendingKeys.delete(key)
+      if (phase !== '') {
+        if (hub.phase !== phase) hub.set(phase, '')
+      } else if (hub.phase === 'waiting' || hub.phase === 'asking') {
+        hub.set('thinking', '')
+      }
+    } catch {
+      /* 读不到清单：保持当前相位，别乱动 */
+    }
+  }, 250)
+  pendingTimer?.unref?.()
+  try {
+    ctx.effect(() => () => clearInterval(pendingTimer), 'live2d-pet: pending interaction poll')
+  } catch {
+    /* 没有 effect 的测试上下文 */
+  }
 }
 
 /** The activity stream + snapshot route. */
@@ -1606,7 +1860,9 @@ export function buildRoutes(hub, display, home) {
 
 export function apply(ctx) {
   const hub = new ActivityHub()
-  attachActivityEvents(ctx, hub)
+  attachActivityEvents(ctx, hub, () => {
+    try { return readSettings(dshHome()).overrides?.notify?.scope ?? 'wait' } catch { return 'wait' }
+  })
   ctx.effect(() => () => hub.dispose(), 'live2d-pet: activity hub')
 
   // 显示层：每秒一次"按偏好把两边摆正"。桌面端的二进制由平台子包带下来
