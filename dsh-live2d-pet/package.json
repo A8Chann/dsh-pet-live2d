@@ -25,7 +25,8 @@
     "screenshots.json",
     "README.md",
     "CHANGELOG.md",
-    "LICENSE"
+    "LICENSE",
+    "NOTICE.md"
   ],
   "exports": {
     ".": {
