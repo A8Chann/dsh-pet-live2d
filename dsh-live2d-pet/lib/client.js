@@ -305,7 +305,6 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     "移除上传": "Remove upload",
     "内置默认音频": "Built-in default sound",
     "会话提醒": "Session alerts",
-    "免打扰与提醒范围": "Do-not-disturb and reminders",
     "当前会话提醒时机": "Current session alerts",
     "提醒范围": "Notify for",
     "仅后台或最小化": "Hidden or minimized only",
@@ -4620,86 +4619,6 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     playingUploaded = null;
     playingUploadedPhase = null;
   };
-  // 多个 DSH 标签页/窗口同时在线时，SSE 会推给每一份客户端；不协调就会每次响两遍。
-  // 与通知插件同思路：BroadcastChannel 抢一个 phase 的“发声权”，可见页优先，
-  // 50ms 仲裁 + 1s 去重。
-  const SOUND_ARBITRATION_MS = 50;
-  const SOUND_VISIBLE_GRACE_MS = 60;
-  const SOUND_DEDUPE_MS = 1000;
-  let soundLeader = null;
-  const createSoundLeader = () => {
-    const tabId = Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10);
-    let channel;
-    try {
-      const Channel = window.BroadcastChannel;
-      if (Channel !== undefined) channel = new Channel("dsh-pet-live2d:sound");
-    } catch {
-      channel = undefined;
-    }
-    const recent = new Map();
-    const rivals = new Map();
-    const wins = new Set();
-    const delay = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
-    const beats = (a, b) => a.at < b.at || (a.at === b.at && a.tabId < b.tabId);
-    const onMessage = (event) => {
-      const message = event?.data;
-      if (message === null || typeof message !== "object") return;
-      const { key, tabId: sender, type, at } = message;
-      if (sender === undefined || sender === tabId || typeof key !== "string") return;
-      if (type === "claim" && typeof at === "number") {
-        const current = rivals.get(key);
-        if (current === undefined || beats({ at, tabId: sender }, current)) rivals.set(key, { at, tabId: sender });
-      } else if (type === "win") {
-        wins.add(key);
-        window.setTimeout(() => wins.delete(key), SOUND_DEDUPE_MS);
-      }
-    };
-    channel?.addEventListener("message", onMessage);
-    return {
-      async claim(key) {
-        const started = Date.now();
-        const last = recent.get(key);
-        if (last !== undefined && started - last < SOUND_DEDUPE_MS) return false;
-        recent.set(key, started);
-        if (channel === undefined) return true;
-        if (document.visibilityState !== "visible") {
-          await delay(SOUND_VISIBLE_GRACE_MS);
-          if (rivals.has(key)) {
-            rivals.delete(key);
-            return false;
-          }
-        }
-        const mine = { at: Date.now(), tabId };
-        channel.postMessage({ type: "claim", key, ...mine });
-        await delay(SOUND_ARBITRATION_MS);
-        if (wins.delete(key)) {
-          rivals.delete(key);
-          return false;
-        }
-        const rival = rivals.get(key);
-        rivals.delete(key);
-        if (rival !== undefined && beats(rival, mine)) return false;
-        channel.postMessage({ type: "win", key, tabId });
-        return true;
-      },
-      dispose() {
-        channel?.removeEventListener("message", onMessage);
-        channel?.close();
-      },
-    };
-  };
-  const getSoundLeader = () => {
-    // 同一页面可能被 HMR/旧实例加载过多份客户端；用 window 级单例共享同一个
-    // 仲裁器，否则多个客户端会互相抢 claim，把当前窗口自己判掉而无声。
-    if (typeof window === "undefined") return null;
-    if (window.__dshPetSoundLeader !== undefined && window.__dshPetSoundLeader !== null) {
-      soundLeader = window.__dshPetSoundLeader;
-      return soundLeader;
-    }
-    soundLeader = createSoundLeader();
-    window.__dshPetSoundLeader = soundLeader;
-    return soundLeader;
-  };
   const uploadedSoundFor = (phase) => UPLOADED_SOUNDS.petId === MANIFEST.current?.id
     ? UPLOADED_SOUNDS.sounds[phase] : undefined;
   const pullUploadedSounds = async () => {
@@ -5004,9 +4923,14 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
    *  - 当前会话免打扰：页面隐藏/最小化一定响；`unfocused` 在切走（窗口失焦）时也响；
    *    `always` 一律响；其余情况（你正看着这个页面）静默。
    *  - 提醒范围：子代理（helper）只有 `all` 才出声，其余范围视为"主会话的提醒"。
+   *
+   * 桌面壳**不套这两层**：她是独立小窗，`visibilityState` 恒为 visible、"免打扰时机"
+   * 描述的却是"你正在看 DSH 的那个窗口"，小窗根本观察不到 —— 套上去的结果只会是
+   * 默认档（仅后台）把桌面端永久静音。那里保持 3.5.0 的行为：相位变了就响。
    */
   const reminderSoundAllowed = (phase) => {
     if (typeof document === "undefined") return true;
+    if (isDesktopShell) return true;
     const notify = PHASE_OVERRIDES.notify ?? {};
     if (phase === "helper" && (notify.scope ?? "wait") !== "all") return false;
     const mode = notify.currentMode ?? "hidden";
@@ -5039,21 +4963,6 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     if (notes.length === 0 || soundContext?.state !== "running") return;
     stopUploadedSound();
     scheduleSoundNotes(soundContext, notes, TUNING.soundVolume);
-  };
-
-  /** 真正发声前先跨窗口抢一次；同一 phase 1 秒内只让一个标签页响。 */
-  const playPhaseSound = (phase, soundKey = phase) => {
-    if (!reminderSoundAllowed(phase)) return;
-    if (!FLAGS.soundEnabled || !(TUNING.soundVolume > 0)) return;
-    const run = () => playPhaseSoundNow(phase);
-    const leader = getSoundLeader();
-    if (leader === null) {
-      run();
-      return;
-    }
-    void leader.claim(soundKey).then((owned) => {
-      if (owned) run();
-    });
   };
 
   /**
@@ -6505,10 +6414,13 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       const hi = Math.max(lo, window.innerWidth - width + inset);
       return Math.max(lo, Math.min(hi, value));
     };
-    /** 垂直：按可见高夹在视口内（顶部、底部都不许被裁出页面）。 */
+    /**
+     * 垂直：上界收到视口内（顶部不再被裁）；下界保留"可以把她压到屏幕下沿"的老用法
+     * —— 用户会故意只露出上半身，这个不是 bug，别顺手收掉。
+     */
     const clampBottom = (value, width) => {
       const inset = visibleInsets(width).y;
-      const lo = -inset;
+      const lo = -Math.max(inset, Math.round(width * BOTTOM_OVERHANG_RATIO));
       const hi = Math.max(lo, window.innerHeight - width + inset);
       return Math.max(lo, Math.min(hi, value));
     };
@@ -8271,6 +8183,10 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       // The motion subscription (declared above) flushes a deferred phase here.
       flushPhaseRef.current = applyPhase;
       let receivedInitialPhase = false;
+      // 桌面端的宿主半区（Rust）只发 {phase, detail}，没有 per-session 的 sound 帧；
+      // 那里沿用"相位变了就响"。网页端由 sound 帧负责 —— 等第一帧 sound 到达后这里
+      // 就关机，免得将来 Rust 侧补上 sound 帧时响两遍。
+      let sawSoundFrame = false;
       const onMessage = (event) => {
         let payload;
         try {
@@ -8284,6 +8200,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         if (payload?.type === "sound") {
           const soundPhase = payload.phase;
           if (typeof soundPhase !== "string") return;
+          sawSoundFrame = true;
           const key = typeof payload.key === "string" ? payload.key : soundPhase;
           const seen = window.__dshPetSeenSoundFrames instanceof Set
             ? window.__dshPetSeenSoundFrames
@@ -8312,11 +8229,18 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         }
         const phase = payload?.phase;
         if (typeof phase !== "string") return;
+        const initial = !receivedInitialPhase;
         receivedInitialPhase = true;
         setPhaseState(phase);
         if (phase === phaseRef.current) return;
         phaseRef.current = phase;
-        // phase 帧只负责动画；声音统一由 type:"sound" 帧按 session/key 触发。
+        // 网页端：phase 帧只负责动画，声音统一由 type:"sound" 帧按 session/key 触发。
+        // 桌面壳：Rust 宿主半区还没有 sound 帧，那里继续按"相位变了就响"（与 3.5.0 一致），
+        // 否则桌面用户在 #16 之后会彻底听不到提醒。
+        if (!initial && !sawSoundFrame && isDesktopShell
+          && isPhaseSoundOwner(layerStore.value.owner)) {
+          playPhaseSoundNow(phase);
+        }
         // A phase animation may replace another phase animation, but must never
         // cut off something the user just triggered (tap / fidget / panel).
         const owner = motion.current.kind();
@@ -10251,11 +10175,6 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         volumePreviewTimer = 0;
       }
       clearSoundIdle();
-      if (soundLeader !== null) {
-        if (window.__dshPetSoundLeader === soundLeader) delete window.__dshPetSoundLeader;
-        soundLeader.dispose();
-        soundLeader = null;
-      }
       if (soundContext !== null) {
         void soundContext.close().catch(() => {});
         soundContext = null;

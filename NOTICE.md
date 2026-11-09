@@ -63,13 +63,28 @@ Live2D 作者 氵六青 已授权本项目转载与开源该模型。**但该授
 
 ---
 
-## 3. 未包含的第三方组件
+## 3. 内置提示音的音色设计 —— BSD-3-Clause
+
+`dsh-live2d-pet/lib/client.js` 内嵌的四段提示音（`done` / `failed` / `asking` / `waiting`）
+是 [dingyi222666/dsh-session-notification](https://github.com/dingyi222666/dsh-session-notification)
+四个合成音（`chime` / `fault` / `pop` / `alert`）的**离线渲染结果**：音高、波形与包络沿用该项目的设计，
+只把 Web Audio 现场合成换成了预先渲染的 WAV（22.05 kHz / 单声道 / 16-bit，约 0.6 秒）内嵌进客户端。
+
+- 上游许可：**BSD-3-Clause**（以其仓库 `package.json` 的 `"license"` 字段为准）。
+- 上游**没有**在仓库里附带 LICENSE 文本（根目录没有 LICENSE / COPYING 文件），因此这里无法逐字转载
+  其版权声明；署名保留为：**dingyi222666 / dsh-session-notification**。
+  上游若补充许可证文件，应把完整的 BSD-3 文本抄到本节。
+- 上游不随包发布任何音频文件（提示音是运行时合成的），所以这里没有复制其资产，只沿用了它的音色参数。
+
+---
+
+## 4. 未包含的第三方组件
 
 - **Live2D Cubism Core**（`live2dcubismcore.min.js`）为 Live2D Inc. 专有软件，
   **本仓库不包含、也不代为分发**。使用者须自行从
   [Live2D 官方 Cubism SDK for Web](https://www.live2d.com/download/cubism-sdk/download-web/) 取得。
 
-## 4. 打包进 `lib/live2d-vendor.js` 的第三方库
+## 5. 打包进 `lib/live2d-vendor.js` 的第三方库
 
 | 组件 | 版本 | 许可 |
 |---|---|---|
@@ -80,5 +95,5 @@ Live2D 作者 氵六青 已授权本项目转载与开源该模型。**但该授
 
 ## 一句话总结
 
-**代码 MIT，美术 CC BY-NC-SA 4.0。**
+**代码 MIT，美术 CC BY-NC-SA 4.0，内置提示音的音色设计 BSD-3-Clause。**
 转载/二创请署名 上善无形、ZipZipPipe、氵六青，别商用，并且用同样的协议分享。
