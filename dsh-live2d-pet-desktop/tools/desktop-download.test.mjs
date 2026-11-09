@@ -98,7 +98,20 @@ test('tar 解析器能从 tar.gz 里取出那个 exe（且不多取一个字节�
   assert.equal(readFileFromTar(tar, 'package/README.md').toString('utf8'), '# 占位\n')
 })
 
-test('downloadDesktopBinary 会把 exe 落到"我们自己管的那份"路径，且解析器随后找得到', async () => {
+/**
+ * 本机装了平台子包时，`resolveDesktopBinary` 会按设计**优先**返回子包里的那份
+ * （`package:` 排在 `managed` 之前），下面那条「下完之后解析器要报 managed」的断言
+ * 就不可能成立 —— 这是环境差异，不是代码坏了（干净 clone / CI 里没有 node_modules）。
+ * 所以如实跳过，而不是把断言放宽成"哪个来源都算过"（那样这条测试就白写了）。
+ */
+const packagedBinary = (() => {
+  const found = resolveDesktopBinary({ home: join(WORK, 'no-managed-yet') })
+  return typeof found?.source === 'string' && found.source.startsWith('package:') ? found : undefined
+})()
+
+test('downloadDesktopBinary 会把 exe 落到"我们自己管的那份"路径，且解析器随后找得到',
+  { skip: packagedBinary === undefined ? false : `本机装了 ${packagedBinary.source}（按设计优先于 managed）` },
+  async () => {
   const body = fakeExeBody()
   const tgz = makeTarGz([['package/package.json', Buffer.from('{}')], [EXE_INNER_PATH, body]])
   // 只认两件事：注册表元数据、以及任何 `.tgz`（**宽松匹配** —— 代码在元数据里找不到
