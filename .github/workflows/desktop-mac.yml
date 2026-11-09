@@ -47,9 +47,11 @@ permissions:
 
 jobs:
   mac-arm64:
-    # Apple Silicon。Intel（darwin-x64）要另加一行 `macos-15-intel` —— 平台表与子包清单
+    # Apple Silicon。**macOS 14 的托管 runner 已被 GitHub 下线**（2026-11 起 job 会被
+    # 立刻取消，注解是 `The configuration 'macos-14-arm64-us-default' is not supported`），
+    # 所以钉到 15。Intel（darwin-x64）要另加一行 `macos-15-intel` —— 平台表与子包清单
     # 都已经按平台写好了，加一个矩阵项即可。
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
