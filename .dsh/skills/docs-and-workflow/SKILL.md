@@ -129,6 +129,21 @@ whenToUse: >
   本机 `node ~/.dsh/pet-darwin.mjs <版本>` 取回来（它会跑 `check-tarball-mode.mjs` 验执行位）→
   `node ~/.dsh/pet-publish-dir.mjs <那个 .tgz>` 原样发。
   **不要在 Windows 本机重打 tarball** —— 见下面那条。
+- **⚠️ macOS 托管 runner 会整代下线，症状是"2 秒内被 cancel"（2026-11-09 踩，发 3.6.0 时）**：
+  推上去的 job `status=completed / conclusion=cancelled`、`runner` 为空、**0 个步骤**，
+  很难看出是"镜像没了"而不是"有人手快取消"。
+  判据在 **check-run 的注解**里（不是 run 页面）：
+
+  ```bash
+  curl -s -H "Authorization: Bearer $TOKEN" \
+    "https://api.github.com/repos/<owner>/<repo>/commits/<sha>/check-runs" \
+    | node -e "...打印 annotations_url，再 GET 它..."
+  # → "The configuration 'macos-14-arm64-us-default' is not supported"
+  ```
+
+  对照实验：同仓库推一个 `ubuntu-latest` 的临时探针能跑完 ⇒ 不是 Actions 被关，是那个 macOS 镜像没了。
+  修法就是把 `runs-on` 钉到当前可用的那代（这次 `macos-14` → `macos-15`）。
+  **`workflow_dispatch` 也会被同样拦下**，所以先修 `runs-on` 再试，别反复重跑。
 - **⚠️ 权限位：tarball 必须在目标平台上打（2026-10 实测，同一个二进制两条渠道不一样）**：
 
   | 渠道 | 谁打的包 | tar 里的权限位 |
