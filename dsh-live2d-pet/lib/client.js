@@ -41,6 +41,31 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   const API = "/api/live2d-pet";
   const STORAGE_KEY = "dsh-live2d-pet.state.v1";
 
+  // ---- 互动语音：防抖 + 单实例 ----
+  //
+  // 连续点她时，每次点击都会建一个 Audio 并立刻 play()，不防抖就会叠着播（听感像卡带，
+  // 而且同一句会重复好几遍）。这里的策略是：**间隔内的后续点击直接丢弃**，并且新的一句
+  // 开始时把上一句停掉，任何时候最多一个声音。
+  const VOICE_GAP_MS = 500;
+  let voiceLastAt = 0;
+  let voicePlaying = null;
+  function playInteractionVoice(url) {
+    const now = Date.now();
+    if (now - voiceLastAt < VOICE_GAP_MS) return;
+    voiceLastAt = now;
+    try {
+      if (voicePlaying !== null) {
+        voicePlaying.pause();
+        voicePlaying.currentTime = 0;
+      }
+      const audio = new Audio(url);
+      voicePlaying = audio;
+      const started = audio.play();
+      // 自动播放可能被浏览器拦：静默忽略，气泡照旧显示。
+      if (started && typeof started.catch === "function") started.catch(() => {});
+    } catch (_) { /* 语音是附加效果，绝不影响台词气泡 */ }
+  }
+
   // ---- 存储：`localStorage` 要裹起来用 ----
   //
   // 为什么不能直接 `window.localStorage.getItem(...)`：**有些桌面外壳里访问它就抛异常**
@@ -298,6 +323,9 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     "提示音": "Chime",
     "试听这个相位的有效来源（不受总开关与单相位静音影响，音量用当前提示音音量）": "Preview this phase's effective sound (ignores the master switch and per-phase mute; plays at the current chime volume)",
     "试听": "Preview",
+    // 「声音」页签（面板里的语音试听）
+    "声音 ": "Sound ",
+    "声音页签暂时不可用": "Sound tab is unavailable",
     "上传中…": "Uploading…",
     "上传音频": "Upload audio",
     "替换音频": "Replace audio",
@@ -3740,6 +3768,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     ROOT_SEL + " [data-panel] [data-chips] button{border:1px solid var(--pp-line);background:var(--pp-chip);color:var(--pp-chip-ink);font:400 11px/1.5 inherit;padding:3px 8px;border-radius:999px;cursor:pointer;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
     ROOT_SEL + " [data-panel] [data-chips] button:hover{background:var(--pp-accent-2)}",
     ROOT_SEL + " [data-panel] [data-chips] button[data-on]{background:var(--pp-accent-3);border-color:var(--pp-line-strong)}",
+    // 没有可试听来源的那一行：按钮禁用，别让它看起来可点。
+    ROOT_SEL + " [data-panel] [data-chips] button:disabled{opacity:.4;cursor:default}",
     ROOT_SEL + " [data-panel] footer{display:flex;align-items:center;gap:8px;padding:7px 10px;border-top:1px solid var(--pp-line-soft);color:var(--pp-muted);font-size:11px}",
     ROOT_SEL + " [data-panel] footer input[type=range]{flex:1;min-width:0}",
     // 面板底部那根"大小"滑杆和设置页那排是同一套外观。
@@ -4060,7 +4090,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
    * 默认值写在 pet.json 的 `live2d.lines` 里（宠物自己的声音），用户在设置页改过的存
    * 浏览器（`PHASE_OVERRIDES.lines`）。每条都是**一组**（随机挑一句），相位台词是单句。
    */
-  const LINE_KEYS = ["greet", "click", "pat", "tail", "spin", "reset", "loadFailed"];
+  // `play` 是面板点播放专属的那一桶：没有就退回 click。
+  const LINE_KEYS = ["greet", "click", "play", "pat", "tail", "spin", "reset", "loadFailed"];
   const PHASE_LINE_KEYS = ["thinking", "tool", "waiting", "asking", "helper", "queued", "done", "failed"];
 
   /** 把一条"用 | 分隔"的输入切成台词数组（设置页的输入框就是这个格式）。 */
@@ -6516,6 +6547,26 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
      * 文本本身由调用方从 `linesNow()` 取（宠物默认 + 用户覆盖）。
      */
     const say = useCallback((text) => {
+      // 语音：catalog 的 `voice` 把**台词文本**映射到 voice/<file>，所以挂在这一个
+      // 函数上就覆盖了全部互动——点击、摸头、摸尾巴、绕晕、归位、问候、相位台词
+      // 共 9 处调用点都走这里。气泡关掉时语音照常播（两件事互不依赖）。
+      if (typeof text === "string" && text !== "") {
+        try {
+          const current = MANIFEST.current;
+          // 分工：**相位台词与问候交给宿主旁的守护（pet-voice），这里只播互动**。
+          // 否则同一句会被播两遍——守护播一次、页面又播一次。
+          const phase = current && current.lines ? current.lines.phase : undefined;
+          const greet = current && current.lines ? current.lines.greet : undefined;
+          const handledElsewhere = (Array.isArray(greet) && greet.includes(text))
+            || (phase && typeof phase === "object" && Object.values(phase).includes(text));
+          const file = handledElsewhere ? undefined
+            : (current && current.voice ? current.voice[text] : undefined);
+          if (file !== undefined && file !== null) {
+            playInteractionVoice(API + "/voice/" + encodeURIComponent(current.id)
+              + "/" + encodeURIComponent(file));
+          }
+        } catch (_) { /* 语音是附加效果，绝不因为它影响台词气泡 */ }
+      }
       if (!FLAGS.bubbleEnabled) return;
       if (typeof text !== "string" || text === "") return;
       setBubble(text);
@@ -7246,6 +7297,10 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       // ③ 面板是用户明确点播：带 force 播放，前提已尽量补齐，别再被守卫静默拦掉
       //    （鲸鱼喷水这类既有 motionGuard、又会写独立参数的动作用得上）。
       motion.current.playOnce(group, index, { kind: "panel", force: true });
+      // ④ 面板点播也出声：优先宠物声明的 `play` 台词，没有就退回 `click`。
+      //    只在这一条路径做 —— 相位有自己的声音（`sounds` / 宿主守护），加在这里会重复。
+      const panelLine = pick(linesNow().play ?? linesNow().click ?? []);
+      if (typeof panelLine === "string" && panelLine !== "") say(panelLine);
     }, []);
 
     /**
@@ -8906,6 +8961,13 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
             //
             // **桌面端是例外**：那边没有 DSH 设置页（`ctx.slots` 挂不上），设置正文
             // 没有别的家 —— 所以只在桌面端把这一页签加回来。守卫见 desktopNow()。
+            // 一段语音都没有的宠物不显示这个页签：点进去只会是空白。
+            Object.keys(pet.voice ?? {}).length > 0 ? h("button", {
+              type: "button",
+              "data-tab-sound": "",
+              ...(tab === "sound" ? { "data-on": "" } : {}),
+              onClick: () => setTab("sound"),
+            }, t("声音 ") + String(Object.keys(pet.voice ?? {}).length)) : null,
             desktopNow() ? h("button", {
               type: "button",
               "data-tab-settings": "",
@@ -8963,6 +9025,55 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
                   }, entry.count > 1 ? t("第 ") + (index + 1) + t(" 段") : t("播放"))),
                 ),
               ))
+            : tab === "sound"
+            // 「声音」页签：每种互动一行，告诉你有几条可播、并能当场试听。
+            // 数据全部来自 catalog 的 `voice`（台词文本 → mp3），所以这里不猜文件名。
+            ? (() => {
+              // 面板是纯渲染路径：这里抛异常会连整只宠物一起崩，所以兜住。
+              try {
+                const all = linesNow();
+                const voice = pet.voice ?? {};
+                const zh = {
+                  greet: "问候", click: "点击", play: "点播", pat: "摸头", tail: "尾巴",
+                  spin: "绕晕", reset: "归位", loadFailed: "加载失败",
+                  thinking: "思考", tool: "跑工具", waiting: "等你确认", asking: "等你回答",
+                  helper: "子代理", queued: "排队", done: "完成", failed: "出错",
+                };
+                const bucket = (key) => (key in (all.phase ?? {})
+                  ? [all.phase[key]].filter((text) => typeof text === "string" && text !== "")
+                  : (all[key] ?? []));
+                // 复用面板既有外观：每一类是一个 [data-group]（小标题 + chips 按钮），
+                // 和「动作」「装扮」两个页签同一套样式，不另起行内样式。
+                return h("div", { "data-sound": "" },
+                  // 只列出**真有音频可播**的类别：`点播 0/0`、或台词有了但还没配音的行，
+                  // 在这里点不动也听不到，留着只是占地方。
+                  ...[...LINE_KEYS, ...PHASE_LINE_KEYS].filter((key) => bucket(key)
+                    .some((text) => typeof voice[text] === "string")).map((key) => {
+                    const lines = bucket(key);
+                    const ready = lines.filter((text) => typeof voice[text] === "string");
+                    return h("div", { key, "data-group": "" },
+                      h("span", null, t(zh[key] ?? key)),
+                      h("div", { "data-chips": "" },
+                        h("button", {
+                          type: "button",
+                          disabled: ready.length === 0,
+                          onClick: () => {
+                            const text = pick(ready);
+                            const file = voice[text];
+                            if (typeof file === "string") {
+                              playInteractionVoice(API + "/voice/" + encodeURIComponent(pet.id)
+                                + "/" + encodeURIComponent(file));
+                            }
+                          },
+                        }, t("试听")),
+                      ),
+                    );
+                  }),
+                );
+              } catch (_) {
+                return h("div", { "data-note-inline": "" }, t("声音页签暂时不可用"));
+              }
+              })()
             : tab === "settings"
             // 桌面端专属：设置正文（和 DSH 设置页那一节是同一个组件、同一份 store）。
             // 外面这层 `data-settings` 把作用域带进来 —— 面板只有 270→340px 宽，

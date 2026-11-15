@@ -286,6 +286,7 @@ dsh plugin --profile web add "link:./dsh-pet-live2d/dsh-live2d-pet"
   motions\          # .motion3.json
   expressions\      # .exp3.json
   catalog.json      # 可选：动作/表情的中文名与分类
+  voice\            # 可选：语音（<key>-<n>.mp3 / phase-<phase>.mp3）
 ```
 
 ```jsonc
@@ -334,6 +335,14 @@ dsh plugin --profile web add "link:./dsh-pet-live2d/dsh-live2d-pet"
   只能当 key 用，不能改写；客户端按 `navigator.language`（系统 / 浏览器语言）选覆盖层（`zh*` 用清单原文，其它语言没有覆盖层就退回中文）。
 - **界面文案**跟同一个语言来源：非中文界面下，右键面板 / 设置页 / 提示都显示英文（内部标识与存档键不翻）。
 - `sounds`：宠物声明后只有列出的相位会响；每相位最多 8 个正弦音符，频率 80–4000 Hz、起始时间 0–2 秒。没写整个字段的旧宠物沿用内置四声；无效音符不会播放。声音由页面合成，音量和静音可在设置页调整。
+- **语音**（可选）：音频放 `voice\`，文件名与台词**按位置对应** —— `lines.greet[i]` ↔
+  `greet-(i+1).mp3`，`lines.phase.thinking` ↔ `phase-thinking.mp3`（同类键还有 `click` /
+  `pat` / `tail` / `spin` / `reset` / `loadFailed`）。扫描时建「台词文本 → 文件」索引随
+  catalog 下发，页面在 `say()` 里按文本查表播放，所以**一处钩子覆盖全部互动**：点击、摸头、
+  摸尾巴、绕晕、归位都能出声。只登记**真实存在**的文件，缺哪条就哪条安静，不会去请求必然
+  404 的地址。相位台词与问候不在这里播 —— 那是宿主侧的事（`sounds` 或外部守护），客户端
+  会跳过它们，避免同一句响两遍。连续触发时 **500ms 内的后续播放会被丢弃**，新的一句还会
+  接管正在播的那句 —— 连点也最多一个声音，不会叠着响。
 - `motionOptions`：`hold`（停在最后一帧）/ `persist`（定格且不自动放手）/ `prepend`（先播前置
   动作）/ `preset`（开播前把某些参数写死）。不写就是"播一次然后回待机"。
 - `motionGuards`：动作的前提，形如"槽位 = 标签白名单"。**白名单形式没法自动满足，只能拦**
@@ -354,6 +363,7 @@ dsh plugin --profile web add "link:./dsh-pet-live2d/dsh-live2d-pet"
 | GET | `/api/live2d-pet/asset/<id>/<path>` | 只服务 `model3.json` **引用闭包**内的文件（白名单 Set 比对 + realpath 包含，`..` 永远匹配不上） |
 | GET | `/api/live2d-pet/runtime/live2dcubismcore.min.js` | Cubism Core：本地有就发本地的，没有就去 Live2D 官方 CDN 取一份并缓存（`x-live2d-core-source: cdn`）；两边都拿不到才 502 |
 | GET | `/api/live2d-pet/runtime/live2d-vendor.js` | 插件内置的 MIT vendor 分包（pixi.js + 引擎），按需懒加载 |
+| GET | `/api/live2d-pet/voice/<id>/<file>` | 语音：只服务该宠物「台词文本 → 文件」索引里登记过的文件（查表，不拼路径） |
 | GET | `/api/live2d-pet/sound/<id>` | 查询这只宠物已上传音频的相位、URL、格式和版本 |
 | GET | `/api/live2d-pet/sound/<id>/<phase>` | 读取已上传的相位音频 |
 | POST | `/api/live2d-pet/sound/<id>/<phase>` | JSON `{ "base64": "..." }` 上传，或 `{ "action": "reset" }` 移除；限 MP3 / WAV / OGG、1 MB |

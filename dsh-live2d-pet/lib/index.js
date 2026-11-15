@@ -44,6 +44,8 @@ const CAP_JSON = 64 * 1024
 const CAP_IMAGE = 24 * 1024 * 1024
 const CAP_MODEL = 48 * 1024 * 1024
 const CAP_RUNTIME = 24 * 1024 * 1024
+// 语音文件：一条台词一般几十 KB，留足余量。
+const CAP_AUDIO = 2 * 1024 * 1024
 
 const MIME = {
   '.png': 'image/png',
@@ -423,6 +425,39 @@ function readPartNames(dir, modelPath) {
 }
 
 /** Scan one pet directory into a catalog entry, or undefined when unusable. */
+/**
+ * 台词文本 -> voice/ 里的文件名。
+ *
+ * 命名规则由 pet-voice 的生成器决定：`lines.greet[i]` 对应 `greet-(i+1).mp3`，
+ * `lines.phase.thinking` 对应 `phase-thinking.mp3`。只登记**文件真实存在**的条目，
+ * 客户端因此可以直接按台词文本查表播放，不需要知道序号或猜文件名。
+ */
+function readVoiceIndex(dir, lines) {
+  const index = {}
+  let names
+  try {
+    names = readdirSync(join(dir, 'voice'))
+  } catch {
+    return index
+  }
+  const present = new Set(names)
+  const add = (text, file) => {
+    if (typeof text !== 'string' || text.trim() === '') return
+    if (!present.has(file) || index[text] !== undefined) return
+    index[text] = file
+  }
+  if (typeof lines !== 'object' || lines === null) return index
+  for (const [key, value] of Object.entries(lines)) {
+    if (key === 'phase' || !Array.isArray(value)) continue
+    value.forEach((text, at) => add(text, key + '-' + String(at + 1) + '.mp3'))
+  }
+  const phase = lines.phase
+  if (typeof phase === 'object' && phase !== null && !Array.isArray(phase)) {
+    for (const [key, text] of Object.entries(phase)) add(text, 'phase-' + key + '.mp3')
+  }
+  return index
+}
+
 export function scanPet(dir, id) {
   const manifestFile = join(dir, 'pet.json')
   if (!existsSync(manifestFile)) return undefined
@@ -585,6 +620,8 @@ export function scanPet(dir, id) {
     // 台词：宠物自己的声音（问候 / 点击 / 摸头 / 摸尾巴 / 转晕 / 归位 / 每个相位）。
     // 用户能在设置里逐条改，改过的存浏览器；这里是**默认值**。
     lines: typeof block.lines === 'object' && block.lines !== null ? block.lines : {},
+    // 台词文本 -> voice/<file>，客户端 say() 用它播互动语音。
+    voice: readVoiceIndex(dir, block.lines),
     // null 表示旧宠物没有声明提示音，浏览器半区才使用内置兜底。
     sounds: typeof block.sounds === 'object' && block.sounds !== null && !Array.isArray(block.sounds) ? block.sounds : null,
     // 互动反应候选（标签：动作的中文名或表情名）。摸头 / 摸尾巴 / 转晕各一组。
@@ -654,6 +691,8 @@ const BUNDLED_PET_HASHES = {
     'ee6e54afd8f5d2983fdc07306da4ddf12638e1b37985aa03beceb70135aa9aa4',
     // 1.1.2（英文语言覆盖层进入随包宠物之前）
     '3d05a44e0650527dd06e67ca922c9fd0034cfed4b5cc470b6d42561332b42d11',
+    // 1.1.3（给随包宠物加配音之前；音频是新增文件，靠这一版触发同步下发）
+    '2b39924be4f6a7d666e078ab549d236fd74acfa3525cf65694d471b9702d96b3',
   ],
 }
 
@@ -953,6 +992,7 @@ function catalogRoute() {
           tailParts: pet.tailParts,
           partNames: pet.partNames,
           lines: pet.lines,
+          voice: pet.voice,
           sounds: pet.sounds,
           patReactions: pet.patReactions,
           tailReactions: pet.tailReactions,
@@ -1065,6 +1105,62 @@ async function fetchCoreFromCdn(response, cachePath) {
       hint: 'Cubism Core 是 Live2D 的专有运行时，本插件不内置。可以让这台机器能访问 '
         + CORE_CDN + '，或自行下载后放到 ' + join(runtimeDir(), 'live2dcubismcore.min.js'),
     })
+  }
+}
+
+/**
+ * 语音路由（GET /api/live2d-pet/voice/<petId>/<file>）。
+ *
+ * 只服务**该宠物 voice 索引里登记过**的文件 —— 和 asset 路由同一套白名单思路，
+ * 不做路径拼接，所以 `..` 这类段永远匹配不到真文件。
+ */
+function voiceRoute() {
+  return {
+    kind: 'prefix',
+    path: API + '/voice',
+    handler: (request, response) => {
+      if (!loopbackOnly(request)) {
+        response.writeHead(403)
+        response.end()
+        return
+      }
+      if (request.method !== 'GET' && request.method !== 'HEAD') {
+        response.writeHead(405, { allow: 'GET, HEAD' })
+        response.end()
+        return
+      }
+      let pathname
+      try {
+        pathname = new URL(request.url ?? '/', 'http://pet.local').pathname
+      } catch {
+        response.writeHead(400)
+        response.end()
+        return
+      }
+      const segments = segmentsAfter(pathname, API + '/voice')
+      if (segments === undefined || segments.length !== 2) {
+        response.writeHead(404)
+        response.end()
+        return
+      }
+      let id
+      let name
+      try {
+        id = decodeURIComponent(segments[0])
+        name = decodeURIComponent(segments[1])
+      } catch {
+        response.writeHead(400)
+        response.end()
+        return
+      }
+      const pet = buildCatalog().find((candidate) => candidate.id === id)
+      if (pet === undefined || !Object.values(pet.voice ?? {}).includes(name)) {
+        response.writeHead(404)
+        response.end()
+        return
+      }
+      serveFile(request, response, pet.dir, join(pet.dir, 'voice', name), CAP_AUDIO)
+    },
   }
 }
 
@@ -1851,7 +1947,7 @@ function soundRoute(home) {
 
 /** The complete route table this plugin owns. */
 export function buildRoutes(hub, display, home) {
-  const routes = [catalogRoute(), assetRoute(), runtimeRoute(), eventsRoute(hub)]
+  const routes = [catalogRoute(), assetRoute(), voiceRoute(), runtimeRoute(), eventsRoute(hub)]
   if (display !== undefined) routes.push(layerRoute(display))
   // 共享设置：不依赖显示层（测试里也可能只给 home）。
   if (typeof home === 'string' && home !== '') routes.push(settingsRoute(home), soundRoute(home))

@@ -64,6 +64,8 @@ pub const BUNDLED_PET_HASHES: &[(&str, &[&str])] = &[(
         "ee6e54afd8f5d2983fdc07306da4ddf12638e1b37985aa03beceb70135aa9aa4",
         // 1.1.2（英文语言覆盖层进入随包宠物之前）
         "3d05a44e0650527dd06e67ca922c9fd0034cfed4b5cc470b6d42561332b42d11",
+        // 1.1.3（给随包宠物加配音之前；音频是新增文件，靠这一版触发同步下发）
+        "2b39924be4f6a7d666e078ab549d236fd74acfa3525cf65694d471b9702d96b3",
     ],
 )];
 
