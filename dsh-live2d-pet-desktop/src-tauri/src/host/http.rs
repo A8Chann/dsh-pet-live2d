@@ -115,6 +115,9 @@ fn mime_for(path: &str) -> &'static str {
         "gif" => "image/gif",
         "svg" => "image/svg+xml",
         "moc3" => "application/octet-stream",
+        // 语音必须给 audio/*：`<audio>` 拿到 octet-stream 时 Chromium 靠嗅探还能播，
+        // WebKit 直接拒绝。与 JS 版 MIME 表逐条对齐。
+        "mp3" => "audio/mpeg",
         "woff2" => "font/woff2",
         _ => "application/octet-stream",
     }
@@ -344,6 +347,11 @@ fn route(
     }
     if let Some(rest) = path.strip_prefix(&format!("{API}/asset/")) {
         return serve_asset(stream, state, rest);
+    }
+    // 语音：**两份宿主都必须有这一条**，否则独立模式下"网页端有声、桌面端没声"
+    // （挂载模式转发给 DSH，所以那种模式看起来是好的，最难查）。
+    if let Some(rest) = path.strip_prefix(&format!("{API}/voice/")) {
+        return serve_voice(stream, state, rest);
     }
     if path == format!("{API}/events") {
         return serve_events(stream, state);
@@ -935,6 +943,54 @@ fn serve_asset(
         stream,
         200,
         mime_for(&rel),
+        &bytes,
+        &[("cache-control", "no-cache".to_string())],
+    )?;
+    Ok(true)
+}
+
+/// 一条语音最多 2 MB（与 JS 版 `CAP_AUDIO` 一致）：一条台词通常几十 KB。
+const VOICE_CAP: usize = 2 * 1024 * 1024;
+
+/// 语音：`GET /api/live2d-pet/voice/<petId>/<file>`。
+///
+/// 与 asset 路由同一种白名单思路：只发这只宠物 `voice` 索引里登记过的文件名，
+/// **不拼路径** —— `..`、未登记的名字、未知宠物一律 404。
+fn serve_voice(stream: &mut TcpStream, state: &HostState, rest: &str) -> std::io::Result<bool> {
+    let segments: Vec<String> = rest.split('/').map(percent_decode).collect();
+    if segments.len() != 2 {
+        send_bytes(stream, 404, "text/plain; charset=utf-8", b"not found", &[])?;
+        return Ok(true);
+    }
+    let id = segments[0].as_str();
+    let name = segments[1].as_str();
+    // 登记的是 readdir 出来的文件名，分隔符不可能出现在里面；仍然显式挡一道。
+    if name.is_empty() || name.contains('/') || name.contains('\\') {
+        send_bytes(stream, 404, "text/plain; charset=utf-8", b"not found", &[])?;
+        return Ok(true);
+    }
+    let Some(pet) = pets(state).into_iter().find(|pet| pet.id() == id) else {
+        send_bytes(stream, 404, "text/plain; charset=utf-8", b"unknown pet", &[])?;
+        return Ok(true);
+    };
+    if !pet.has_voice_file(name) {
+        send_bytes(stream, 404, "text/plain; charset=utf-8", b"not found", &[])?;
+        return Ok(true);
+    }
+    let file = pet.dir.join("voice").join(name);
+    let Ok(bytes) = std::fs::read(&file) else {
+        send_bytes(stream, 404, "text/plain; charset=utf-8", b"missing", &[])?;
+        return Ok(true);
+    };
+    if bytes.len() > VOICE_CAP {
+        send_bytes(stream, 413, "text/plain; charset=utf-8", b"too large", &[])?;
+        return Ok(true);
+    }
+    // 头与 JS 版 `serveFile` 对齐：no-cache + 扩展名给的 content-type（mp3 = audio/mpeg）。
+    send_bytes(
+        stream,
+        200,
+        mime_for(name),
         &bytes,
         &[("cache-control", "no-cache".to_string())],
     )?;

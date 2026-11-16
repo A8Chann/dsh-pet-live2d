@@ -84,6 +84,18 @@ impl PetEntry {
     pub fn id(&self) -> &str {
         self.json.get("id").and_then(Value::as_str).unwrap_or("")
     }
+
+    /// 语音路由的白名单：这个文件名是否登记在 `voice` 索引里。
+    ///
+    /// 与 JS 版 `Object.values(pet.voice).includes(name)` 同义 —— 只认登记过的名字，
+    /// 不做路径拼接，所以 `..` / `%2F` 之类的段永远匹配不到真文件。
+    pub fn has_voice_file(&self, file: &str) -> bool {
+        self.json
+            .get("voice")
+            .and_then(Value::as_object)
+            .map(|map| map.values().any(|value| value.as_str() == Some(file)))
+            .unwrap_or(false)
+    }
 }
 
 pub fn read_json(file: &Path) -> Option<Value> {
@@ -125,6 +137,74 @@ fn read_locales(dir: &Path) -> Value {
         locales.insert(stem.to_string(), parsed);
     }
     Value::Object(locales.into_iter().collect())
+}
+
+/// 一段配音：台词文本 -> `voice/<file>`。
+///
+/// 命名规则与生成器一致：`lines.greet[i]` ↔ `greet-(i+1).mp3`，
+/// `lines.phase.thinking` ↔ `phase-thinking.mp3`。只登记**真实存在**的文件 ——
+/// 缺一条音频时浏览器应该安静，而不是去请求必然 404 的地址。
+///
+/// 语言覆盖层（`locale/<lang>.json` 的 `lines`）也登记到同一段音频：气泡在英文界面
+/// 显示英文台词，但宠物只有一份中文配音。不登记的话非中文界面会"有按钮、没声音"。
+/// 与 JS 版 `readVoiceIndex` 逐条对齐（含"先到先得、不覆盖已登记文本"）。
+fn read_voice_index(dir: &Path, lines: Option<&Value>, locales: &Value) -> Value {
+    let Ok(entries) = std::fs::read_dir(dir.join("voice")) else {
+        return json!({});
+    };
+    let present: BTreeSet<String> = entries
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().to_string())
+        .collect();
+    let mut index: Map<String, Value> = Map::new();
+    collect_voice_lines(lines, &present, &mut index);
+    if let Value::Object(overlays) = locales {
+        // BTreeMap：语言名有序，结果确定（与 JS 版的排序读目录一致）。
+        for overlay in overlays.values() {
+            collect_voice_lines(overlay.get("lines"), &present, &mut index);
+        }
+    }
+    Value::Object(index)
+}
+
+/// 把一份 `lines` 里的台词登记进索引（基础台词与每个语言覆盖层都走这里）。
+fn collect_voice_lines(
+    source: Option<&Value>,
+    present: &BTreeSet<String>,
+    index: &mut Map<String, Value>,
+) {
+    let Some(Value::Object(map)) = source else {
+        return;
+    };
+    for (key, value) in map {
+        if key == "phase" {
+            continue;
+        }
+        let Some(list) = value.as_array() else {
+            continue;
+        };
+        for (at, text) in list.iter().enumerate() {
+            let Some(text) = text.as_str() else {
+                continue;
+            };
+            add_voice(index, present, text, &format!("{key}-{}.mp3", at + 1));
+        }
+    }
+    if let Some(Value::Object(phase)) = map.get("phase") {
+        for (key, text) in phase {
+            let Some(text) = text.as_str() else {
+                continue;
+            };
+            add_voice(index, present, text, &format!("phase-{key}.mp3"));
+        }
+    }
+}
+
+fn add_voice(index: &mut Map<String, Value>, present: &BTreeSet<String>, text: &str, file: &str) {
+    if text.trim().is_empty() || !present.contains(file) || index.contains_key(text) {
+        return;
+    }
+    index.insert(text.to_string(), Value::String(file.to_string()));
 }
 
 // ---------------------------------------------------------------------------
@@ -789,6 +869,8 @@ pub fn scan_pet(dir: &Path, id: &str) -> Option<PetEntry> {
         .filter(|value| *value > 0.0 && *value <= 10.0)
         .unwrap_or(1.0);
     let translate = block.get("translate").and_then(Value::as_object);
+    // 语言覆盖层只读一次：catalog 与语音索引都要用（同一份目录，别读两遍）。
+    let locales = read_locales(dir);
     let model_url = format!(
         "{API}/asset/{}/{}",
         urlencode(id),
@@ -839,8 +921,12 @@ pub fn scan_pet(dir: &Path, id: &str) -> Option<PetEntry> {
     if let Some(map) = value.as_object_mut() {
         map.insert("motions".to_string(), Value::Array(motions));
         map.insert("expressions".to_string(), Value::Array(expressions));
-        // 语言覆盖层同样手工插键（理由同上：放进 json! 里会静默消失）。
-        map.insert("locales".to_string(), read_locales(dir));
+        // 语音索引与语言覆盖层同样手工插键（理由同上：放进 json! 里会静默消失）。
+        map.insert(
+            "voice".to_string(),
+            read_voice_index(dir, block.get("lines"), &locales),
+        );
+        map.insert("locales".to_string(), locales);
     }
 
     Some(PetEntry {
@@ -1557,5 +1643,54 @@ mod tests {
             let file = entry.dir.join(relative.replace('/', std::path::MAIN_SEPARATOR_STR));
             assert!(file.is_file(), "闭包里的 {relative} 不存在");
         }
+        // 语音索引：28 段随包配音，中文台词与英文覆盖层都指向同一段音频。
+        // 漏掉覆盖层那一半，英文界面就会"按钮在、永远没声"（查表落空）。
+        let voice = entry
+            .json
+            .get("voice")
+            .and_then(Value::as_object)
+            .expect("catalog 要带 voice 索引");
+        assert_eq!(voice.len(), 56, "28 段中文台词 + 28 段英文覆盖层台词");
+        assert_eq!(
+            voice.get("你好呀，我是鲸鱼娘～").and_then(Value::as_str),
+            Some("greet-1.mp3")
+        );
+        assert_eq!(
+            voice.get("Hi there! I'm the whale girl~").and_then(Value::as_str),
+            Some("greet-1.mp3"),
+            "语言覆盖层的台词也要指向同一段配音"
+        );
+        assert_eq!(
+            voice.get("让我想想…").and_then(Value::as_str),
+            Some("phase-thinking.mp3")
+        );
+    }
+
+    /// 语音索引：按位置配对、缺文件不登记、覆盖层复用同一段音频。
+    #[test]
+    fn voice_index_skips_missing_files_and_covers_locales() {
+        let temp = TempDir::new("voice-index");
+        let dir = temp.path();
+        std::fs::create_dir_all(dir.join("voice")).unwrap();
+        for name in ["greet-1.mp3", "pat-1.mp3", "phase-done.mp3"] {
+            std::fs::write(dir.join("voice").join(name), b"bytes").unwrap();
+        }
+        let lines = json!({
+            "greet": ["你好", "在的"],
+            "pat": ["好舒服"],
+            "phase": { "done": "搞定", "failed": "出错" },
+        });
+        let locales = json!({
+            "en": { "lines": { "greet": ["Hi", "Still here"], "pat": ["Nice"] } },
+        });
+        let index = read_voice_index(dir, Some(&lines), &locales);
+        let file = |key: &str| index.get(key).and_then(Value::as_str);
+        assert_eq!(file("你好"), Some("greet-1.mp3"));
+        assert_eq!(file("在的"), None, "greet-2.mp3 不存在：不登记");
+        assert_eq!(file("好舒服"), Some("pat-1.mp3"));
+        assert_eq!(file("搞定"), Some("phase-done.mp3"));
+        assert_eq!(file("出错"), None, "phase-failed.mp3 不存在：不登记");
+        assert_eq!(file("Hi"), Some("greet-1.mp3"), "覆盖层按位置复用同一段音频");
+        assert_eq!(file("Still here"), None, "覆盖层也不登记缺文件的那一条");
     }
 }

@@ -7,7 +7,11 @@
 //      后果是"摸头播了点击的台词"，而画面上一切正常，极难发现；
 //   2. 路由白名单。这里做错就是任意文件读取 —— 所以同时断言 `..` 与未登记名字被拒；
 //   3. 索引只登记**真实存在**的文件：缺一条音频时，客户端应该保持安静，而不是去请求
-//      一个必然 404 的地址。
+//      一个必然 404 的地址；
+//   4. 语言覆盖层（`locale/<lang>.json` 的 lines）也要指向同一段音频。漏了这条，
+//      非中文界面就是"页签在、按钮有、永远没声"；
+//   5. `content-type` 必须是 `audio/mpeg`。octet-stream 在 Chromium 上靠嗅探还能播，
+//      在 WebKit 上直接不播 —— 只断言状态码和字节数是抓不到的。
 //
 //   node --test dsh-live2d-pet-desktop/tools/voice-route.test.mjs
 
@@ -43,6 +47,7 @@ let petDir
 test.before(() => {
   petDir = join(root, 'pets', 'demo')
   mkdirSync(join(petDir, 'voice'), { recursive: true })
+  mkdirSync(join(petDir, 'locale'), { recursive: true })
   writeFileSync(join(petDir, 'demo.model3.json'), JSON.stringify({
     FileReferences: { Moc: 'demo.moc3', Textures: ['textures/tex.png'] },
   }))
@@ -52,6 +57,14 @@ test.before(() => {
     displayName: '测试宠物',
     renderer: 'live2d',
     live2d: { model: 'demo.model3.json', lines: LINES },
+  }))
+  // 英文覆盖层：台词按**位置**对应到同一段中文配音（气泡说英文，声音是宠物的原声）。
+  writeFileSync(join(petDir, 'locale', 'en.json'), JSON.stringify({
+    lines: {
+      greet: ['Hi', 'Still here'],
+      pat: ['Feels nice', 'Again?'],
+      phase: { done: 'Done!', failed: 'Uh oh' },
+    },
   }))
   for (const [name, body] of Object.entries(FILES)) {
     writeFileSync(join(petDir, 'voice', name), body)
@@ -70,7 +83,11 @@ function callVoice(routes, url) {
     const response = {
       code: null,
       bytes: 0,
-      writeHead(code) { this.code = code },
+      headers: {},
+      writeHead(code, headers) {
+        this.code = code
+        this.headers = headers ?? {}
+      },
       end(body) {
         this.bytes = body === undefined || body === null ? 0 : body.length
         resolve(this)
@@ -93,7 +110,12 @@ test('索引按位置把台词配到文件，缺少音频的条目不登记', ()
     '在的': 'greet-2.mp3',
     '好舒服': 'pat-1.mp3',
     '搞定': 'phase-done.mp3',
-  })
+    // 语言覆盖层：条件相同（文件存在）的才登记，且指向同一段音频。
+    'Hi': 'greet-1.mp3',
+    'Still here': 'greet-2.mp3',
+    'Feels nice': 'pat-1.mp3',
+    'Done!': 'phase-done.mp3',
+  }, '英文台词要按位置映射到同一段配音（缺文件的 Again? / Uh oh 不登记）')
 })
 
 test('catalog 把索引下发给客户端', async () => {
@@ -113,11 +135,13 @@ test('catalog 把索引下发给客户端', async () => {
   assert.equal(pet.voice['好舒服'], 'pat-1.mp3')
 })
 
-test('登记过的文件按原始字节返回', async () => {
+test('登记过的文件按原始字节返回，且 content-type 是 audio/mpeg', async () => {
   const routes = buildRoutes({ snapshot: () => ({}) }, undefined, root)
   const response = await callVoice(routes, '/api/live2d-pet/voice/demo/pat-1.mp3')
   assert.equal(response.code, 200)
   assert.equal(response.bytes, readFileSync(join(petDir, 'voice', 'pat-1.mp3')).length)
+  assert.equal(response.headers['content-type'], 'audio/mpeg',
+    'octet-stream 在 Chromium 靠嗅探能播、在 WebKit 不播')
 })
 
 test('未登记的文件、未知宠物、路径穿越一律 404', async () => {

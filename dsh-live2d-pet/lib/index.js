@@ -56,6 +56,9 @@ const MIME = {
   '.json': 'application/json; charset=utf-8',
   '.moc3': 'application/octet-stream',
   '.js': 'application/javascript; charset=utf-8',
+  // 语音：必须显式给 audio/*，否则 `<audio>` 拿到 application/octet-stream ——
+  // Chromium 靠嗅探还能播，WebKit 会直接拒绝。
+  '.mp3': 'audio/mpeg',
 }
 
 /** $DSH_HOME (defaults to ~/.dsh). */
@@ -424,15 +427,18 @@ function readPartNames(dir, modelPath) {
   }
 }
 
-/** Scan one pet directory into a catalog entry, or undefined when unusable. */
 /**
  * 台词文本 -> voice/ 里的文件名。
  *
- * 命名规则由 pet-voice 的生成器决定：`lines.greet[i]` 对应 `greet-(i+1).mp3`，
+ * 命名规则由生成器决定：`lines.greet[i]` 对应 `greet-(i+1).mp3`，
  * `lines.phase.thinking` 对应 `phase-thinking.mp3`。只登记**文件真实存在**的条目，
  * 客户端因此可以直接按台词文本查表播放，不需要知道序号或猜文件名。
+ *
+ * **语言覆盖层也登记**：气泡在英文界面显示的是 `locale/en.json` 里的台词，而宠物只有
+ * 一份中文配音。不把覆盖层的文本也映射到同一段音频的话，非中文界面会"有按钮、没声音"
+ * （查表永远落空），比听中文配音更糟。这里按位置复用基础台词的结论：文件存在才登记。
  */
-function readVoiceIndex(dir, lines) {
+function readVoiceIndex(dir, lines, locales) {
   const index = {}
   let names
   try {
@@ -446,18 +452,26 @@ function readVoiceIndex(dir, lines) {
     if (!present.has(file) || index[text] !== undefined) return
     index[text] = file
   }
-  if (typeof lines !== 'object' || lines === null) return index
-  for (const [key, value] of Object.entries(lines)) {
-    if (key === 'phase' || !Array.isArray(value)) continue
-    value.forEach((text, at) => add(text, key + '-' + String(at + 1) + '.mp3'))
+  const collect = (source) => {
+    if (typeof source !== 'object' || source === null) return
+    for (const [key, value] of Object.entries(source)) {
+      if (key === 'phase' || !Array.isArray(value)) continue
+      value.forEach((text, at) => add(text, key + '-' + String(at + 1) + '.mp3'))
+    }
+    const phase = source.phase
+    if (typeof phase === 'object' && phase !== null && !Array.isArray(phase)) {
+      for (const [key, text] of Object.entries(phase)) add(text, 'phase-' + key + '.mp3')
+    }
   }
-  const phase = lines.phase
-  if (typeof phase === 'object' && phase !== null && !Array.isArray(phase)) {
-    for (const [key, text] of Object.entries(phase)) add(text, 'phase-' + key + '.mp3')
+  collect(lines)
+  // 语言名按 readPetLocales 的排序遍历，结果确定。
+  if (typeof locales === 'object' && locales !== null) {
+    for (const overlay of Object.values(locales)) collect(overlay?.lines)
   }
   return index
 }
 
+/** Scan one pet directory into a catalog entry, or undefined when unusable. */
 export function scanPet(dir, id) {
   const manifestFile = join(dir, 'pet.json')
   if (!existsSync(manifestFile)) return undefined
@@ -582,12 +596,16 @@ export function scanPet(dir, id) {
     }
   }
 
+  // 语言覆盖层只读一次：目录里每多一个语言就多一次 readdir + parse，而这份目录
+  // 在 catalog 里、也在语音索引里都要用。
+  const locales = readPetLocales(dir)
+
   return {
     id,
     displayName: typeof manifest.displayName === 'string' && manifest.displayName !== '' ? manifest.displayName : id,
     description: typeof manifest.description === 'string' ? manifest.description : '',
     // Optional display-text overrides shipped beside the manifest (see readPetLocales).
-    locales: readPetLocales(dir),
+    locales,
     scale: typeof block.scale === 'number' && block.scale > 0 && block.scale <= 10 ? block.scale : 1,
     // The manifest's phase -> motion-group / expression maps (same keys the
     // catalog uses), so the browser half can retarget session phases per pet.
@@ -620,8 +638,8 @@ export function scanPet(dir, id) {
     // 台词：宠物自己的声音（问候 / 点击 / 摸头 / 摸尾巴 / 转晕 / 归位 / 每个相位）。
     // 用户能在设置里逐条改，改过的存浏览器；这里是**默认值**。
     lines: typeof block.lines === 'object' && block.lines !== null ? block.lines : {},
-    // 台词文本 -> voice/<file>，客户端 say() 用它播互动语音。
-    voice: readVoiceIndex(dir, block.lines),
+    // 台词文本 -> voice/<file>，客户端 say() 用它播互动语音（含语言覆盖层里的台词）。
+    voice: readVoiceIndex(dir, block.lines, locales),
     // null 表示旧宠物没有声明提示音，浏览器半区才使用内置兜底。
     sounds: typeof block.sounds === 'object' && block.sounds !== null && !Array.isArray(block.sounds) ? block.sounds : null,
     // 互动反应候选（标签：动作的中文名或表情名）。摸头 / 摸尾巴 / 转晕各一组。

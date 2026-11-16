@@ -49,16 +49,46 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   const VOICE_GAP_MS = 500;
   let voiceLastAt = 0;
   let voicePlaying = null;
-  function playInteractionVoice(url) {
+
+  /** 停掉正在播的那句（切宠物 / 卸载 / 音量拖到 0 时）。 */
+  function stopInteractionVoice() {
+    if (voicePlaying === null) return;
+    try {
+      voicePlaying.pause();
+      voicePlaying.currentTime = 0;
+    } catch (_) { /* 已经播完或被浏览器丢弃：不用管 */ }
+    voicePlaying = null;
+  }
+
+  /**
+   * 播一句语音。
+   *
+   * `volume` 由调用方给（`TUNING.voiceVolume`，0 = 不出声）—— 语音有自己的音量，
+   * 不跟「会话提示音」那个开关绑：提示音默认是静的，而语音是这只宠物的新功能，
+   * 默认就该听得见（要静音就把音量拖到 0）。
+   *
+   * `force` 是面板「试听」用的：试听是用户明确点播，不该被 500ms 防抖吃掉（连点两条
+   * 不同台词都要能听见），也不占用防抖窗口，免得紧接着的一次互动被它挤掉。
+   */
+  function playInteractionVoice(url, options) {
+    const force = options?.force === true;
+    const volume = typeof options?.volume === "number" ? options.volume : 1;
+    if (!(volume > 0)) {
+      stopInteractionVoice();
+      return;
+    }
     const now = Date.now();
-    if (now - voiceLastAt < VOICE_GAP_MS) return;
-    voiceLastAt = now;
+    if (!force) {
+      if (now - voiceLastAt < VOICE_GAP_MS) return;
+      voiceLastAt = now;
+    }
     try {
       if (voicePlaying !== null) {
         voicePlaying.pause();
         voicePlaying.currentTime = 0;
       }
       const audio = new Audio(url);
+      audio.volume = Math.max(0, Math.min(1, volume));
       voicePlaying = audio;
       const started = audio.play();
       // 自动播放可能被浏览器拦：静默忽略，气泡照旧显示。
@@ -326,6 +356,22 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     // 「声音」页签（面板里的语音试听）
     "声音 ": "Sound ",
     "声音页签暂时不可用": "Sound tab is unavailable",
+    // 声音页签的每一行（类别名与设置页里那张「语音」卡）
+    "问候": "Greeting",
+    "点击": "Click",
+    "点播": "Playback",
+    "摸头": "Head pat",
+    "尾巴": "Tail",
+    "绕晕": "Spin",
+    "思考": "Thinking",
+    "跑工具": "Running tools",
+    "等你确认": "Waiting for approval",
+    "子代理": "Sub-agent",
+    "排队": "Queued",
+    "完成": "Done",
+    "语音": "Voice",
+    "语音音量": "Voice volume",
+    "说话的音量 · 0 = 不出声": "Speech volume · 0 = silent",
     "上传中…": "Uploading…",
     "上传音频": "Upload audio",
     "替换音频": "Replace audio",
@@ -4199,6 +4245,14 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     spinWindowMs: 1600,
     /** 会话提示音音量，0 为无声。 */
     soundVolume: 0.35,
+    /**
+     * 宠物配音音量，0 = 不出声。
+     *
+     * 与 `soundVolume` 分开是故意的：提示音（合成的正弦音）默认是关的，而语音是宠物
+     * 自己的声音，默认就该听得见；两者混用一个滑杆的话，"关掉提示音"会顺手把新功能
+     * 也关掉，"调小提示音"又会把配音一起压到 0.35。
+     */
+    voiceVolume: 0.7,
   };
 
   /** 出厂值快照（「恢复默认」用）。 */
@@ -4231,10 +4285,13 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     { key: "spinTurns", label: t("转几圈算晕"), min: 1, max: 6, step: 0.5, group: "interact" },
     { key: "spinWindowMs", label: t("要在多少 ms 内"), min: 300, max: 6000, step: 100, group: "interact" },
     { key: "soundVolume", label: t("提示音音量"), min: 0, max: 1, step: 0.05, group: "sound" },
+    // 语音单独一组：提示音默认静音，语音默认听得见（两者不是一个开关）。
+    { key: "voiceVolume", label: t("语音音量"), min: 0, max: 1, step: 0.05, group: "voice" },
   ];
   /** 可调项的分组（没写 group 的都归「手感」）。hint 显示在卡片右上角。 */
   const TUNING_GROUPS = [
     { id: "feel", label: t("手感"), hint: t("指针 / 嘴 / 眨眼") },
+    { id: "voice", label: t("语音"), hint: t("说话的音量 · 0 = 不出声") },
     { id: "fidget", label: t("摸鱼节奏"), hint: t("多久开始、间隔多长") },
     { id: "interact", label: t("互动"), hint: t("摸头 / 摸尾巴 / 转圈") },
     { id: "bubble", label: t("气泡"), hint: t("显示什么 · 在哪") },
@@ -6550,20 +6607,16 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       // 语音：catalog 的 `voice` 把**台词文本**映射到 voice/<file>，所以挂在这一个
       // 函数上就覆盖了全部互动——点击、摸头、摸尾巴、绕晕、归位、问候、相位台词
       // 共 9 处调用点都走这里。气泡关掉时语音照常播（两件事互不依赖）。
+      //
+      // **不跳过问候与相位**：它们没有别的播放者（`sounds` 是页面合成的正弦音，
+      // 播不了语音）。留着文件却没人播，等于"随包 28 段配音里 12 段永远听不到"。
       if (typeof text === "string" && text !== "") {
         try {
           const current = MANIFEST.current;
-          // 分工：**相位台词与问候交给宿主旁的守护（pet-voice），这里只播互动**。
-          // 否则同一句会被播两遍——守护播一次、页面又播一次。
-          const phase = current && current.lines ? current.lines.phase : undefined;
-          const greet = current && current.lines ? current.lines.greet : undefined;
-          const handledElsewhere = (Array.isArray(greet) && greet.includes(text))
-            || (phase && typeof phase === "object" && Object.values(phase).includes(text));
-          const file = handledElsewhere ? undefined
-            : (current && current.voice ? current.voice[text] : undefined);
-          if (file !== undefined && file !== null) {
+          const file = current && current.voice ? current.voice[text] : undefined;
+          if (typeof file === "string") {
             playInteractionVoice(API + "/voice/" + encodeURIComponent(current.id)
-              + "/" + encodeURIComponent(file));
+              + "/" + encodeURIComponent(file), { volume: TUNING.voiceVolume });
           }
         } catch (_) { /* 语音是附加效果，绝不因为它影响台词气泡 */ }
       }
@@ -6575,6 +6628,10 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     }, []);
 
     useEffect(() => () => window.clearTimeout(bubbleTimer.current), []);
+
+    // 切宠物 / 卸载时把那句语音停掉：她换了身体还自顾自说话会很怪。
+    // 依赖 petId 是故意的 —— 换宠物只重跑清理，不重跑播放。
+    useEffect(() => () => stopInteractionVoice(), [petId]);
 
     // 一句话只采一次头部锚点，存成舞台比例；呼吸与摇头不会让对白追着几何抖。
     // 位置直接写 DOM，不把布局测量变成整只宠物的持续重渲染。
@@ -8938,7 +8995,11 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
             catalog.pets.length > 1
               ? h("select", {
                   value: pet.id,
-                  onChange: (event) => setPetId(event.target.value),
+                  onChange: (event) => {
+                    setPetId(event.target.value);
+                    // 页签跟着宠物走：「声音」是这一只的台词表，下一只可能一段配音都没有。
+                    if (tab === "sound") setTab("motions");
+                  },
                 }, catalog.pets.map((entry) => h("option", { key: entry.id, value: entry.id }, petDisplayName(entry))))
               : h("span", { "data-title": "", title: petDescription(pet) }, petDisplayName(pet)),
             h("button", {
@@ -9025,19 +9086,23 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
                   }, entry.count > 1 ? t("第 ") + (index + 1) + t(" 段") : t("播放"))),
                 ),
               ))
-            : tab === "sound"
+            : tab === "sound" && Object.keys(pet.voice ?? {}).length > 0
             // 「声音」页签：每种互动一行，告诉你有几条可播、并能当场试听。
             // 数据全部来自 catalog 的 `voice`（台词文本 → mp3），所以这里不猜文件名。
+            // 守卫 `pet.voice` 是给"切到没配音的宠物"用的：页签按钮会消失，若正文还按
+            // 旧 tab 渲染，面板就只剩一个空壳（没有页签高亮、什么都没有）。
             ? (() => {
               // 面板是纯渲染路径：这里抛异常会连整只宠物一起崩，所以兜住。
               try {
                 const all = linesNow();
                 const voice = pet.voice ?? {};
-                const zh = {
-                  greet: "问候", click: "点击", play: "点播", pat: "摸头", tail: "尾巴",
-                  spin: "绕晕", reset: "归位", loadFailed: "加载失败",
-                  thinking: "思考", tool: "跑工具", waiting: "等你确认", asking: "等你回答",
-                  helper: "子代理", queued: "排队", done: "完成", failed: "出错",
+                // 标签**在这里**就过 t()：ui-strings 那条检查要求每个对照表 key 都以
+                // `t("…")` 的形式真的出现在源码里（否则英文界面会漏翻，而且不报错）。
+                const labels = {
+                  greet: t("问候"), click: t("点击"), play: t("点播"), pat: t("摸头"),
+                  tail: t("尾巴"), spin: t("绕晕"), reset: t("归位"), loadFailed: t("加载失败"),
+                  thinking: t("思考"), tool: t("跑工具"), waiting: t("等你确认"), asking: t("等你回答"),
+                  helper: t("子代理"), queued: t("排队"), done: t("完成"), failed: t("出错"),
                 };
                 const bucket = (key) => (key in (all.phase ?? {})
                   ? [all.phase[key]].filter((text) => typeof text === "string" && text !== "")
@@ -9052,17 +9117,21 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
                     const lines = bucket(key);
                     const ready = lines.filter((text) => typeof voice[text] === "string");
                     return h("div", { key, "data-group": "" },
-                      h("span", null, t(zh[key] ?? key)),
+                      h("span", null, labels[key] ?? key),
                       h("div", { "data-chips": "" },
                         h("button", {
                           type: "button",
-                          disabled: ready.length === 0,
                           onClick: () => {
                             const text = pick(ready);
                             const file = voice[text];
                             if (typeof file === "string") {
+                              // 试听是用户明确点播：绕过 500ms 防抖，音量 0 时用
+                              // 试听音量（和「提示音」那几行试听同一条规矩）。
                               playInteractionVoice(API + "/voice/" + encodeURIComponent(pet.id)
-                                + "/" + encodeURIComponent(file));
+                                + "/" + encodeURIComponent(file), {
+                                force: true,
+                                volume: TUNING.voiceVolume > 0 ? TUNING.voiceVolume : PREVIEW_VOLUME,
+                              });
                             }
                           },
                         }, t("试听")),

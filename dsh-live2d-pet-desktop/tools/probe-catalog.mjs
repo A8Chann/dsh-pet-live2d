@@ -214,6 +214,43 @@ for (const path of outside) {
 }
 check('闭包外的路径两侧都拒绝', refused === outside.length, refused + '/' + outside.length)
 
+// ---------------------------------------------------------------- 3.5 语音
+// 语音是**两份宿主都必须有**的路由：独立模式下壳自己发，挂载模式转发给 DSH。
+// 只比 catalog 字段抓不到"字段有、路由没有"这种分叉 —— 所以逐字节比一遍。
+let voicesCompared = 0
+let voiceMismatch = 0
+let firstVoiceMismatch = ''
+for (const pet of jsPets) {
+  const files = [...new Set(Object.values(pet.voice ?? {}))]
+  for (const file of files) {
+    const path = '/api/live2d-pet/voice/' + encodeURIComponent(pet.id) + '/' + encodeURIComponent(file)
+    const [js, rust] = await Promise.all([getBytes(jsBase, path), getBytes(rustBase, path)])
+    voicesCompared += 1
+    if (!(js.status === 200 && rust.status === 200 && js.bytes.equals(rust.bytes))) {
+      voiceMismatch += 1
+      if (firstVoiceMismatch === '') {
+        firstVoiceMismatch = file + '（js ' + js.status + '/' + js.bytes.length + 'B vs rust '
+          + rust.status + '/' + rust.bytes.length + 'B）'
+      }
+    }
+  }
+}
+check('语音文件逐字节相同（两份宿主都有 /voice 路由）', voiceMismatch === 0 && voicesCompared > 0,
+  voicesCompared + ' 个文件里 ' + voiceMismatch + ' 个不同'
+  + (firstVoiceMismatch === '' ? '' : '，首个：' + firstVoiceMismatch))
+
+const voiceOutside = ['../pet.json', 'unknown.mp3']
+let voiceRefused = 0
+for (const name of voiceOutside) {
+  const path = '/api/live2d-pet/voice/' + encodeURIComponent(petId) + '/' + encodeURIComponent(name)
+  const [js, rust] = await Promise.all([getBytes(jsBase, path), getBytes(rustBase, path)])
+  if (js.status >= 400 && rust.status >= 400) voiceRefused += 1
+  else console.log('  （' + path + '：js=' + js.status + ' rust=' + rust.status + '）')
+}
+check('语音白名单外的名字两侧都拒绝', voiceRefused === voiceOutside.length,
+  voiceRefused + '/' + voiceOutside.length)
+
+
 // ---------------------------------------------------------------- 4. 运行时文件
 for (const [label, path] of [
   ['vendor 分包', '/api/live2d-pet/runtime/live2d-vendor.js'],
