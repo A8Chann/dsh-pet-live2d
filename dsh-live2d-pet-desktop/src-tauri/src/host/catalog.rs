@@ -221,14 +221,19 @@ fn bundled_pet(relative: &str) -> Option<&'static [u8]> {
     super::embed::get(&name)
 }
 
-/// 把嵌进来的随包宠物写到 `root/<id>/`（宿主启动时做一次）。
+/// 把嵌进来的随包宠物写到 `root/pets/<id>/`（宿主启动时做一次）。
 ///
-/// 与 JS 版的差别：JS 是 `cpSync(bundled, target)` —— 从磁盘拷；这里是**从内存写**，
-/// 因为 exe 里没有"随包目录"这回事。
+/// **`pets/` 这一段不能丢**：运行期是 `install_bundled_pets(root/pets, pets_root)`，
+/// 而 `plugin_extracted(root)` 也按 `root/pets/<id>/pet.json` 认人。早先这里剥的是
+/// `plugin/pets/`，于是文件落在 `root/<id>/` —— 两个判据都落空：独立模式**每次启动都
+/// 重解包一遍**，而安装/升级那一步面对的 `root/pets` 永远不存在（静默跳过）。症状是
+/// "exe 里明明有 28 段语音，`%DSH_HOME%\pets` 里却一个都没有"，只有挂载模式正常
+/// （那边由 DSH 的插件负责安装）。测试见 `the_real_bundled_pet_is_embedded_and_scannable`。
 pub fn materialize_bundled_pets(root: &Path) -> std::io::Result<usize> {
     let mut written = 0usize;
     for (name, bytes) in super::embed::entries() {
-        let Some(relative) = name.strip_prefix("plugin/pets/") else {
+        // 保留 `pets/`：嵌进来的名字是 `plugin/pets/<id>/…`，落地布局要与真包一致。
+        let Some(relative) = name.strip_prefix("plugin/") else {
             continue;
         };
         let dest = root.join(relative.replace('/', std::path::MAIN_SEPARATOR_STR));
@@ -1584,9 +1589,16 @@ mod tests {
         let payload_root = temp.path().join("plugin");
         let written = materialize_bundled_pets(&payload_root).expect("解包随包宠物");
         assert!(written >= 60, "随包宠物应该有 60+ 个文件，实际 {written}");
+        // 落地布局必须是 `plugin/pets/<id>/…`：`plugin_extracted` 与运行期的
+        // `install_bundled_pets(plugin_root/pets, …)` 都按这个路径认人。
+        // 这条断言就是那次"独立模式永远不装宠物"的回归测试。
+        assert!(
+            crate::host::embed::plugin_extracted(&payload_root),
+            "解包后 plugin_extracted 必须为真（否则每次启动都会重解包、且安装那步找不到目录）"
+        );
 
         let pets = temp.path().join("pets");
-        install_bundled_pets(&payload_root, &pets);
+        install_bundled_pets(&payload_root.join("pets"), &pets);
         let entry = scan_pet(&pets.join("ds-whale-girl"), "ds-whale-girl").expect("扫得出这只宠物");
         assert_eq!(entry.id(), "ds-whale-girl");
         // 与网页端同一套期望值（对拍驱动也断言这些数字）。
