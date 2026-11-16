@@ -1,7 +1,7 @@
 // 用户上传的相位音频只落在独立目录；请求路径和文件名均由白名单生成。
 import { createHash, randomBytes } from 'node:crypto'
 import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
 
 export const SOUND_PHASES = Object.freeze(['thinking', 'tool', 'waiting', 'asking', 'helper', 'queued', 'done', 'failed'])
 export const MAX_AUDIO = 1024 * 1024
@@ -229,3 +229,210 @@ export function decodeSound(value) {
   if (bytes.length === 0 || bytes.length > MAX_AUDIO || bytes.toString('base64') !== value || !soundMime(bytes)) return undefined
   return bytes
 }
+
+// ---------------------------------------------------------------------------
+// 声音库：每只宠物一套"可管理的声音"
+// ---------------------------------------------------------------------------
+//
+// 与上面那套"相位上传音频"（`<petId>--<phase>.audio`）的关系：那套是**旧接口**，
+// 文件格式与路径都不变；第一次读库时把已有的旧文件收编成 `legacy-<phase>` 条目，
+// 之后统一走新接口。库里有两类：
+//
+//   * 随包（`pet.json` 的 `voices`）—— 只读，不能删/替换；
+//   * 用户（这里）—— 可改名、替换、删除；文件同样落在 `pet-sounds/`，模式
+//     `<petId>--<soundId>.audio`（和旧文件同一套命名，soundId 就是 phase 时正好重合）。
+//
+// 元数据单独一份 `pet-sounds/<petId>.sounds.json`：只记 id / 名字 / 旧相位 / 时间，
+// 文件是否存在永远以磁盘为准（手删文件后条目自动消失，不会留下点不开的卡）。
+
+/** 一只宠物最多放多少条用户声音（防止有人把目录刷爆）。 */
+export const MAX_LIBRARY = 64
+const MAX_NAME = 60
+const SOUND_ID = /^[A-Za-z0-9_-]{1,64}$/
+
+function validPetId(petId) {
+  return typeof petId === 'string' && SOUND_ID.test(petId)
+}
+
+function libraryMetaPath(home, petId) {
+  if (!validPetId(petId)) throw new Error('invalid-path')
+  return join(soundDir(home, true), petId + '.sounds.json')
+}
+
+/**
+ * 用户声音/旧上传的实际文件路径。
+ *
+ * 旧上传的文件名是 `<petId>--<phase>.audio`，而它的库 id 是 `legacy-<phase>` ——
+ * 所以**带 phase 的条目按 phase 找文件**，其余按 id。早期实现统一按 id 拼，结果
+ * `legacy-done` 去读 `demo--legacy-done.audio`：列表里有、点开 404。
+ */
+function libraryFilePath(home, petId, soundId, phase, create) {
+  if (!validPetId(petId) || typeof soundId !== 'string' || !SOUND_ID.test(soundId)) throw new Error('invalid-path')
+  const fileId = phase !== undefined && soundId === 'legacy-' + phase ? phase : soundId
+  return join(soundDir(home, create), petId + '--' + fileId + '.audio')
+}
+
+function cleanName(value) {
+  if (typeof value !== 'string') return ''
+  return value.replace(/\s+/g, ' ').trim().slice(0, MAX_NAME)
+}
+
+function readLibraryMeta(home, petId) {
+  let parsed
+  try {
+    parsed = JSON.parse(readFileSync(libraryMetaPath(home, petId), 'utf8'))
+  } catch {
+    return { version: 1, sounds: [] }
+  }
+  if (parsed === null || typeof parsed !== 'object' || !Array.isArray(parsed.sounds)) {
+    return { version: 1, sounds: [] }
+  }
+  const sounds = []
+  const seen = new Set()
+  for (const entry of parsed.sounds) {
+    if (entry === null || typeof entry !== 'object') continue
+    const id = typeof entry.id === 'string' ? entry.id : ''
+    if (!SOUND_ID.test(id) || seen.has(id)) continue
+    const phase = typeof entry.phase === 'string' && SOUND_PHASES.includes(entry.phase) ? entry.phase : undefined
+    // 文件没了就一起丢掉：宁可少一条，也不要留一张点了没反应的卡。
+    try {
+      const stat = lstatSync(libraryFilePath(home, petId, id, phase, false))
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_AUDIO) continue
+    } catch {
+      continue
+    }
+    const item = { id, name: cleanName(entry.name), at: Number.isFinite(entry.at) ? entry.at : 0 }
+    if (phase !== undefined) item.phase = phase
+    sounds.push(item)
+    seen.add(id)
+  }
+  return { version: 1, sounds }
+}
+
+function writeLibraryMeta(home, petId, meta) {
+  const path = libraryMetaPath(home, petId)
+  const temp = join(soundDir(home, false), '.' + randomBytes(16).toString('hex') + '.lib.tmp')
+  const fd = openSync(temp, 'wx', 0o600)
+  try {
+    writeFileSync(fd, JSON.stringify({ version: 1, sounds: meta.sounds }, null, 2) + '\n')
+    closeSync(fd)
+    renameSync(temp, path)
+  } catch (error) {
+    try { closeSync(fd) } catch { /* 已关闭 */ }
+    try { unlinkSync(temp) } catch { /* 已移走 */ }
+    throw error
+  }
+}
+
+function writeAudio(path, bytes) {
+  const temp = join(dirname(path), '.' + randomBytes(16).toString('hex') + '.tmp')
+  const fd = openSync(temp, 'wx', 0o600)
+  try {
+    writeFileSync(fd, bytes)
+    closeSync(fd)
+    renameSync(temp, path)
+  } catch (error) {
+    try { closeSync(fd) } catch { /* 已关闭 */ }
+    try { unlinkSync(temp) } catch { /* 已移走 */ }
+    throw error
+  }
+}
+
+/**
+ * 读声音库（含一次性的旧文件收编）。
+ *
+ * 幂等：收编结果写进元数据，第二次读不再重复；文件被手删掉的条目在读的时候就消失。
+ */
+export function listLibrarySounds(home, petId) {
+  if (!validPetId(petId)) return []
+  const meta = readLibraryMeta(home, petId)
+  let changed = false
+  const seen = new Set(meta.sounds.map((entry) => entry.id))
+  for (const phase of SOUND_PHASES) {
+    const id = 'legacy-' + phase
+    if (seen.has(id)) continue
+    let stat
+    try {
+      stat = lstatSync(libraryFilePath(home, petId, 'legacy-' + phase, phase, false))
+    } catch {
+      continue
+    }
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_AUDIO) continue
+    meta.sounds.push({ id, name: '', phase, at: stat.mtimeMs })
+    seen.add(id)
+    changed = true
+  }
+  if (changed) {
+    try { writeLibraryMeta(home, petId, meta) } catch { /* 只读盘：本次照旧返回 */ }
+  }
+  return meta.sounds
+}
+
+/** 取一条用户声音的字节；随包声音不在这里（它们在宠物目录里）。 */
+export function readLibrarySound(home, petId, soundId) {
+  const entry = listLibrarySounds(home, petId).find((item) => item.id === soundId)
+  if (entry === undefined) return undefined
+  let bytes
+  try {
+    bytes = readFileSync(libraryFilePath(home, petId, soundId, entry.phase, false))
+  } catch {
+    return undefined
+  }
+  const mime = soundMime(bytes)
+  if (!mime || bytes.length > MAX_AUDIO) return undefined
+  return Object.assign({}, entry, { bytes, mime })
+}
+
+/**
+ * 新增一条用户声音。`bytes` 必须已经过 `decodeSound`（容器判据也在这里再验一遍）。
+ * 返回新条目；名字为空时留空，由客户端按文件名/「声音」兜底显示。
+ */
+export function addLibrarySound(home, petId, name, bytes) {
+  const sounds = listLibrarySounds(home, petId)
+  if (sounds.length >= MAX_LIBRARY) throw new Error('too-many-sounds')
+  const mime = bytes === undefined ? undefined : soundMime(bytes)
+  if (!mime || bytes.length > MAX_AUDIO) throw new Error('invalid-audio')
+  const id = 'u-' + randomBytes(6).toString('hex')
+  writeAudio(libraryFilePath(home, petId, id, undefined, true), bytes)
+  const entry = { id, name: cleanName(name), at: Date.now() }
+  const meta = readLibraryMeta(home, petId)
+  meta.sounds.push(entry)
+  writeLibraryMeta(home, petId, meta)
+  return entry
+}
+
+/** 替换用户声音的内容（id 不变，名字不变）。找不到返回 undefined。 */
+export function replaceLibrarySound(home, petId, soundId, bytes) {
+  const entry = listLibrarySounds(home, petId).find((item) => item.id === soundId)
+  if (entry === undefined) return undefined
+  const mime = bytes === undefined ? undefined : soundMime(bytes)
+  if (!mime || bytes.length > MAX_AUDIO) throw new Error('invalid-audio')
+  writeAudio(libraryFilePath(home, petId, soundId, entry.phase, true), bytes)
+  return entry
+}
+
+/** 删除一条用户声音（文件 + 条目）。随包声音不在这里。 */
+export function deleteLibrarySound(home, petId, soundId) {
+  const entry = listLibrarySounds(home, petId).find((item) => item.id === soundId)
+  if (entry === undefined) return false
+  try {
+    const path = libraryFilePath(home, petId, soundId, entry.phase, false)
+    const stat = lstatSync(path)
+    if (stat.isFile() && !stat.isSymbolicLink()) unlinkSync(path)
+  } catch { /* 已经没了：照旧把条目删掉 */ }
+  const meta = readLibraryMeta(home, petId)
+  meta.sounds = meta.sounds.filter((item) => item.id !== soundId)
+  writeLibraryMeta(home, petId, meta)
+  return true
+}
+
+/** 改名（只影响用户声音；名字可以为空，客户端会兜底）。 */
+export function renameLibrarySound(home, petId, soundId, name) {
+  const meta = readLibraryMeta(home, petId)
+  const entry = meta.sounds.find((item) => item.id === soundId)
+  if (entry === undefined) return undefined
+  entry.name = cleanName(name)
+  writeLibraryMeta(home, petId, meta)
+  return entry
+}
+

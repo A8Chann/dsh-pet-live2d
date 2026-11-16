@@ -15,5 +15,6 @@ pub mod embed;
 pub mod http;
 pub mod settings;
 pub mod shared;
+pub mod sound_library;
 
 pub use http::{page_url, serve};

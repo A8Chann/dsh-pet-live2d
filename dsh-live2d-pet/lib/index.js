@@ -30,7 +30,10 @@ import { fileURLToPath } from 'node:url'
 import { createDisplayLayer } from './display.js'
 import { desktopHint, desktopSupported, resolveDesktopBinary } from './desktop.js'
 import { readSettings, writeSettings } from './settings.js'
-import { SOUND_PHASES, MAX_SOUND_BODY, decodeSound, readSound, resetSound, writeSound } from './sound-files.js'
+import {
+  SOUND_PHASES, MAX_SOUND_BODY, decodeSound, readSound, resetSound, writeSound,
+  addLibrarySound, deleteLibrarySound, listLibrarySounds, readLibrarySound, renameLibrarySound, replaceLibrarySound,
+} from './sound-files.js'
 
 export const name = 'live2d-pet'
 
@@ -59,6 +62,8 @@ const MIME = {
   // 语音：必须显式给 audio/*，否则 `<audio>` 拿到 application/octet-stream ——
   // Chromium 靠嗅探还能播，WebKit 会直接拒绝。
   '.mp3': 'audio/mpeg',
+  '.wav': 'audio/wav',
+  '.ogg': 'audio/ogg',
 }
 
 /** $DSH_HOME (defaults to ~/.dsh). */
@@ -428,47 +433,107 @@ function readPartNames(dir, modelPath) {
 }
 
 /**
- * 台词文本 -> voice/ 里的文件名。
+ * 气泡键（互动/问候）与相位键。
  *
- * 命名规则由生成器决定：`lines.greet[i]` 对应 `greet-(i+1).mp3`，
- * `lines.phase.thinking` 对应 `phase-thinking.mp3`。只登记**文件真实存在**的条目，
- * 客户端因此可以直接按台词文本查表播放，不需要知道序号或猜文件名。
- *
- * **语言覆盖层也登记**：气泡在英文界面显示的是 `locale/en.json` 里的台词，而宠物只有
- * 一份中文配音。不把覆盖层的文本也映射到同一段音频的话，非中文界面会"有按钮、没声音"
- * （查表永远落空），比听中文配音更糟。这里按位置复用基础台词的结论：文件存在才登记。
+ * **必须与客户端 `LINE_KEYS` / `PHASE_LINE_KEYS`、Rust 版 `BUBBLE_KEYS` / `PHASE_KEYS`
+ * 逐项一致**：三处一起决定 catalog 里 `bubbles` 的形状与顺序。
  */
-function readVoiceIndex(dir, lines, locales) {
-  const index = {}
-  let names
-  try {
-    names = readdirSync(join(dir, 'voice'))
-  } catch {
-    return index
+const BUBBLE_KEYS = ['greet', 'click', 'play', 'pat', 'tail', 'spin', 'reset', 'loadFailed']
+const PHASE_KEYS = ['thinking', 'tool', 'waiting', 'asking', 'helper', 'queued', 'done', 'failed']
+const VOICE_ID = /^[A-Za-z0-9_-]{1,64}$/
+const AUDIO_FILE = /\.(mp3|wav|ogg)$/i
+
+/**
+ * 宠物自带的声音清单（`live2d.voices`）。
+ *
+ * ```jsonc
+ * "voices": [{ "id": "greet-1", "name": "问候 1", "file": "voice/greet-1.mp3" }]
+ * ```
+ *
+ * 只收**文件真实存在**的条目：缺文件的 id 会让面板出现"选了却没声"的卡。`file` 走
+ * `safeRel`（不含 `..`/绝对路径），服务时再按宠物目录做一次包含检查。
+ */
+function readVoices(dir, raw) {
+  const voices = []
+  if (!Array.isArray(raw)) return voices
+  for (const item of raw) {
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) continue
+    const id = typeof item.id === 'string' ? item.id.trim() : ''
+    if (!VOICE_ID.test(id) || voices.some((voice) => voice.id === id)) continue
+    const file = safeRel(item.file)
+    if (file === undefined || !AUDIO_FILE.test(file) || !existsSync(join(dir, file))) continue
+    const name = typeof item.name === 'string' && item.name.trim() !== '' ? item.name.trim() : id
+    voices.push({ id, name, file })
   }
-  const present = new Set(names)
-  const add = (text, file) => {
-    if (typeof text !== 'string' || text.trim() === '') return
-    if (!present.has(file) || index[text] !== undefined) return
-    index[text] = file
+  return voices
+}
+
+/** 一条气泡卡片：`{ text, sound? }`；也接受老格式的纯字符串。 */
+function normaliseBubble(item) {
+  if (typeof item === 'string') {
+    const text = item.trim()
+    return text === '' ? undefined : { text }
   }
-  const collect = (source) => {
-    if (typeof source !== 'object' || source === null) return
-    for (const [key, value] of Object.entries(source)) {
-      if (key === 'phase' || !Array.isArray(value)) continue
-      value.forEach((text, at) => add(text, key + '-' + String(at + 1) + '.mp3'))
-    }
-    const phase = source.phase
-    if (typeof phase === 'object' && phase !== null && !Array.isArray(phase)) {
-      for (const [key, text] of Object.entries(phase)) add(text, 'phase-' + key + '.mp3')
-    }
+  if (item === null || typeof item !== 'object' || Array.isArray(item)) return undefined
+  const text = typeof item.text === 'string' ? item.text.trim() : ''
+  const hasSound = typeof item.sound === 'string' && item.sound !== ''
+  const silent = item.sound === null
+  if (text === '' && !hasSound && !silent) return undefined
+  const out = { text }
+  if (hasSound) out.sound = item.sound
+  else if (silent) out.sound = null
+  return out
+}
+
+/**
+ * `live2d.bubbles`（新格式）→ 规范化气泡表；没有这个字段时按老的 `lines` 派生。
+ *
+ * 形状：
+ * ```jsonc
+ * "bubbles": {
+ *   "greet": [{ "text": "你好呀", "sound": "greet-1" }],
+ *   "phase": { "done": { "text": "搞定！", "sound": "phase-done" } }
+ * }
+ * ```
+ * 相位可以**只有声音没有文本**（`{ "text": "", "sound": "phase-done" }`），因为相位的
+ * 提示音与气泡现在是一张卡；`sound: null` 表示显式无声（压过宠物默认）。
+ */
+function readBubbles(block) {
+  const raw = typeof block.bubbles === 'object' && block.bubbles !== null && !Array.isArray(block.bubbles)
+    ? block.bubbles : {}
+  const lines = typeof block.lines === 'object' && block.lines !== null ? block.lines : {}
+  const bubbles = {}
+  for (const key of BUBBLE_KEYS) {
+    const source = Array.isArray(raw[key])
+      ? raw[key]
+      : Array.isArray(lines[key]) ? lines[key].map((text) => ({ text })) : []
+    bubbles[key] = source.map(normaliseBubble).filter((item) => item !== undefined)
   }
-  collect(lines)
-  // 语言名按 readPetLocales 的排序遍历，结果确定。
-  if (typeof locales === 'object' && locales !== null) {
-    for (const overlay of Object.values(locales)) collect(overlay?.lines)
+  const rawPhase = typeof raw.phase === 'object' && raw.phase !== null && !Array.isArray(raw.phase) ? raw.phase : {}
+  const linesPhase = typeof lines.phase === 'object' && lines.phase !== null ? lines.phase : {}
+  bubbles.phase = {}
+  for (const key of PHASE_KEYS) {
+    const explicit = Object.hasOwn(rawPhase, key)
+    const item = normaliseBubble(explicit ? rawPhase[key] : linesPhase[key])
+    if (item !== undefined) bubbles.phase[key] = item
   }
-  return index
+  return bubbles
+}
+
+/**
+ * 声音库 = 随包声音（`live2d.voices`，只读）+ 用户上传（`$DSH_HOME/pet-sounds/`）。
+ *
+ * 客户端只认 id 与显示名；播放地址由 `/sound-file/<pet>/<id>` 统一给。
+ * `builtin: true` 的条目**不可删除/替换** —— 升级时会覆盖整个宠物目录，用户改的会丢。
+ */
+function soundLibraryFor(petId, voices) {
+  const sounds = voices.map((voice) => ({ id: voice.id, name: voice.name, builtin: true }))
+  for (const entry of listLibrarySounds(dshHome(), petId)) {
+    const item = { id: entry.id, name: entry.name, builtin: false }
+    if (entry.phase !== undefined) item.phase = entry.phase
+    sounds.push(item)
+  }
+  return sounds
 }
 
 /** Scan one pet directory into a catalog entry, or undefined when unusable. */
@@ -597,8 +662,11 @@ export function scanPet(dir, id) {
   }
 
   // 语言覆盖层只读一次：目录里每多一个语言就多一次 readdir + parse，而这份目录
-  // 在 catalog 里、也在语音索引里都要用。
+  // 在 catalog 里、也在声音清单里都要用。
   const locales = readPetLocales(dir)
+  // 随包声音（只读，来自 pet.json）与气泡表（新格式，缺省时按 lines 派生）。
+  const voices = readVoices(dir, block.voices)
+  const bubbles = readBubbles(block)
 
   return {
     id,
@@ -638,8 +706,13 @@ export function scanPet(dir, id) {
     // 台词：宠物自己的声音（问候 / 点击 / 摸头 / 摸尾巴 / 转晕 / 归位 / 每个相位）。
     // 用户能在设置里逐条改，改过的存浏览器；这里是**默认值**。
     lines: typeof block.lines === 'object' && block.lines !== null ? block.lines : {},
-    // 台词文本 -> voice/<file>，客户端 say() 用它播互动语音（含语言覆盖层里的台词）。
-    voice: readVoiceIndex(dir, block.lines, locales),
+    // 气泡卡片（文本 + 声音 id），客户端按它渲染/播放；老的 `lines` 仍下发一份给旧客户端。
+    bubbles,
+    // 随包声音（id / 显示名 / 相对路径）；服务时按 id 查表，不拼路径。
+    voices,
+    // 声音库（随包 + 用户）：面板「声音」页签与设置里的选择器都用这一份。
+    // 注意与下面的 `sounds` 区分：那个是**相位音符**（sine），老契约，不动。
+    soundLibrary: soundLibraryFor(id, voices),
     // null 表示旧宠物没有声明提示音，浏览器半区才使用内置兜底。
     sounds: typeof block.sounds === 'object' && block.sounds !== null && !Array.isArray(block.sounds) ? block.sounds : null,
     // 互动反应候选（标签：动作的中文名或表情名）。摸头 / 摸尾巴 / 转晕各一组。
@@ -711,6 +784,8 @@ const BUNDLED_PET_HASHES = {
     '3d05a44e0650527dd06e67ca922c9fd0034cfed4b5cc470b6d42561332b42d11',
     // 1.1.3（给随包宠物加配音之前；音频是新增文件，靠这一版触发同步下发）
     '2b39924be4f6a7d666e078ab549d236fd74acfa3525cf65694d471b9702d96b3',
+    // 1.1.4（声音库与气泡卡片之前；英文覆盖层进了语音的那一版）
+    '96a3e7959c9d6aea51ef52abc3fdcd6e9800c9878916ce59a4216f7dd1b49256',
   ],
 }
 
@@ -1010,7 +1085,9 @@ function catalogRoute() {
           tailParts: pet.tailParts,
           partNames: pet.partNames,
           lines: pet.lines,
-          voice: pet.voice,
+          bubbles: pet.bubbles,
+          voices: pet.voices,
+          soundLibrary: pet.soundLibrary,
           sounds: pet.sounds,
           patReactions: pet.patReactions,
           tailReactions: pet.tailReactions,
@@ -1127,15 +1204,97 @@ async function fetchCoreFromCdn(response, cachePath) {
 }
 
 /**
- * 语音路由（GET /api/live2d-pet/voice/<petId>/<file>）。
+ * 声音库路由：`GET/POST/DELETE /api/live2d-pet/sounds/<petId>[/<soundId>]`。
  *
- * 只服务**该宠物 voice 索引里登记过**的文件 —— 和 asset 路由同一套白名单思路，
- * 不做路径拼接，所以 `..` 这类段永远匹配不到真文件。
+ *   * GET    列表（catalog 里已有一份，这里是改完之后的刷新口）
+ *   * POST   无 id：新增（`{ base64, name? }`）
+ *             有 id：替换内容（`{ base64 }`）或改名（`{ name }`）
+ *   * DELETE 删除（只对用户声音；随包声音 403 —— 升级会重写宠物目录，删了也留不住）
+ *
+ * 与 `/sound`（旧的相位上传）共用同一套容器判据与"只收本机请求"的门槛。
  */
-function voiceRoute() {
+function soundsRoute(home) {
   return {
     kind: 'prefix',
-    path: API + '/voice',
+    path: API + '/sounds',
+    handler: async (request, response) => {
+      const fail = (status, error) => sendJson(response, status, { ok: false, error })
+      if (!loopbackOnly(request)) return fail(403, 'forbidden')
+      let parts
+      try {
+        parts = segmentsAfter(new URL(request.url ?? '/', 'http://pet.local').pathname, API + '/sounds')?.map(decodeURIComponent)
+      } catch {
+        return fail(400, 'invalid-path')
+      }
+      if (parts === undefined || parts.length < 1 || parts.length > 2) return fail(404, 'not-found')
+      const [petId, soundId] = parts
+      if (!/^[A-Za-z0-9_-]{1,64}$/.test(petId)
+        || (soundId !== undefined && !/^[A-Za-z0-9_-]{1,64}$/.test(soundId))) return fail(404, 'not-found')
+      const pet = buildCatalog().find((candidate) => candidate.id === petId)
+      if (pet === undefined) return fail(404, 'not-found')
+      const isBuiltin = (id) => pet.voices.some((voice) => voice.id === id)
+      const respondList = () => {
+        const next = buildCatalog().find((candidate) => candidate.id === petId) ?? pet
+        return sendJson(response, 200, { ok: true, sounds: next.soundLibrary })
+      }
+
+      if (request.method === 'GET' || request.method === 'HEAD') {
+        if (soundId !== undefined) return fail(405, 'method-not-allowed')
+        return sendJson(response, 200, { ok: true, sounds: pet.soundLibrary })
+      }
+
+      if (request.method === 'DELETE') {
+        if (soundId === undefined) return fail(405, 'method-not-allowed')
+        const guard = mutationGuard(request, false)
+        if (guard !== undefined) return fail(403, guard)
+        if (isBuiltin(soundId)) return fail(403, 'builtin-sound')
+        try {
+          if (!deleteLibrarySound(home, petId, soundId)) return fail(404, 'not-found')
+        } catch {
+          return fail(500, 'write-failed')
+        }
+        return respondList()
+      }
+
+      if (request.method !== 'POST') return fail(405, 'method-not-allowed')
+      const guard = mutationGuard(request, true)
+      if (guard !== undefined) return fail(403, guard)
+      if (soundId !== undefined && isBuiltin(soundId)) return fail(403, 'builtin-sound')
+      const body = await readJsonBody(request, MAX_SOUND_BODY)
+      if (body.error !== undefined) return fail(body.error === 'too-large' ? 413 : 400, body.error)
+      const parsed = body.parsed
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return fail(400, 'bad-body')
+      try {
+        if (soundId === undefined) {
+          const bytes = decodeSound(parsed.base64)
+          if (bytes === undefined) return fail(400, 'invalid-audio')
+          addLibrarySound(home, petId, parsed.name, bytes)
+          return respondList()
+        }
+        if (parsed.base64 !== undefined) {
+          const bytes = decodeSound(parsed.base64)
+          if (bytes === undefined) return fail(400, 'invalid-audio')
+          if (replaceLibrarySound(home, petId, soundId, bytes) === undefined) return fail(404, 'not-found')
+          return respondList()
+        }
+        if (parsed.name !== undefined) {
+          if (renameLibrarySound(home, petId, soundId, parsed.name) === undefined) return fail(404, 'not-found')
+          return respondList()
+        }
+        return fail(400, 'bad-body')
+      } catch (error) {
+        if (String(error?.message) === 'too-many-sounds') return fail(409, 'too-many-sounds')
+        return fail(500, 'write-failed')
+      }
+    },
+  }
+}
+
+/** 声音字节：`GET /api/live2d-pet/sound-file/<petId>/<soundId>`。 */
+function soundFileRoute(home) {
+  return {
+    kind: 'prefix',
+    path: API + '/sound-file',
     handler: (request, response) => {
       if (!loopbackOnly(request)) {
         response.writeHead(403)
@@ -1147,37 +1306,45 @@ function voiceRoute() {
         response.end()
         return
       }
-      let pathname
+      let parts
       try {
-        pathname = new URL(request.url ?? '/', 'http://pet.local').pathname
+        parts = segmentsAfter(new URL(request.url ?? '/', 'http://pet.local').pathname, API + '/sound-file')?.map(decodeURIComponent)
       } catch {
         response.writeHead(400)
         response.end()
         return
       }
-      const segments = segmentsAfter(pathname, API + '/voice')
-      if (segments === undefined || segments.length !== 2) {
+      if (parts === undefined || parts.length !== 2) {
         response.writeHead(404)
         response.end()
         return
       }
-      let id
-      let name
-      try {
-        id = decodeURIComponent(segments[0])
-        name = decodeURIComponent(segments[1])
-      } catch {
-        response.writeHead(400)
-        response.end()
-        return
-      }
-      const pet = buildCatalog().find((candidate) => candidate.id === id)
-      if (pet === undefined || !Object.values(pet.voice ?? {}).includes(name)) {
+      const [petId, soundId] = parts
+      const pet = buildCatalog().find((candidate) => candidate.id === petId)
+      if (pet === undefined) {
         response.writeHead(404)
         response.end()
         return
       }
-      serveFile(request, response, pet.dir, join(pet.dir, 'voice', name), CAP_AUDIO)
+      // 随包声音：按 id 查表拿相对路径，再交给 serveFile（它自己会做包含检查）。
+      const voice = pet.voices.find((candidate) => candidate.id === soundId)
+      if (voice !== undefined) {
+        serveFile(request, response, pet.dir, join(pet.dir, voice.file), CAP_AUDIO)
+        return
+      }
+      const sound = readLibrarySound(home ?? dshHome(), petId, soundId)
+      if (sound === undefined) {
+        response.writeHead(404)
+        response.end()
+        return
+      }
+      response.writeHead(200, {
+        'cache-control': 'no-store',
+        'x-content-type-options': 'nosniff',
+        'content-type': sound.mime,
+        'content-length': String(sound.bytes.length),
+      })
+      response.end(request.method === 'HEAD' ? undefined : sound.bytes)
     },
   }
 }
@@ -1894,6 +2061,43 @@ function trustedSoundHost(request) {
   ].includes(host)
 }
 
+/**
+ * 读一条 JSON 请求体（带上限）。返回 `{ parsed }` 或 `{ error }`。
+ *
+ * 单独抽出来是因为"声音库"与"相位上传"两条路由都要用；上限由调用方给
+ * （`MAX_SOUND_BODY` 已经给 base64 留过膨胀余量）。
+ */
+async function readJsonBody(request, limit) {
+  let size = 0
+  const chunks = []
+  try {
+    for await (const chunk of request) {
+      size += chunk.length
+      if (size > limit) return { error: 'too-large' }
+      chunks.push(chunk)
+    }
+  } catch {
+    return { error: 'bad-body' }
+  }
+  try {
+    return { parsed: JSON.parse(Buffer.concat(chunks).toString('utf8')) }
+  } catch {
+    return { error: 'bad-body' }
+  }
+}
+
+/**
+ * 会写本地文件的请求必须同时满足：可信 Host、同源（若有 Origin）、声明 JSON。
+ * `needJson = false` 给 DELETE 用（它没有请求体）。
+ */
+function mutationGuard(request, needJson = true) {
+  if (!trustedSoundHost(request)) return 'untrusted-host'
+  const origin = request.headers.origin
+  if (typeof origin === 'string' && origin !== `http://${request.headers.host}` && origin !== `https://${request.headers.host}`) return 'cross-origin'
+  if (needJson && !/^application\/json(?:\s*;|$)/i.test(request.headers['content-type'] ?? '')) return 'json-required'
+  return undefined
+}
+
 // 音频接口的 pet id 必须来自当前目录；音频文件本身永不进入宠物目录。
 function soundRoute(home) {
   return {
@@ -1965,10 +2169,12 @@ function soundRoute(home) {
 
 /** The complete route table this plugin owns. */
 export function buildRoutes(hub, display, home) {
-  const routes = [catalogRoute(), assetRoute(), voiceRoute(), runtimeRoute(), eventsRoute(hub)]
+  const routes = [catalogRoute(), assetRoute(), runtimeRoute(), eventsRoute(hub)]
   if (display !== undefined) routes.push(layerRoute(display))
   // 共享设置：不依赖显示层（测试里也可能只给 home）。
-  if (typeof home === 'string' && home !== '') routes.push(settingsRoute(home), soundRoute(home))
+  if (typeof home === 'string' && home !== '') {
+    routes.push(settingsRoute(home), soundRoute(home), soundsRoute(home), soundFileRoute(home))
+  }
   return routes
 }
 

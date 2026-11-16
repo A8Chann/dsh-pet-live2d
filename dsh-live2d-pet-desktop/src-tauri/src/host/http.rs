@@ -25,7 +25,7 @@ use super::shared::{Point, Shared};
 /// JSON base64 音频最大 2 MiB；超限直接回 413 并关闭连接。
 const MAX_BODY: usize = 2 * 1024 * 1024;
 const MAX_AUDIO: usize = 1024 * 1024;
-const SOUND_PHASES: [&str; 8] = ["thinking", "tool", "waiting", "asking", "helper", "queued", "done", "failed"];
+pub(crate) const SOUND_PHASES: [&str; 8] = ["thinking", "tool", "waiting", "asking", "helper", "queued", "done", "failed"];
 /// 页面还没领任务时的等待上限：超过就当"穿透"，不能让壳一直等。
 const PROBE_WAIT: Duration = Duration::from_millis(2500);
 /// SSE 心跳间隔。
@@ -100,7 +100,7 @@ struct HostState {
 /// 每次请求都重扫宠物目录 —— 与 JS 版一致（`buildCatalog()` 每请求重建），
 /// 好处是"装了一只新宠物/改了 pet.json"立刻生效，不用重启。
 fn pets(state: &HostState) -> Vec<catalog::PetEntry> {
-    catalog::build_catalog(&state.pets_root)
+    catalog::build_catalog(&state.pets_root, &state.home)
 }
 
 fn mime_for(path: &str) -> &'static str {
@@ -118,6 +118,8 @@ fn mime_for(path: &str) -> &'static str {
         // 语音必须给 audio/*：`<audio>` 拿到 octet-stream 时 Chromium 靠嗅探还能播，
         // WebKit 直接拒绝。与 JS 版 MIME 表逐条对齐。
         "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "ogg" => "audio/ogg",
         "woff2" => "font/woff2",
         _ => "application/octet-stream",
     }
@@ -319,6 +321,14 @@ fn route(
     if let Some(rest) = path.strip_prefix(&format!("{API}/sound/")) {
         return serve_sound(stream, state, request, rest);
     }
+    // 声音库（每只宠物一套）：管理 + 取字节。与 JS 版 `soundsRoute` / `soundFileRoute`
+    // **逐字段同形**，否则独立模式会出现"网页端能管、桌面端点不动"。
+    if let Some(rest) = path.strip_prefix(&format!("{API}/sounds/")) {
+        return serve_sounds(stream, state, request, rest);
+    }
+    if let Some(rest) = path.strip_prefix(&format!("{API}/sound-file/")) {
+        return serve_sound_file(stream, state, request, rest);
+    }
     if path == format!("{API}/catalog") {
         // **先同步随包宠物，再扫目录**：第一次运行时宠物还不存在，顺序反了会返回空列表
         // （JS 版的 buildCatalog() 也是这么排的）。
@@ -347,11 +357,6 @@ fn route(
     }
     if let Some(rest) = path.strip_prefix(&format!("{API}/asset/")) {
         return serve_asset(stream, state, rest);
-    }
-    // 语音：**两份宿主都必须有这一条**，否则独立模式下"网页端有声、桌面端没声"
-    // （挂载模式转发给 DSH，所以那种模式看起来是好的，最难查）。
-    if let Some(rest) = path.strip_prefix(&format!("{API}/voice/")) {
-        return serve_voice(stream, state, rest);
     }
     if path == format!("{API}/events") {
         return serve_events(stream, state);
@@ -647,7 +652,7 @@ fn route(
     Ok(true)
 }
 
-fn sound_mime(bytes: &[u8]) -> Option<&'static str> {
+pub(crate) fn sound_mime(bytes: &[u8]) -> Option<&'static str> {
     if valid_wav(bytes) { Some("audio/wav") }
     else if valid_ogg(bytes) { Some("audio/ogg") }
     else if valid_mp3(bytes) { Some("audio/mpeg") }
@@ -887,6 +892,236 @@ fn serve_sound(stream: &mut TcpStream, state: &HostState, request: &Request, res
     }
 }
 
+/// 声音库的当前列表（catalog 里已经合并好随包 + 用户；改完重扫一次拿新的）。
+fn library_list(state: &HostState, pet_id: &str) -> Value {
+    pets(state)
+        .into_iter()
+        .find(|pet| pet.id() == pet_id)
+        .and_then(|pet| pet.json.get("soundLibrary").cloned())
+        .unwrap_or_else(|| Value::Array(Vec::new()))
+}
+
+fn is_builtin_voice(pet: &catalog::PetEntry, sound_id: &str) -> bool {
+    pet.json
+        .get("voices")
+        .and_then(Value::as_array)
+        .map(|voices| {
+            voices
+                .iter()
+                .any(|voice| voice.get("id").and_then(Value::as_str) == Some(sound_id))
+        })
+        .unwrap_or(false)
+}
+
+fn clean_sound_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+}
+
+/// DELETE 没有请求体：只查 Host 与 Origin（与 POST 同一条门槛，不要求 JSON）。
+fn check_mutation_origin(request: &Request, port: u16) -> Result<(), (u16, &'static str)> {
+    let host = request.host.as_deref().unwrap_or("").to_ascii_lowercase();
+    if host != format!("127.0.0.1:{port}")
+        && host != format!("localhost:{port}")
+        && host != format!("[::1]:{port}")
+    {
+        return Err((403, "untrusted-host"));
+    }
+    if let Some(origin) = &request.origin {
+        let origin = origin.to_ascii_lowercase();
+        if origin != format!("http://{host}") && origin != format!("https://{host}") {
+            return Err((403, "cross-origin"));
+        }
+    }
+    Ok(())
+}
+
+fn sound_status(error: &str) -> u16 {
+    match error {
+        "too-many-sounds" => 409,
+        "invalid-audio" => 400,
+        "write-failed" => 500,
+        _ => 400,
+    }
+}
+
+/// 声音库：`GET/POST/DELETE /api/live2d-pet/sounds/<petId>[/<soundId>]`。
+///
+/// 与 JS 版 `soundsRoute` 逐个状态码对齐：随包声音 403（`builtin-sound`），
+/// 未知声音 404，容量上限 409，容器判据不通过 400。
+fn serve_sounds(
+    stream: &mut TcpStream,
+    state: &HostState,
+    request: &Request,
+    rest: &str,
+) -> std::io::Result<bool> {
+    let segments: Vec<&str> = rest.split('/').collect();
+    if segments.is_empty() || segments.len() > 2 {
+        return sound_error(stream, 404, "not-found");
+    }
+    let pet_id = segments[0];
+    let sound_id = segments.get(1).copied();
+    if !clean_sound_id(pet_id) || sound_id.map(|id| !clean_sound_id(id)).unwrap_or(false) {
+        return sound_error(stream, 404, "not-found");
+    }
+    let current = pets(state);
+    let Some(pet) = current.iter().find(|pet| pet.id() == pet_id) else {
+        return sound_error(stream, 404, "not-found");
+    };
+    match request.method.as_str() {
+        "GET" | "HEAD" => {
+            if sound_id.is_some() {
+                return sound_error(stream, 405, "method-not-allowed");
+            }
+            send_json(stream, 200, &json!({ "ok": true, "sounds": library_list(state, pet_id) }))?;
+            Ok(true)
+        }
+        "DELETE" => {
+            let Some(sound_id) = sound_id else {
+                return sound_error(stream, 405, "method-not-allowed");
+            };
+            let port = stream.local_addr()?.port();
+            if let Err((status, error)) = check_mutation_origin(request, port) {
+                return sound_error(stream, status, error);
+            }
+            if is_builtin_voice(pet, sound_id) {
+                return sound_error(stream, 403, "builtin-sound");
+            }
+            if !super::sound_library::delete(&state.home, pet_id, sound_id) {
+                return sound_error(stream, 404, "not-found");
+            }
+            send_json(stream, 200, &json!({ "ok": true, "sounds": library_list(state, pet_id) }))?;
+            Ok(true)
+        }
+        "POST" => {
+            let port = stream.local_addr()?.port();
+            if let Err((status, error)) = check_sound_post(request, port) {
+                return sound_error(stream, status, error);
+            }
+            if let Some(sound_id) = sound_id {
+                if is_builtin_voice(pet, sound_id) {
+                    return sound_error(stream, 403, "builtin-sound");
+                }
+            }
+            let Ok(value) = serde_json::from_str::<Value>(&request.body) else {
+                return sound_error(stream, 400, "bad-body");
+            };
+            let Some(map) = value.as_object() else {
+                return sound_error(stream, 400, "bad-body");
+            };
+            let name = map.get("name");
+            if let Some(encoded) = map.get("base64").and_then(Value::as_str) {
+                if encoded.is_empty() || encoded.len() > (MAX_AUDIO + 2) / 3 * 4 {
+                    return sound_error(stream, 400, "invalid-audio");
+                }
+                let Ok(bytes) = STANDARD.decode(encoded) else {
+                    return sound_error(stream, 400, "invalid-audio");
+                };
+                if bytes.is_empty()
+                    || bytes.len() > MAX_AUDIO
+                    || STANDARD.encode(&bytes) != encoded
+                    || sound_mime(&bytes).is_none()
+                {
+                    return sound_error(stream, 400, "invalid-audio");
+                }
+                match sound_id {
+                    None => {
+                        if let Err(error) = super::sound_library::add(&state.home, pet_id, name, &bytes) {
+                            return sound_error(stream, sound_status(error), error);
+                        }
+                    }
+                    Some(id) => match super::sound_library::replace(&state.home, pet_id, id, &bytes) {
+                        Ok(Some(_)) => {}
+                        Ok(None) => return sound_error(stream, 404, "not-found"),
+                        Err(error) => return sound_error(stream, sound_status(error), error),
+                    },
+                }
+            } else if let Some(sound_id) = sound_id {
+                if super::sound_library::rename(&state.home, pet_id, sound_id, name).is_none() {
+                    return sound_error(stream, 404, "not-found");
+                }
+            } else {
+                return sound_error(stream, 400, "bad-body");
+            }
+            send_json(stream, 200, &json!({ "ok": true, "sounds": library_list(state, pet_id) }))?;
+            Ok(true)
+        }
+        _ => sound_error(stream, 405, "method-not-allowed"),
+    }
+}
+
+/// 声音字节：`GET /api/live2d-pet/sound-file/<petId>/<soundId>`。
+///
+/// 随包声音在宠物目录里（按 catalog 的 id→file 查表），用户声音在 `pet-sounds/`。
+/// 两条路都不做路径拼接 —— 名字只来自已校验的索引。
+fn serve_sound_file(
+    stream: &mut TcpStream,
+    state: &HostState,
+    request: &Request,
+    rest: &str,
+) -> std::io::Result<bool> {
+    if request.method != "GET" && request.method != "HEAD" {
+        return sound_error(stream, 405, "method-not-allowed");
+    }
+    let segments: Vec<String> = rest.split('/').map(percent_decode).collect();
+    if segments.len() != 2 {
+        return sound_error(stream, 404, "not-found");
+    }
+    let pet_id = segments[0].as_str();
+    let sound_id = segments[1].as_str();
+    if !clean_sound_id(pet_id) || !clean_sound_id(sound_id) {
+        return sound_error(stream, 404, "not-found");
+    }
+    let current = pets(state);
+    let Some(pet) = current.iter().find(|pet| pet.id() == pet_id) else {
+        return sound_error(stream, 404, "not-found");
+    };
+    let builtin = pet
+        .json
+        .get("voices")
+        .and_then(Value::as_array)
+        .and_then(|voices| {
+            voices
+                .iter()
+                .find(|voice| voice.get("id").and_then(Value::as_str) == Some(sound_id))
+                .and_then(|voice| voice.get("file").and_then(Value::as_str))
+                .map(str::to_string)
+        });
+    if let Some(relative) = builtin {
+        let file = pet.dir.join(relative.replace('/', std::path::MAIN_SEPARATOR_STR));
+        let Ok(bytes) = fs::read(&file) else {
+            return sound_error(stream, 404, "not-found");
+        };
+        let payload = if request.method == "HEAD" { &[][..] } else { &bytes[..] };
+        send_bytes(
+            stream,
+            200,
+            mime_for(&relative),
+            payload,
+            &[("cache-control", "no-cache".to_string())],
+        )?;
+        return Ok(true);
+    }
+    let Some((bytes, mime)) = super::sound_library::read_sound(&state.home, pet_id, sound_id) else {
+        return sound_error(stream, 404, "not-found");
+    };
+    let payload = if request.method == "HEAD" { &[][..] } else { &bytes[..] };
+    send_bytes(
+        stream,
+        200,
+        mime,
+        payload,
+        &[
+            ("cache-control", "no-store".to_string()),
+            ("x-content-type-options", "nosniff".to_string()),
+        ],
+    )?;
+    Ok(true)
+}
+
 fn page_name() -> String {
     std::env::var("PET_DESKTOP_PAGE").unwrap_or_else(|_| "pet".to_string())
 }
@@ -943,54 +1178,6 @@ fn serve_asset(
         stream,
         200,
         mime_for(&rel),
-        &bytes,
-        &[("cache-control", "no-cache".to_string())],
-    )?;
-    Ok(true)
-}
-
-/// 一条语音最多 2 MB（与 JS 版 `CAP_AUDIO` 一致）：一条台词通常几十 KB。
-const VOICE_CAP: usize = 2 * 1024 * 1024;
-
-/// 语音：`GET /api/live2d-pet/voice/<petId>/<file>`。
-///
-/// 与 asset 路由同一种白名单思路：只发这只宠物 `voice` 索引里登记过的文件名，
-/// **不拼路径** —— `..`、未登记的名字、未知宠物一律 404。
-fn serve_voice(stream: &mut TcpStream, state: &HostState, rest: &str) -> std::io::Result<bool> {
-    let segments: Vec<String> = rest.split('/').map(percent_decode).collect();
-    if segments.len() != 2 {
-        send_bytes(stream, 404, "text/plain; charset=utf-8", b"not found", &[])?;
-        return Ok(true);
-    }
-    let id = segments[0].as_str();
-    let name = segments[1].as_str();
-    // 登记的是 readdir 出来的文件名，分隔符不可能出现在里面；仍然显式挡一道。
-    if name.is_empty() || name.contains('/') || name.contains('\\') {
-        send_bytes(stream, 404, "text/plain; charset=utf-8", b"not found", &[])?;
-        return Ok(true);
-    }
-    let Some(pet) = pets(state).into_iter().find(|pet| pet.id() == id) else {
-        send_bytes(stream, 404, "text/plain; charset=utf-8", b"unknown pet", &[])?;
-        return Ok(true);
-    };
-    if !pet.has_voice_file(name) {
-        send_bytes(stream, 404, "text/plain; charset=utf-8", b"not found", &[])?;
-        return Ok(true);
-    }
-    let file = pet.dir.join("voice").join(name);
-    let Ok(bytes) = std::fs::read(&file) else {
-        send_bytes(stream, 404, "text/plain; charset=utf-8", b"missing", &[])?;
-        return Ok(true);
-    };
-    if bytes.len() > VOICE_CAP {
-        send_bytes(stream, 413, "text/plain; charset=utf-8", b"too large", &[])?;
-        return Ok(true);
-    }
-    // 头与 JS 版 `serveFile` 对齐：no-cache + 扩展名给的 content-type（mp3 = audio/mpeg）。
-    send_bytes(
-        stream,
-        200,
-        mime_for(name),
         &bytes,
         &[("cache-control", "no-cache".to_string())],
     )?;

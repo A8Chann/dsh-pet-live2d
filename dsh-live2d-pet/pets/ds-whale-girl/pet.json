@@ -3,13 +3,89 @@
   "id": "ds-whale-girl",
   "displayName": "DS鲸鱼娘",
   "description": "氵六青的 DS 鲸鱼娘 Live2D 桌宠：8 组动作 + 44 个表情/道具，点她会有反应。随包自带中文配音。",
-  "version": "1.1.4",
+  "version": "1.1.5",
   "author": "模型：上善无形 / ZipZipPipe / 氵六青 · 插件：A8Chann",
   "license": "CC BY-NC-SA 4.0 (attribution, NON-COMMERCIAL, share-alike). Character: original OC by 上善无形 (https://www.pixiv.net/users/62155430); DeepSeek maid redesign by ZipZipPipe (https://www.pixiv.net/users/18604994); this Live2D model by 氵六青 (https://space.bilibili.com/11272072), who authorised redistribution here — which does NOT lift the base NC/SA terms. Commercial use requires permission from each rights holder. See NOTICE.md.",
   "homepage": "https://space.bilibili.com/11272072",
   "renderer": "live2d",
   "live2d": {
     "model": "c_0120.model3.json",
+    "voices": [
+      {"id":"greet-1","name":"问候 1","file":"voice/greet-1.mp3"},
+      {"id":"greet-2","name":"问候 2","file":"voice/greet-2.mp3"},
+      {"id":"greet-3","name":"问候 3","file":"voice/greet-3.mp3"},
+      {"id":"greet-4","name":"问候 4","file":"voice/greet-4.mp3"},
+      {"id":"click-1","name":"点击 1","file":"voice/click-1.mp3"},
+      {"id":"click-2","name":"点击 2","file":"voice/click-2.mp3"},
+      {"id":"click-3","name":"点击 3","file":"voice/click-3.mp3"},
+      {"id":"click-4","name":"点击 4","file":"voice/click-4.mp3"},
+      {"id":"click-5","name":"点击 5","file":"voice/click-5.mp3"},
+      {"id":"pat-1","name":"摸头 1","file":"voice/pat-1.mp3"},
+      {"id":"pat-2","name":"摸头 2","file":"voice/pat-2.mp3"},
+      {"id":"pat-3","name":"摸头 3","file":"voice/pat-3.mp3"},
+      {"id":"tail-1","name":"尾巴 1","file":"voice/tail-1.mp3"},
+      {"id":"tail-2","name":"尾巴 2","file":"voice/tail-2.mp3"},
+      {"id":"tail-3","name":"尾巴 3","file":"voice/tail-3.mp3"},
+      {"id":"spin-1","name":"绕晕 1","file":"voice/spin-1.mp3"},
+      {"id":"spin-2","name":"绕晕 2","file":"voice/spin-2.mp3"},
+      {"id":"reset-1","name":"归位 1","file":"voice/reset-1.mp3"},
+      {"id":"reset-2","name":"归位 2","file":"voice/reset-2.mp3"},
+      {"id":"loadFailed-1","name":"加载失败 1","file":"voice/loadFailed-1.mp3"},
+      {"id":"phase-thinking","name":"思考","file":"voice/phase-thinking.mp3"},
+      {"id":"phase-tool","name":"跑工具","file":"voice/phase-tool.mp3"},
+      {"id":"phase-waiting","name":"等你确认","file":"voice/phase-waiting.mp3"},
+      {"id":"phase-asking","name":"等你回答","file":"voice/phase-asking.mp3"},
+      {"id":"phase-helper","name":"子代理","file":"voice/phase-helper.mp3"},
+      {"id":"phase-queued","name":"排队","file":"voice/phase-queued.mp3"},
+      {"id":"phase-done","name":"完成","file":"voice/phase-done.mp3"},
+      {"id":"phase-failed","name":"出错","file":"voice/phase-failed.mp3"}
+    ],
+    "bubbles": {
+      "greet": [
+        {"text":"你好呀，我是鲸鱼娘～","sound":"greet-1"},
+        {"text":"今天也一起加油吧！","sound":"greet-2"},
+        {"text":"终于见到你了","sound":"greet-3"},
+        {"text":"摸鱼时间到？","sound":"greet-4"}
+      ],
+      "click": [
+        {"text":"呀！","sound":"click-1"},
+        {"text":"痒痒的～","sound":"click-2"},
+        {"text":"干嘛呀","sound":"click-3"},
+        {"text":"摸摸头？","sound":"click-4"},
+        {"text":"嘿嘿","sound":"click-5"}
+      ],
+      "pat": [
+        {"text":"嘿嘿，好舒服～","sound":"pat-1"},
+        {"text":"再摸一下嘛","sound":"pat-2"},
+        {"text":"唔…头发要乱了","sound":"pat-3"}
+      ],
+      "tail": [
+        {"text":"呀！尾巴不能乱摸！","sound":"tail-1"},
+        {"text":"尾巴…痒痒的","sound":"tail-2"},
+        {"text":"别拽尾巴啦","sound":"tail-3"}
+      ],
+      "spin": [
+        {"text":"呜…转晕了…","sound":"spin-1"},
+        {"text":"别转了别转了","sound":"spin-2"}
+      ],
+      "reset": [
+        {"text":"表情归位～","sound":"reset-1"},
+        {"text":"清清爽爽","sound":"reset-2"}
+      ],
+      "loadFailed": [
+        {"text":"呜呜，模型加载失败了","sound":"loadFailed-1"}
+      ],
+      "phase": {
+        "thinking": {"text":"让我想想…","sound":"phase-thinking"},
+        "tool": {"text":"正在忙…","sound":"phase-tool"},
+        "waiting": {"text":"需要你确认一下","sound":"phase-waiting"},
+        "asking": {"text":"在等你回答哦","sound":"phase-asking"},
+        "helper": {"text":"叫了帮手一起弄","sound":"phase-helper"},
+        "queued": {"text":"收到，记下了","sound":"phase-queued"},
+        "done": {"text":"搞定！","sound":"phase-done"},
+        "failed": {"text":"呜…出错了","sound":"phase-failed"}
+      }
+    },
     "scale": 1,
     "translate": {
       "x": 0,

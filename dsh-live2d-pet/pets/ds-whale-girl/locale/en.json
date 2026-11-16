@@ -47,6 +47,167 @@
       "failed": "Uwa... something went wrong."
     }
   },
+  "bubbles": {
+    "greet": [
+      {
+        "text": "Hi there! I'm the whale girl~",
+        "sound": "greet-1"
+      },
+      {
+        "text": "Let's do our best again today!",
+        "sound": "greet-2"
+      },
+      {
+        "text": "Finally, I get to meet you.",
+        "sound": "greet-3"
+      },
+      {
+        "text": "Slacking-off time already?",
+        "sound": "greet-4"
+      }
+    ],
+    "click": [
+      {
+        "text": "Ah!",
+        "sound": "click-1"
+      },
+      {
+        "text": "That tickles~",
+        "sound": "click-2"
+      },
+      {
+        "text": "Hey, what are you doing?",
+        "sound": "click-3"
+      },
+      {
+        "text": "Head pats?",
+        "sound": "click-4"
+      },
+      {
+        "text": "Hehe.",
+        "sound": "click-5"
+      }
+    ],
+    "play": [],
+    "pat": [
+      {
+        "text": "Hehe, that feels nice~",
+        "sound": "pat-1"
+      },
+      {
+        "text": "One more pat?",
+        "sound": "pat-2"
+      },
+      {
+        "text": "Mm... you're messing up my hair.",
+        "sound": "pat-3"
+      }
+    ],
+    "tail": [
+      {
+        "text": "Ah! You can't just touch my tail!",
+        "sound": "tail-1"
+      },
+      {
+        "text": "My tail... it tickles.",
+        "sound": "tail-2"
+      },
+      {
+        "text": "Stop pulling my tail!",
+        "sound": "tail-3"
+      }
+    ],
+    "spin": [
+      {
+        "text": "Uu... I'm dizzy...",
+        "sound": "spin-1"
+      },
+      {
+        "text": "No more spinning, no more!",
+        "sound": "spin-2"
+      }
+    ],
+    "reset": [
+      {
+        "text": "Back to normal~",
+        "sound": "reset-1"
+      },
+      {
+        "text": "All neat and tidy.",
+        "sound": "reset-2"
+      }
+    ],
+    "loadFailed": [
+      {
+        "text": "Waa... the model failed to load.",
+        "sound": "loadFailed-1"
+      }
+    ],
+    "phase": {
+      "thinking": {
+        "text": "Let me think...",
+        "sound": "phase-thinking"
+      },
+      "tool": {
+        "text": "Busy working...",
+        "sound": "phase-tool"
+      },
+      "waiting": {
+        "text": "I need your approval.",
+        "sound": "phase-waiting"
+      },
+      "asking": {
+        "text": "I'm waiting for your answer.",
+        "sound": "phase-asking"
+      },
+      "helper": {
+        "text": "I called in some help.",
+        "sound": "phase-helper"
+      },
+      "queued": {
+        "text": "Got it, noted.",
+        "sound": "phase-queued"
+      },
+      "done": {
+        "text": "Done!",
+        "sound": "phase-done"
+      },
+      "failed": {
+        "text": "Uwa... something went wrong.",
+        "sound": "phase-failed"
+      }
+    }
+  },
+  "voiceNames": {
+    "greet-1": "Greeting 1",
+    "greet-2": "Greeting 2",
+    "greet-3": "Greeting 3",
+    "greet-4": "Greeting 4",
+    "click-1": "Click 1",
+    "click-2": "Click 2",
+    "click-3": "Click 3",
+    "click-4": "Click 4",
+    "click-5": "Click 5",
+    "pat-1": "Head pat 1",
+    "pat-2": "Head pat 2",
+    "pat-3": "Head pat 3",
+    "tail-1": "Tail 1",
+    "tail-2": "Tail 2",
+    "tail-3": "Tail 3",
+    "spin-1": "Spin 1",
+    "spin-2": "Spin 2",
+    "reset-1": "Reset 1",
+    "reset-2": "Reset 2",
+    "loadFailed-1": "Load failed 1",
+    "phase-thinking": "Thinking",
+    "phase-tool": "Running tools",
+    "phase-waiting": "Waiting for approval",
+    "phase-asking": "Waiting for reply",
+    "phase-helper": "Sub-agent",
+    "phase-queued": "Queued",
+    "phase-done": "Done",
+    "phase-failed": "Error"
+  },
   "slots": {
     "glasses": {
       "label": "Glasses",

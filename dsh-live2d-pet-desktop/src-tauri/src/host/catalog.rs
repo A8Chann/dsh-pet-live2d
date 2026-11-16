@@ -66,6 +66,8 @@ pub const BUNDLED_PET_HASHES: &[(&str, &[&str])] = &[(
         "3d05a44e0650527dd06e67ca922c9fd0034cfed4b5cc470b6d42561332b42d11",
         // 1.1.3（给随包宠物加配音之前；音频是新增文件，靠这一版触发同步下发）
         "2b39924be4f6a7d666e078ab549d236fd74acfa3525cf65694d471b9702d96b3",
+        // 1.1.4（声音库与气泡卡片之前；英文覆盖层进了语音索引的一版）
+        "96a3e7959c9d6aea51ef52abc3fdcd6e9800c9878916ce59a4216f7dd1b49256",
     ],
 )];
 
@@ -139,72 +141,144 @@ fn read_locales(dir: &Path) -> Value {
     Value::Object(locales.into_iter().collect())
 }
 
-/// 一段配音：台词文本 -> `voice/<file>`。
-///
-/// 命名规则与生成器一致：`lines.greet[i]` ↔ `greet-(i+1).mp3`，
-/// `lines.phase.thinking` ↔ `phase-thinking.mp3`。只登记**真实存在**的文件 ——
-/// 缺一条音频时浏览器应该安静，而不是去请求必然 404 的地址。
-///
-/// 语言覆盖层（`locale/<lang>.json` 的 `lines`）也登记到同一段音频：气泡在英文界面
-/// 显示英文台词，但宠物只有一份中文配音。不登记的话非中文界面会"有按钮、没声音"。
-/// 与 JS 版 `readVoiceIndex` 逐条对齐（含"先到先得、不覆盖已登记文本"）。
-fn read_voice_index(dir: &Path, lines: Option<&Value>, locales: &Value) -> Value {
-    let Ok(entries) = std::fs::read_dir(dir.join("voice")) else {
-        return json!({});
-    };
-    let present: BTreeSet<String> = entries
-        .flatten()
-        .map(|entry| entry.file_name().to_string_lossy().to_string())
-        .collect();
-    let mut index: Map<String, Value> = Map::new();
-    collect_voice_lines(lines, &present, &mut index);
-    if let Value::Object(overlays) = locales {
-        // BTreeMap：语言名有序，结果确定（与 JS 版的排序读目录一致）。
-        for overlay in overlays.values() {
-            collect_voice_lines(overlay.get("lines"), &present, &mut index);
-        }
-    }
-    Value::Object(index)
+/// 气泡键（互动/问候）与相位键 —— 与 JS 版 `BUBBLE_KEYS` / `PHASE_KEYS`、
+/// 客户端 `LINE_KEYS` / `PHASE_LINE_KEYS` 逐项一致（三处一起决定 catalog 形状）。
+const BUBBLE_KEYS: [&str; 8] = ["greet", "click", "play", "pat", "tail", "spin", "reset", "loadFailed"];
+const PHASE_KEYS: [&str; 8] = ["thinking", "tool", "waiting", "asking", "helper", "queued", "done", "failed"];
+
+fn valid_voice_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
-/// 把一份 `lines` 里的台词登记进索引（基础台词与每个语言覆盖层都走这里）。
-fn collect_voice_lines(
-    source: Option<&Value>,
-    present: &BTreeSet<String>,
-    index: &mut Map<String, Value>,
-) {
-    let Some(Value::Object(map)) = source else {
-        return;
+fn audio_file(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower.ends_with(".mp3") || lower.ends_with(".wav") || lower.ends_with(".ogg")
+}
+
+/// 宠物自带的声音清单（`live2d.voices`）。
+///
+/// 只收**文件真实存在**的条目：缺文件的 id 会让面板出现"选了却没声"的卡。
+/// `file` 走 `safe_rel`（不含 `..`/绝对路径），服务时再按宠物目录做一次包含检查。
+fn read_voices(dir: &Path, raw: Option<&Value>) -> Vec<Value> {
+    let Some(Value::Array(list)) = raw else {
+        return Vec::new();
     };
-    for (key, value) in map {
-        if key == "phase" {
-            continue;
-        }
-        let Some(list) = value.as_array() else {
+    let mut out: Vec<Value> = Vec::new();
+    for item in list {
+        let Some(id) = item.get("id").and_then(Value::as_str).map(str::trim) else {
             continue;
         };
-        for (at, text) in list.iter().enumerate() {
-            let Some(text) = text.as_str() else {
-                continue;
-            };
-            add_voice(index, present, text, &format!("{key}-{}.mp3", at + 1));
+        if !valid_voice_id(id)
+            || out
+                .iter()
+                .any(|voice| voice.get("id").and_then(Value::as_str) == Some(id))
+        {
+            continue;
         }
-    }
-    if let Some(Value::Object(phase)) = map.get("phase") {
-        for (key, text) in phase {
-            let Some(text) = text.as_str() else {
-                continue;
-            };
-            add_voice(index, present, text, &format!("phase-{key}.mp3"));
+        let Some(file) = safe_rel(item.get("file").unwrap_or(&Value::Null)) else {
+            continue;
+        };
+        if !audio_file(&file) || !dir.join(file.replace('/', std::path::MAIN_SEPARATOR_STR)).is_file() {
+            continue;
         }
+        let name = item
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .unwrap_or(id);
+        out.push(json!({ "id": id, "name": name, "file": file }));
     }
+    out
 }
 
-fn add_voice(index: &mut Map<String, Value>, present: &BTreeSet<String>, text: &str, file: &str) {
-    if text.trim().is_empty() || !present.contains(file) || index.contains_key(text) {
-        return;
+/// 一条气泡卡片：`{ text, sound? }`；也接受老格式的纯字符串。
+///
+/// `sound: null` 表示**显式无声**（压过宠物默认），与"没写 sound"区分开。
+fn normalise_bubble(raw: Option<&Value>) -> Option<Value> {
+    let (text, sound) = match raw? {
+        Value::String(text) => (text.trim().to_string(), None),
+        Value::Object(map) => {
+            let text = map
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let sound = match map.get("sound") {
+                Some(Value::String(id)) if !id.is_empty() => Some(Value::String(id.clone())),
+                Some(Value::Null) => Some(Value::Null),
+                _ => None,
+            };
+            (text, sound)
+        }
+        _ => return None,
+    };
+    if text.is_empty() && sound.is_none() {
+        return None;
     }
-    index.insert(text.to_string(), Value::String(file.to_string()));
+    let mut out = Map::new();
+    out.insert("text".to_string(), Value::String(text));
+    if let Some(sound) = sound {
+        out.insert("sound".to_string(), sound);
+    }
+    Some(Value::Object(out))
+}
+
+/// `live2d.bubbles`（新格式）→ 规范化气泡表；没有这个字段时按老的 `lines` 派生。
+fn read_bubbles(block: &Map<String, Value>) -> Value {
+    let raw = block.get("bubbles").and_then(Value::as_object);
+    let lines = block.get("lines").and_then(Value::as_object);
+    let mut bubbles = Map::new();
+    for key in BUBBLE_KEYS {
+        let source: Vec<Value> = match raw.and_then(|map| map.get(key)).and_then(Value::as_array) {
+            Some(list) => list.clone(),
+            None => lines
+                .and_then(|map| map.get(key))
+                .and_then(Value::as_array)
+                .map(|list| list.iter().map(|text| json!({ "text": text })).collect())
+                .unwrap_or_default(),
+        };
+        let items: Vec<Value> = source
+            .iter()
+            .filter_map(|item| normalise_bubble(Some(item)))
+            .collect();
+        bubbles.insert(key.to_string(), Value::Array(items));
+    }
+    let raw_phase = raw.and_then(|map| map.get("phase")).and_then(Value::as_object);
+    let lines_phase = lines.and_then(|map| map.get("phase")).and_then(Value::as_object);
+    let mut phase = Map::new();
+    for key in PHASE_KEYS {
+        let explicit = raw_phase.map(|map| map.contains_key(key)).unwrap_or(false);
+        let candidate = if explicit {
+            raw_phase.and_then(|map| map.get(key))
+        } else {
+            lines_phase.and_then(|map| map.get(key))
+        };
+        if let Some(item) = normalise_bubble(candidate) {
+            phase.insert(key.to_string(), item);
+        }
+    }
+    bubbles.insert("phase".to_string(), Value::Object(phase));
+    Value::Object(bubbles)
+}
+
+/// 声音库 = 随包声音（只读）+ 用户上传（`$DSH_HOME/pet-sounds/`）。
+fn sound_library(pet_id: &str, voices: &[Value], home: &Path) -> Vec<Value> {
+    let mut out: Vec<Value> = voices
+        .iter()
+        .filter_map(|voice| {
+            let id = voice.get("id")?.as_str()?;
+            let name = voice.get("name")?.as_str()?;
+            Some(json!({ "id": id, "name": name, "builtin": true }))
+        })
+        .collect();
+    out.extend(crate::host::sound_library::list(home, pet_id));
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -711,7 +785,7 @@ fn string_array(raw: Option<&Value>) -> Vec<String> {
 // ---------------------------------------------------------------------------
 
 /// 扫一只宠物目录；返回 JSON 与资产白名单。不可用就 `None`。
-pub fn scan_pet(dir: &Path, id: &str) -> Option<PetEntry> {
+pub fn scan_pet(dir: &Path, id: &str, home: &Path) -> Option<PetEntry> {
     let manifest = read_json(&dir.join("pet.json"))?;
     if manifest.get("renderer").and_then(Value::as_str) != Some("live2d") {
         return None;
@@ -874,8 +948,12 @@ pub fn scan_pet(dir: &Path, id: &str) -> Option<PetEntry> {
         .filter(|value| *value > 0.0 && *value <= 10.0)
         .unwrap_or(1.0);
     let translate = block.get("translate").and_then(Value::as_object);
-    // 语言覆盖层只读一次：catalog 与语音索引都要用（同一份目录，别读两遍）。
+    // 语言覆盖层只读一次：catalog 与（旧）语音索引都要用。
     let locales = read_locales(dir);
+    // 声音与气泡：随包声音来自 pet.json，用户声音来自 DSH_HOME，气泡缺省时按 lines 派生。
+    let voices = read_voices(dir, block.get("voices"));
+    let bubbles = read_bubbles(block);
+    let sound_library = sound_library(id, &voices, home);
     let model_url = format!(
         "{API}/asset/{}/{}",
         urlencode(id),
@@ -926,11 +1004,10 @@ pub fn scan_pet(dir: &Path, id: &str) -> Option<PetEntry> {
     if let Some(map) = value.as_object_mut() {
         map.insert("motions".to_string(), Value::Array(motions));
         map.insert("expressions".to_string(), Value::Array(expressions));
-        // 语音索引与语言覆盖层同样手工插键（理由同上：放进 json! 里会静默消失）。
-        map.insert(
-            "voice".to_string(),
-            read_voice_index(dir, block.get("lines"), &locales),
-        );
+        // 气泡 / 声音 / 语言覆盖层同样手工插键（理由同上：放进 json! 里会静默消失）。
+        map.insert("bubbles".to_string(), bubbles);
+        map.insert("voices".to_string(), Value::Array(voices));
+        map.insert("soundLibrary".to_string(), Value::Array(sound_library));
         map.insert("locales".to_string(), locales);
     }
 
@@ -957,7 +1034,7 @@ pub fn urlencode(text: &str) -> String {
 }
 
 /// 扫一遍宠物根目录（字典序，与 JS 版一致）。
-pub fn build_catalog(pets_root: &Path) -> Vec<PetEntry> {
+pub fn build_catalog(pets_root: &Path, home: &Path) -> Vec<PetEntry> {
     let Ok(entries) = std::fs::read_dir(pets_root) else {
         return Vec::new();
     };
@@ -973,7 +1050,7 @@ pub fn build_catalog(pets_root: &Path) -> Vec<PetEntry> {
         if !dir.is_dir() {
             continue;
         }
-        if let Some(entry) = scan_pet(&dir, &name) {
+        if let Some(entry) = scan_pet(&dir, &name, home) {
             pets.push(entry);
         }
     }
@@ -1342,13 +1419,13 @@ mod tests {
             manifest(r#", "sounds":{"done":[[660,0],[880,0.13]],"failed":[]}"#),
         )
         .unwrap();
-        let pet = scan_pet(dir, "test-pet").expect("宠物可被扫描");
+        let pet = scan_pet(dir, "test-pet", temp.path()).expect("宠物可被扫描");
         assert_eq!(
             pet.json["sounds"],
             json!({"done": [[660, 0], [880, 0.13]], "failed": []})
         );
         std::fs::write(dir.join("pet.json"), manifest("")).unwrap();
-        let old = scan_pet(dir, "test-pet").expect("旧宠物可被扫描");
+        let old = scan_pet(dir, "test-pet", temp.path()).expect("旧宠物可被扫描");
         assert!(old.json["sounds"].is_null(), "缺席与空表必须可区分");
     }
 
@@ -1599,7 +1676,9 @@ mod tests {
 
         let pets = temp.path().join("pets");
         install_bundled_pets(&payload_root.join("pets"), &pets);
-        let entry = scan_pet(&pets.join("ds-whale-girl"), "ds-whale-girl").expect("扫得出这只宠物");
+        let home = temp.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let entry = scan_pet(&pets.join("ds-whale-girl"), "ds-whale-girl", &home).expect("扫得出这只宠物");
         assert_eq!(entry.id(), "ds-whale-girl");
         // 与网页端同一套期望值（对拍驱动也断言这些数字）。
         assert_eq!(
@@ -1655,54 +1734,138 @@ mod tests {
             let file = entry.dir.join(relative.replace('/', std::path::MAIN_SEPARATOR_STR));
             assert!(file.is_file(), "闭包里的 {relative} 不存在");
         }
-        // 语音索引：28 段随包配音，中文台词与英文覆盖层都指向同一段音频。
-        // 漏掉覆盖层那一半，英文界面就会"按钮在、永远没声"（查表落空）。
-        let voice = entry
+        // 声音库与气泡：28 段随包配音，全部登记成可选择的默认声音；
+        // 气泡按位置绑定到同一段音频（文本改了声音不丢）。
+        let voices = entry
             .json
-            .get("voice")
+            .get("voices")
+            .and_then(Value::as_array)
+            .expect("catalog 要带 voices");
+        assert_eq!(voices.len(), 28, "随包宠物应该有 28 段配音");
+        assert_eq!(
+            voices[0].get("id").and_then(Value::as_str),
+            Some("greet-1")
+        );
+        assert_eq!(
+            voices[0].get("file").and_then(Value::as_str),
+            Some("voice/greet-1.mp3")
+        );
+        let library = entry
+            .json
+            .get("soundLibrary")
+            .and_then(Value::as_array)
+            .expect("catalog 要带 soundLibrary");
+        assert_eq!(library.len(), 28);
+        assert!(library
+            .iter()
+            .all(|sound| sound.get("builtin").and_then(Value::as_bool) == Some(true)));
+        let bubbles = entry
+            .json
+            .get("bubbles")
             .and_then(Value::as_object)
-            .expect("catalog 要带 voice 索引");
-        assert_eq!(voice.len(), 56, "28 段中文台词 + 28 段英文覆盖层台词");
+            .expect("catalog 要带 bubbles");
         assert_eq!(
-            voice.get("你好呀，我是鲸鱼娘～").and_then(Value::as_str),
-            Some("greet-1.mp3")
+            bubbles["greet"][0].get("sound").and_then(Value::as_str),
+            Some("greet-1")
         );
         assert_eq!(
-            voice.get("Hi there! I'm the whale girl~").and_then(Value::as_str),
-            Some("greet-1.mp3"),
-            "语言覆盖层的台词也要指向同一段配音"
+            bubbles["phase"]["thinking"].get("sound").and_then(Value::as_str),
+            Some("phase-thinking")
         );
+        // 英文覆盖层也带 bubbles（文本换成英文、声音 id 不变）。
         assert_eq!(
-            voice.get("让我想想…").and_then(Value::as_str),
-            Some("phase-thinking.mp3")
+            entry
+                .json
+                .pointer("/locales/en/bubbles/greet/0/sound")
+                .and_then(Value::as_str),
+            Some("greet-1")
         );
     }
 
-    /// 语音索引：按位置配对、缺文件不登记、覆盖层复用同一段音频。
+    /// 气泡与声音：显式 bubbles 覆盖 lines；voices 只收真实文件；相位允许"只有声音"。
     #[test]
-    fn voice_index_skips_missing_files_and_covers_locales() {
-        let temp = TempDir::new("voice-index");
+    fn bubbles_and_voices_come_from_the_manifest() {
+        let temp = TempDir::new("bubbles");
         let dir = temp.path();
         std::fs::create_dir_all(dir.join("voice")).unwrap();
-        for name in ["greet-1.mp3", "pat-1.mp3", "phase-done.mp3"] {
-            std::fs::write(dir.join("voice").join(name), b"bytes").unwrap();
-        }
-        let lines = json!({
-            "greet": ["你好", "在的"],
-            "pat": ["好舒服"],
-            "phase": { "done": "搞定", "failed": "出错" },
+        std::fs::write(dir.join("voice").join("a.mp3"), b"bytes").unwrap();
+        let block = json!({
+            "lines": { "greet": ["你好", "在的"], "click": ["点我"], "phase": { "done": "搞定" } },
+            "voices": [
+                { "id": "v-one", "name": "问候一", "file": "voice/a.mp3" },
+                { "id": "v-missing", "name": "缺文件", "file": "voice/missing.mp3" }
+            ],
+            "bubbles": {
+                "greet": [{ "text": "你好呀", "sound": "v-one" }],
+                "phase": { "done": { "text": "", "sound": null } }
+            }
         });
-        let locales = json!({
-            "en": { "lines": { "greet": ["Hi", "Still here"], "pat": ["Nice"] } },
-        });
-        let index = read_voice_index(dir, Some(&lines), &locales);
-        let file = |key: &str| index.get(key).and_then(Value::as_str);
-        assert_eq!(file("你好"), Some("greet-1.mp3"));
-        assert_eq!(file("在的"), None, "greet-2.mp3 不存在：不登记");
-        assert_eq!(file("好舒服"), Some("pat-1.mp3"));
-        assert_eq!(file("搞定"), Some("phase-done.mp3"));
-        assert_eq!(file("出错"), None, "phase-failed.mp3 不存在：不登记");
-        assert_eq!(file("Hi"), Some("greet-1.mp3"), "覆盖层按位置复用同一段音频");
-        assert_eq!(file("Still here"), None, "覆盖层也不登记缺文件的那一条");
+        let map = block.as_object().unwrap();
+        let voices = read_voices(dir, map.get("voices"));
+        assert_eq!(voices.len(), 1, "缺文件的声音不能进清单");
+        assert_eq!(voices[0].get("id").and_then(Value::as_str), Some("v-one"));
+
+        let bubbles = read_bubbles(map);
+        assert_eq!(bubbles["greet"].as_array().unwrap().len(), 1, "显式 bubbles 覆盖 lines");
+        assert_eq!(
+            bubbles["greet"][0].get("sound").and_then(Value::as_str),
+            Some("v-one")
+        );
+        assert_eq!(
+            bubbles["click"][0].get("text").and_then(Value::as_str),
+            Some("点我"),
+            "没写 bubbles 的键由 lines 派生"
+        );
+        assert_eq!(
+            bubbles["phase"]["done"].get("sound"),
+            Some(&Value::Null),
+            "相位允许显式无声（sound: null）"
+        );
+    }
+
+    /// 声音库：新增 / 替换 / 改名 / 删除 + 旧上传收编（文件按 `<pet>--<phase>.audio` 找）。
+    #[test]
+    fn sound_library_add_replace_rename_delete_and_legacy_migration() {
+        let temp = TempDir::new("sound-library");
+        let home = temp.path();
+        let pet_id = "demo";
+        std::fs::create_dir_all(home.join("pet-sounds")).unwrap();
+        // 旧接口留下的一份相位音频。
+        std::fs::write(home.join("pet-sounds").join("demo--done.audio"), b"legacy").unwrap();
+
+        let listed = crate::host::sound_library::list(home, pet_id);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].get("id").and_then(Value::as_str), Some("legacy-done"));
+        assert_eq!(listed[0].get("phase").and_then(Value::as_str), Some("done"));
+
+        // 一个合法 WAV 头：库只收能识别的容器。
+        let wav = {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(b"RIFF");
+            bytes.extend_from_slice(&40u32.to_le_bytes()); // 总长 - 8
+            bytes.extend_from_slice(b"WAVEfmt ");
+            bytes.extend_from_slice(&16u32.to_le_bytes());
+            bytes.extend_from_slice(&1u16.to_le_bytes()); // PCM
+            bytes.extend_from_slice(&1u16.to_le_bytes()); // 单声道
+            bytes.extend_from_slice(&8000u32.to_le_bytes()); // 采样率
+            bytes.extend_from_slice(&8000u32.to_le_bytes()); // 字节率
+            bytes.extend_from_slice(&1u16.to_le_bytes()); // 对齐
+            bytes.extend_from_slice(&8u16.to_le_bytes()); // 位深
+            bytes.extend_from_slice(b"data");
+            bytes.extend_from_slice(&4u32.to_le_bytes());
+            bytes.extend_from_slice(&[0x80, 0x80, 0x80, 0x80]);
+            bytes
+        };
+        let added = crate::host::sound_library::add(home, pet_id, Some(&json!("我的音效")), &wav).expect("新增");
+        let id = added.get("id").and_then(Value::as_str).unwrap().to_string();
+        assert_eq!(added.get("name").and_then(Value::as_str), Some("我的音效"));
+        assert!(crate::host::sound_library::read_sound(home, pet_id, &id).is_some());
+
+        let renamed = crate::host::sound_library::rename(home, pet_id, &id, Some(&json!("改名了"))).expect("改名");
+        assert_eq!(renamed.get("name").and_then(Value::as_str), Some("改名了"));
+
+        assert!(crate::host::sound_library::delete(home, pet_id, &id));
+        assert!(!crate::host::sound_library::delete(home, pet_id, &id));
+        assert_eq!(crate::host::sound_library::list(home, pet_id).len(), 1);
     }
 }
