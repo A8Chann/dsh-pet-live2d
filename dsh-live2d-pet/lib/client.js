@@ -9023,12 +9023,17 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
             // **桌面端是例外**：那边没有 DSH 设置页（`ctx.slots` 挂不上），设置正文
             // 没有别的家 —— 所以只在桌面端把这一页签加回来。守卫见 desktopNow()。
             // 一段语音都没有的宠物不显示这个页签：点进去只会是空白。
-            Object.keys(pet.voice ?? {}).length > 0 ? h("button", {
-              type: "button",
-              "data-tab-sound": "",
-              ...(tab === "sound" ? { "data-on": "" } : {}),
-              onClick: () => setTab("sound"),
-            }, t("声音 ") + String(Object.keys(pet.voice ?? {}).length)) : null,
+            // 数字数的是**音频文件**，不是索引条目：中文台词与语言覆盖层共用一段音频
+            // （索引里 56 条、文件只有 28 个），显示 56 会让人以为多了 28 段配音。
+            (() => {
+              const files = new Set(Object.values(pet.voice ?? {}));
+              return files.size > 0 ? h("button", {
+                type: "button",
+                "data-tab-sound": "",
+                ...(tab === "sound" ? { "data-on": "" } : {}),
+                onClick: () => setTab("sound"),
+              }, t("声音 ") + String(files.size)) : null;
+            })(),
             desktopNow() ? h("button", {
               type: "button",
               "data-tab-settings": "",
