@@ -63,8 +63,37 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     soundPlaying = null;
   }
 
-  /** 声音库条目的播放地址；id 由 catalog 给的索引，不拼文件路径。 */
+  // 内置提示音（随包 WAV）：`tone-<相位>`，与声音库里用户/宠物的条目同构，
+  // 所以面板、下拉、试听、绑定全都走同一条路。
+  const TONE_PREFIX = "tone-";
+  const TONE_PHASES = ["done", "failed", "waiting", "asking"];
+
+  /**
+   * 声音库条目的播放地址；id 由 catalog 给的索引，不拼文件路径。
+   *
+   * `tone-<相位>` 是**内置提示音**（插件随包的那几段 WAV）：它们不是文件，而是
+   * `DEFAULT_SOUND_AUDIO` 里的 data URL。这里转成 blob URL（`data:audio` 在部分
+   * 桌面壳的 CSP 下会被拦），并缓存 —— 同一段声音只转一次。
+   */
+  const toneBlobUrls = new Map();
   function soundUrl(petId, soundId) {
+    if (typeof soundId === "string" && soundId.startsWith(TONE_PREFIX)) {
+      const phase = soundId.slice(TONE_PREFIX.length);
+      const dataUrl = DEFAULT_SOUND_AUDIO[phase];
+      if (typeof dataUrl !== "string") return "";
+      if (!toneBlobUrls.has(phase)) {
+        try {
+          const comma = dataUrl.indexOf(",");
+          const binary = window.atob(dataUrl.slice(comma + 1));
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+          toneBlobUrls.set(phase, window.URL.createObjectURL(new window.Blob([bytes], { type: "audio/wav" })));
+        } catch {
+          toneBlobUrls.set(phase, dataUrl);
+        }
+      }
+      return toneBlobUrls.get(phase);
+    }
     return API + "/sound-file/" + encodeURIComponent(petId)
       + "/" + encodeURIComponent(soundId);
   }
@@ -77,6 +106,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
    * 也不占用防抖窗口，免得紧接着的一次互动被它挤掉。
    */
   function playSoundClip(url, options) {
+    if (typeof url !== "string" || url === "") return;
     const force = options?.force === true;
     const volume = typeof options?.volume === "number" ? options.volume : 1;
     if (!(volume > 0)) {
@@ -9166,8 +9196,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
               "data-tab-sound": "",
               ...(tab === "sound" ? { "data-on": "" } : {}),
               onClick: () => setTab("sound"),
-            }, pet.soundLibrary.length > 0
-              ? t("声音 ") + String(pet.soundLibrary.length)
+            }, pet.soundLibrary.length + TONE_PHASES.length > 0
+              ? t("声音 ") + String(pet.soundLibrary.length + TONE_PHASES.length)
               : t("声音")) : null,
             desktopNow() ? h("button", {
               type: "button",
@@ -9958,8 +9988,25 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   // 旧上传的相位音频按相位名显示）。
 
   /** 声音的显示名：随包可被覆盖层改，旧上传按相位名，其余用用户起的名字。 */
+  /** 内置提示音的显示名："内置 · 完成"之类，跟着界面语言走。 */
+  const toneSoundName = (phase) => {
+    const label = PHASE_LINE_FIELDS.find((field) => field.key === phase)?.label ?? phase;
+    return t("内置") + " · " + t(label);
+  };
+
+  /** 内置提示音条目：形状与宿主给的声音一致（`builtin` 决定能不能删/换）。 */
+  const toneEntries = () => TONE_PHASES.map((phase) => ({
+    id: TONE_PREFIX + phase,
+    name: toneSoundName(phase),
+    builtin: true,
+    tone: true,
+  }));
+
   const soundName = (sound) => {
     if (sound === null || typeof sound !== "object") return t("声音");
+    if (typeof sound.id === "string" && sound.id.startsWith(TONE_PREFIX)) {
+      return toneSoundName(sound.id.slice(TONE_PREFIX.length));
+    }
     if (sound.builtin === true) {
       const overlayName = overlayAt("voiceNames", sound.id);
       return typeof overlayName === "string" && overlayName !== "" ? overlayName : (sound.name || sound.id);
@@ -9985,7 +10032,9 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         .catch(() => {});
       return () => { alive = false; };
     }, [petId]);
-    return [sounds, setSounds];
+    // 内置提示音由客户端补在前面：宿主不需要知道它们（随包 WAV 在客户端里），
+    // 这样网页端与桌面端拿到的列表一致，也不用为它们加一条素材路由。
+    return [toneEntries().concat(sounds), setSounds];
   }
 
   /** 一把请求：改完把新列表带回来。失败抛错（调用方显示）。 */
