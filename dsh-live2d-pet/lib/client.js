@@ -3802,26 +3802,28 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     ROOT_SEL + " [data-panel-settings] [data-pool-row]{grid-template-columns:minmax(0,1fr) 64px 18px 52px;gap:3px}",
     // ---- 「声音」页签：声音库管理（一条声音一张卡）----
     ROOT_SEL + " [data-sound-library]{display:flex;flex-direction:column;gap:7px}",
-    ROOT_SEL + " [data-sound-card]{border:1px solid var(--pp-line);border-radius:9px;"
-      + "padding:6px 7px;background:var(--pp-chip)}",
-    ROOT_SEL + " [data-sound-head]{display:flex;align-items:center;gap:5px;margin-bottom:4px;min-width:0}",
+    ROOT_SEL + " [data-sound-card]{display:flex;flex-wrap:wrap;align-items:center;gap:5px;"
+      + "border:1px solid var(--pp-line);border-radius:9px;padding:6px 7px;background:var(--pp-chip)}",
+    ROOT_SEL + " [data-sound-head]{display:flex;align-items:center;gap:5px;flex:1 1 120px;"
+      + "min-width:0;margin:0}",
     ROOT_SEL + " [data-sound-head] input{flex:1;min-width:0;font-size:11px;padding:2px 5px}",
     ROOT_SEL + " [data-sound-head] [data-sound-name]{flex:1;min-width:0;font-size:11px;"
       + "overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
     ROOT_SEL + " [data-sound-badge]{flex:none;font-size:9px;padding:0 5px;border:1px solid var(--pp-line);"
       + "border-radius:999px;color:var(--pp-muted);line-height:1.6}",
-    ROOT_SEL + " [data-sound-actions]{display:flex;flex-wrap:wrap;gap:4px}",
+    ROOT_SEL + " [data-sound-actions]{display:flex;flex-wrap:wrap;gap:4px;margin-left:auto}",
     ROOT_SEL + " [data-sound-actions] button,"
       + ROOT_SEL + " [data-sound-actions] label,"
       + ROOT_SEL + " [data-sound-add]{border:1px solid var(--pp-line);background:var(--pp-chip);"
-      + "color:var(--pp-chip-ink);font:400 10px/1.4 inherit;padding:2px 8px;border-radius:999px;"
-      + "cursor:pointer;white-space:nowrap}",
+      + "color:var(--pp-chip-ink);font-size:10px;line-height:1.4;font-family:inherit;"
+      + "padding:2px 8px;border-radius:999px;cursor:pointer;white-space:nowrap}",
     ROOT_SEL + " [data-sound-actions] label,"
       + ROOT_SEL + " [data-sound-add]{position:relative;overflow:hidden;display:inline-flex;align-items:center}",
     ROOT_SEL + " [data-sound-add]{align-self:flex-start}",
     ROOT_SEL + " [data-sound-actions] label input,"
       + ROOT_SEL + " [data-sound-add] input{position:absolute;inset:0;opacity:0;cursor:pointer}",
     ROOT_SEL + " [data-sound-error]{color:#e08a8a;font-size:10px;line-height:1.5}",
+    ROOT_SEL + " [data-panel] [data-note-inline]{font-size:10px;line-height:1.5;color:var(--pp-muted);margin-top:5px}",
     ROOT_SEL + " [data-panel] [data-group]{margin-bottom:9px}",
     ROOT_SEL + " [data-panel] [data-group]>span{display:block;margin:0 0 4px 2px;color:var(--pp-dim);font-size:10px;letter-spacing:.06em}",
     ROOT_SEL + " [data-panel] [data-chips]{display:flex;flex-wrap:wrap;gap:4px}",
@@ -3984,6 +3986,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       + "cursor:pointer;padding:0}",
     scope + " [data-add-row]{display:flex;flex-wrap:wrap;gap:5px;padding-top:7px}",
     scope + " [data-add-option],"
+      + scope + " [data-bubble-add],"
       + scope + " [data-reset],"
       + scope + " [data-phase-add],"
       + scope + " [data-phase-slot-add],"
@@ -3995,7 +3998,8 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     // 宽度填满 grid 给的格子（列宽才是唯一来源）；弹出列表不受这个宽度影响。
     scope + " [data-phase-add]," + scope + " [data-phase-slot-add]{text-align:left;padding:0 9px}",
     scope + " [data-relation-add]{text-align:left;padding:0 6px;width:100%;font-size:10px}",
-    scope + " [data-add-option]:hover," + scope + " [data-reset]:hover,"
+    scope + " [data-add-option]:hover," + scope + " [data-bubble-add]:hover,"
+      + scope + " [data-reset]:hover,"
       + scope + " [data-phase-add]:hover,"
       + scope + " [data-phase-slot-add]:hover," + scope + " [data-relation-add]:hover{"
       + "opacity:1;border-style:solid;border-color:rgba(120,170,255,.75);"
@@ -4063,14 +4067,15 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     scope + " [data-bubble-group]{padding:4px 0 9px;border-bottom:1px solid rgba(127,127,127,.16)}",
     scope + " [data-bubble-group]:last-child{border-bottom:0}",
     scope + " [data-bubble-head]{display:flex;align-items:center;justify-content:space-between;gap:6px;padding:2px 0 4px}",
-    scope + " [data-bubble-row]{display:grid;grid-template-columns:minmax(0,1fr) 112px auto auto;"
-      + "align-items:center;gap:5px;padding:2px 0}",
-    scope + " [data-bubble-row] input[type=text]{min-width:0;font-size:11px;padding:2px 6px}",
-    scope + " [data-bubble-row] select{font-size:11px;padding:2px 4px;min-width:0;max-width:100%}",
+    // 一行放不下就自己折行：面板 342px 里"文本 + 声音 + 试听 + 删"挤成一团，
+    // 用 flex-wrap 让文本先占一行、控件掉到第二行；DSH 设置页够宽时仍是一行。
+    scope + " [data-bubble-row]{display:flex;flex-wrap:wrap;align-items:center;gap:5px;padding:3px 0}",
+    scope + " [data-bubble-row] input[type=text]{flex:1 1 220px;min-width:0;font-size:11px;padding:2px 6px}",
+    scope + " [data-bubble-row] select{flex:0 1 150px;min-width:0;font-size:11px;padding:2px 4px;max-width:100%}",
     scope + " [data-bubble-row] button,"
       + scope + " [data-bubble-head] button{border:1px solid var(--pp-line);background:var(--pp-chip);"
-      + "color:var(--pp-chip-ink);font:400 10px/1.4 inherit;padding:2px 7px;border-radius:999px;"
-      + "cursor:pointer;white-space:nowrap}",
+      + "color:var(--pp-chip-ink);font-size:10px;line-height:1.4;font-family:inherit;"
+      + "padding:2px 7px;border-radius:999px;cursor:pointer;white-space:nowrap}",
     scope + " [data-phase-section-title]{font-size:10px;font-weight:600;opacity:.65;margin-bottom:3px}",
     scope + " [data-phase-line]{display:flex;align-items:center;gap:6px;min-width:0}",
     scope + " [data-phase-line] [data-line-row]{grid-template-columns:84px minmax(0,1fr);"
