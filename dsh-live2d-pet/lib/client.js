@@ -4540,7 +4540,9 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     // 兼容：更老的宿主只会下发 `lines`（没有 bubbles），这时按纯文本派生。
     const lines = MANIFEST.current?.lines ?? {};
     const fromLines = (key) => (Array.isArray(lines[key]) ? lines[key].map((text) => ({ text })) : []);
-    const overlay = overlayAt("bubbles");
+    // overlayAt 取不到时返回 undefined（不是 null）—— 直接当对象用会抛
+    // "Cannot read properties of undefined"，这里统一成 null。
+    const overlay = overlayAt("bubbles") ?? null;
     const out = {};
     for (const key of LINE_KEYS) {
       const source = overlay !== null && Array.isArray(overlay[key]) ? overlay[key]
@@ -7110,7 +7112,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
           try { currentModel.destroy({ children: true }); } catch { /* partial boot */ }
         }
       };
-    }, [catalog, pet, say]);
+    }, [catalog, pet]);
 
     // ---- resize -------------------------------------------------------
     // A resized pet moves and rescales the model, so the silhouette captured
@@ -7228,7 +7230,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       if (!ready || greeted.current) return;
       greeted.current = true;
       sayBubble(pick(bubblesNow().greet));
-    }, [ready, say]);
+    }, [ready, sayBubble]);
 
 
     // ---- mouse tracking -----------------------------------------------
@@ -8187,7 +8189,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
       commitPinsRef.current();
       motion.current.resetToRest();
       sayBubble(pick(bubblesNow().reset));
-    }, [applyExpressions, say]);
+    }, [applyExpressions, sayBubble]);
 
     /**
      * 启动时把上次的装扮穿回来。
@@ -8904,7 +8906,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         window.removeEventListener("pet://reset", onReset);
         window.removeEventListener("pet://settings", onSettings);
       };
-    }, [say]);
+    }, [sayBubble]);
 
     const onPointerDown = useCallback((event) => {
       if (event.button !== 0) return;
@@ -9031,7 +9033,7 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
         window.removeEventListener("pointerup", onUp);
         window.removeEventListener("pointercancel", onUp);
       };
-    }, [flashExpression, say]);
+    }, [flashExpression, sayBubble]);
 
     // ---- persistence ---------------------------------------------------
     useEffect(() => { saveStored({ size }); }, [size]);

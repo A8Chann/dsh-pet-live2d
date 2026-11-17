@@ -103,6 +103,16 @@ fn pets(state: &HostState) -> Vec<catalog::PetEntry> {
     catalog::build_catalog(&state.pets_root, &state.home)
 }
 
+/// 先同步随包宠物、再扫目录 —— `/catalog` 与声音库路由必须走这一条。
+///
+/// 为什么要"先同步"：随包宠物是**新增文件**（`voice/`、`bubbles`），用户目录里那份可能
+/// 还是旧版（甚至被旧版插件写回去过）。声音库路由如果只扫不装，就会拿旧清单报"没有声音"，
+/// 而同一毫秒的 `/catalog` 明明有 —— 面板里看到的就是"声音 28 页签点开一张卡都没有"。
+fn pets_current(state: &HostState) -> Vec<catalog::PetEntry> {
+    let _ = catalog::install_bundled_pets(&state.plugin_root.join("pets"), &state.pets_root);
+    catalog::build_catalog(&state.pets_root, &state.home)
+}
+
 fn mime_for(path: &str) -> &'static str {
     match path.rsplit('.').next().unwrap_or("") {
         "html" => "text/html; charset=utf-8",
@@ -333,6 +343,7 @@ fn route(
         // **先同步随包宠物，再扫目录**：第一次运行时宠物还不存在，顺序反了会返回空列表
         // （JS 版的 buildCatalog() 也是这么排的）。
         let notes = catalog::install_bundled_pets(&state.plugin_root.join("pets"), &state.pets_root);
+
         for note in notes {
             eprintln!("[host] {note}");
         }
@@ -967,7 +978,7 @@ fn serve_sounds(
     if !clean_sound_id(pet_id) || sound_id.map(|id| !clean_sound_id(id)).unwrap_or(false) {
         return sound_error(stream, 404, "not-found");
     }
-    let current = pets(state);
+    let current = pets_current(state);
     let Some(pet) = current.iter().find(|pet| pet.id() == pet_id) else {
         return sound_error(stream, 404, "not-found");
     };
@@ -976,7 +987,14 @@ fn serve_sounds(
             if sound_id.is_some() {
                 return sound_error(stream, 405, "method-not-allowed");
             }
-            send_json(stream, 200, &json!({ "ok": true, "sounds": library_list(state, pet_id) }))?;
+            // 用**本次请求已经扫出来的那只**，不要再重扫一遍：重扫会重新读盘、
+            // 拼 catalog，既慢又给"同一请求里两次扫描结果不一致"留了口子。
+            let sounds = pet
+                .json
+                .get("soundLibrary")
+                .cloned()
+                .unwrap_or_else(|| Value::Array(Vec::new()));
+            send_json(stream, 200, &json!({ "ok": true, "sounds": sounds }))?;
             Ok(true)
         }
         "DELETE" => {
@@ -1075,7 +1093,7 @@ fn serve_sound_file(
     if !clean_sound_id(pet_id) || !clean_sound_id(sound_id) {
         return sound_error(stream, 404, "not-found");
     }
-    let current = pets(state);
+    let current = pets_current(state);
     let Some(pet) = current.iter().find(|pet| pet.id() == pet_id) else {
         return sound_error(stream, 404, "not-found");
     };
