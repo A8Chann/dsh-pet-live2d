@@ -445,6 +445,9 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     "叫了帮手": "Helper called",
     "消息排队": "Message queued",
     "这一轮完成": "Turn complete",
+    "完成": "Done",
+    "待批准": "Approval",
+    "待回答": "Answer",
     "出错": "Error",
     "（已改过）": "(customized)",
     "（宠物默认）": "(pet default)",
@@ -3821,7 +3824,9 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
     // how to get rid of it.
     ROOT_SEL + " [data-panel] [data-hintrow]{padding:0 10px 7px;color:var(--pp-faint);font-size:10px;line-height:1.5}",
     ROOT_SEL + " [data-panel] [data-tabs]{display:flex;gap:2px;padding:6px 8px 0}",
-    ROOT_SEL + " [data-panel] [data-tabs] button{flex:1;border:0;background:transparent;color:var(--pp-muted);font:600 11px/2 inherit;border-radius:7px;cursor:pointer}",
+    ROOT_SEL + " [data-panel] [data-tabs] button{flex:1;border:0;background:transparent;color:var(--pp-muted);"
+      + "font-size:10px;font-weight:600;line-height:2;font-family:inherit;white-space:nowrap;"
+      + "border-radius:7px;cursor:pointer;padding:0 2px}",
     ROOT_SEL + " [data-panel] [data-tabs] button[data-on]{background:var(--pp-accent);color:var(--pp-ink-strong)}",
     ROOT_SEL + " [data-panel] [data-body]{flex:1;overflow:auto;padding:8px}",
     // 桌面端的「设置」页签把面板加宽一档：设置正文是**表格**（池子、相位、关系），
@@ -9988,11 +9993,12 @@ window.__ModuleLoader__.load({ id: "dsh-pet-live2d", factory: (require) => {
   // 旧上传的相位音频按相位名显示）。
 
   /** 声音的显示名：随包可被覆盖层改，旧上传按相位名，其余用用户起的名字。 */
+  // 内置提示音用**短名**：英文的 "Waiting for approval / Waiting for an answer"
+  // 在 272px 面板里会被截成同一个 "Built-in · Waiting fo..."，根本分不出来。
+  const TONE_NAMES = { done: t("完成"), failed: t("出错"), waiting: t("待批准"), asking: t("待回答") };
+
   /** 内置提示音的显示名："内置 · 完成"之类，跟着界面语言走。 */
-  const toneSoundName = (phase) => {
-    const label = PHASE_LINE_FIELDS.find((field) => field.key === phase)?.label ?? phase;
-    return t("内置") + " · " + t(label);
-  };
+  const toneSoundName = (phase) => t("内置") + " · " + (TONE_NAMES[phase] ?? phase);
 
   /** 内置提示音条目：形状与宿主给的声音一致（`builtin` 决定能不能删/换）。 */
   const toneEntries = () => TONE_PHASES.map((phase) => ({
